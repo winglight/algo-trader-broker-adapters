@@ -1,6 +1,6 @@
 [tool.pytest.ini_options]
-testpaths = ["packages/ibkr-paper/tests"]
-addopts = "-ra"
+testpaths = ["packages/ibkr-paper/tests", "packages/alpaca-paper/tests"]
+addopts = "-ra --import-mode=importlib"
 
 [tool.ruff]
 target-version = "py311"

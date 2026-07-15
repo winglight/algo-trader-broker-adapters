@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "algo-trader-broker-adapter-alpaca-paper"
+version = "0.1.0"
+description = "Alpaca Paper adapter for the algo-trader Broker SDK"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "Apache-2.0"}
+dependencies = [
+  "algo-trader-broker-sdk>=1,<2",
+  "alpaca-py==0.43.5",
+  "httpx>=0.27,<0.29",
+]
+
+[project.entry-points."algo_trader.broker_adapters"]
+alpaca_paper = "algo_trader_broker_adapter_alpaca_paper:create_adapter"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+algo_trader_broker_adapter_alpaca_paper = ["py.typed"]

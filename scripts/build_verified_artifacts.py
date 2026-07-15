@@ -16,6 +16,7 @@ from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parents[1]
 IB_PACKAGE = ROOT / "packages" / "ibkr-paper"
+ALPACA_PACKAGE = ROOT / "packages" / "alpaca-paper"
 
 
 def _version(distribution: str, default: str) -> str:
@@ -34,7 +35,7 @@ def main() -> int:
     output.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ)
     env.setdefault("SOURCE_DATE_EPOCH", "1784044800")
-    for package in (args.sdk_path.resolve(), IB_PACKAGE):
+    for package in (args.sdk_path.resolve(), IB_PACKAGE, ALPACA_PACKAGE):
         subprocess.run(
             [
                 sys.executable,
@@ -63,17 +64,25 @@ def main() -> int:
         "spdxVersion": "SPDX-2.3",
         "dataLicense": "CC0-1.0",
         "SPDXID": "SPDXRef-DOCUMENT",
-        "name": "algo-trader-broker-adapter-ibkr-paper-0.1.0",
+        "name": "algo-trader-broker-adapters-0.1.0",
         "documentNamespace": namespace,
         "creationInfo": {
             "created": "2026-07-15T00:00:00Z",
             "creators": ["Tool: build_verified_artifacts.py"],
         },
-        "documentDescribes": ["SPDXRef-IBKRAdapter"],
+        "documentDescribes": ["SPDXRef-IBKRAdapter", "SPDXRef-AlpacaAdapter"],
         "packages": [
             {
                 "name": "algo-trader-broker-adapter-ibkr-paper",
                 "SPDXID": "SPDXRef-IBKRAdapter",
+                "versionInfo": "0.1.0",
+                "downloadLocation": "NOASSERTION",
+                "filesAnalyzed": False,
+                "licenseConcluded": "Apache-2.0",
+            },
+            {
+                "name": "algo-trader-broker-adapter-alpaca-paper",
+                "SPDXID": "SPDXRef-AlpacaAdapter",
                 "versionInfo": "0.1.0",
                 "downloadLocation": "NOASSERTION",
                 "filesAnalyzed": False,
@@ -88,6 +97,14 @@ def main() -> int:
                 "licenseConcluded": "Apache-2.0",
             },
             {
+                "name": "alpaca-py",
+                "SPDXID": "SPDXRef-AlpacaPy",
+                "versionInfo": "0.43.5",
+                "downloadLocation": "https://pypi.org/project/alpaca-py/0.43.5/",
+                "filesAnalyzed": False,
+                "licenseConcluded": "NOASSERTION",
+            },
+            {
                 "name": "ib-async",
                 "SPDXID": "SPDXRef-IBAsync",
                 "versionInfo": _version("ib_async", "2.x (resolved at install time)"),
@@ -97,6 +114,16 @@ def main() -> int:
             },
         ],
         "relationships": [
+            {
+                "spdxElementId": "SPDXRef-AlpacaAdapter",
+                "relationshipType": "DEPENDS_ON",
+                "relatedSpdxElement": "SPDXRef-BrokerSDK",
+            },
+            {
+                "spdxElementId": "SPDXRef-AlpacaAdapter",
+                "relationshipType": "DEPENDS_ON",
+                "relatedSpdxElement": "SPDXRef-AlpacaPy",
+            },
             {
                 "spdxElementId": "SPDXRef-IBKRAdapter",
                 "relationshipType": "DEPENDS_ON",
