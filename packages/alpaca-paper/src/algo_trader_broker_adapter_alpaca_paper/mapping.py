@@ -63,6 +63,15 @@ def number(item: Any, default: float = 0.0) -> float:
     return float(item)
 
 
+def asset_is_active(item: Any) -> bool:
+    """Support both fixture booleans and alpaca-py's native status enum."""
+
+    explicit = value(item, "active")
+    if explicit is not None:
+        return bool(explicit)
+    return text(value(item, "status")).strip().lower() == "active"
+
+
 def utc_datetime(item: Any, *, default: datetime | None = None) -> datetime:
     if isinstance(item, datetime):
         parsed = item
@@ -81,6 +90,19 @@ def broker_status(native_status: Any) -> str:
     return _STATUS_MAP.get(text(native_status).strip().lower(), "Unknown")
 
 
+def execution_id(item: Any) -> str | None:
+    """Canonicalize Alpaca activity IDs to the live trade execution UUID."""
+
+    identifier = text(item).strip()
+    if not identifier:
+        return None
+    if "::" in identifier:
+        suffix = identifier.rsplit("::", 1)[-1].strip()
+        if suffix:
+            return suffix
+    return identifier
+
+
 def order_metadata(order: Any, *, event: str | None = None) -> dict[str, Any]:
     native_status = text(value(order, "status"))
     native: dict[str, Any] = {"status": native_status}
@@ -96,7 +118,20 @@ def order_metadata(order: Any, *, event: str | None = None) -> dict[str, Any]:
         "schemaVersion": 1,
         "native": native,
         "diagnostics": {},
-        "extensions": {},
+        "extensions": {
+            "accounting": {
+                "commission": {
+                    "model": "zero_commission_us_equity_paper",
+                    "currency": "USD",
+                    "authoritativeZero": True,
+                },
+                "realizedPnl": {
+                    "model": "matched_fill_ledger_v1",
+                    "currency": "USD",
+                    "priceMultiplier": 1.0,
+                },
+            }
+        },
     }
 
 
@@ -167,10 +202,20 @@ def map_trade_update(
             or value(order, "created_at")
         ),
         client_order_id=text(value(order, "client_order_id")).strip() or None,
+        commission=0.0 if event in {"fill", "partial_fill"} else None,
         message={
             "symbol": text(value(order, "symbol")).strip().upper(),
             "account": None,
             "source": "alpaca_trade_update" if event else "alpaca_reconciliation",
+            "commissionReport": {
+                "execId": str(execution_id).strip() if execution_id else None,
+                "commission": 0.0,
+                "currency": "USD",
+                "authoritativeZero": True,
+                "source": "zero_commission_us_equity_paper",
+            }
+            if event in {"fill", "partial_fill"}
+            else None,
         },
     )
 
@@ -187,7 +232,7 @@ def map_fill_activity(activity: Any, order: Any | None = None) -> TradeUpdate:
     return map_trade_update(
         source,
         event="fill",
-        execution_id=text(value(activity, "id")).strip() or None,
+        execution_id=execution_id(value(activity, "id")),
         event_time=value(activity, "transaction_time") or value(activity, "date"),
         last_fill_price=value(activity, "price"),
         last_fill_quantity=value(activity, "qty"),

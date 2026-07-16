@@ -35,6 +35,7 @@ from .clients import AlpacaClients, duration_window
 from .errors import outcome_unknown, unsupported
 from .mapping import (
     broker_status,
+    asset_is_active,
     map_account,
     map_bar,
     map_fill_activity,
@@ -101,7 +102,12 @@ class AlpacaPaperAdapter:
             supports_scanner=False,
             supports_options=False,
             supports_futures=False,
-            native={"dataFeed": self._settings.data_feed, "paperOnly": True},
+            native={
+                "dataFeed": self._settings.data_feed,
+                "paperOnly": True,
+                "liveBarSizes": ["1 min"],
+                "latestPriceStream": "realtime_price",
+            },
         )
 
     async def start(self) -> None:
@@ -388,7 +394,7 @@ class AlpacaPaperAdapter:
         asset = await self._backend.get_asset(symbol)
         if text(value(asset, "class") or value(asset, "asset_class")).lower() != "us_equity":
             raise BrokerOrderError("Alpaca asset is not a US equity or ETF")
-        if not bool(value(asset, "active", False)) or not bool(value(asset, "tradable", False)):
+        if not asset_is_active(asset) or not bool(value(asset, "tradable", False)):
             raise BrokerOrderError("Alpaca asset is not active and tradable")
         if request.side == "SELL":
             current_qty = 0.0
@@ -474,10 +480,12 @@ class AlpacaPaperAdapter:
         asset = await self._backend.get_asset(symbol)
         if text(value(asset, "class") or value(asset, "asset_class")).lower() != "us_equity":
             raise BrokerContractError("Alpaca asset is not a US equity or ETF")
-        if not bool(value(asset, "active", False)) or not bool(value(asset, "tradable", False)):
+        if not asset_is_active(asset) or not bool(value(asset, "tradable", False)):
             raise BrokerContractError("Alpaca asset is not active and tradable")
         return {
             "symbol": symbol,
+            "localSymbol": symbol,
+            "tradingClass": symbol,
             "secType": sec_type,
             "exchange": text(value(asset, "exchange")) or "SMART",
             "currency": "USD",
@@ -574,8 +582,6 @@ class AlpacaPaperAdapter:
     ) -> list[HistoricalBar]:
         if what_to_show.strip().upper() != "TRADES":
             raise unsupported("historical_what_to_show")
-        if not use_rth:
-            raise unsupported("extended_hours")
         qualified = await self.qualify_contract(contract)
         start, end = duration_window(duration, end_datetime)
         bars = await self._backend.get_bars(
@@ -584,7 +590,23 @@ class AlpacaPaperAdapter:
             start=start,
             end=end,
         )
-        return [map_bar(item) for item in bars]
+        mapped = [map_bar(item) for item in bars]
+        if not use_rth:
+            return mapped
+        from datetime import time
+        from zoneinfo import ZoneInfo
+
+        market_timezone = ZoneInfo("America/New_York")
+        regular_open = time(9, 30)
+        regular_close = time(16, 0)
+        return [
+            bar
+            for bar in mapped
+            if (
+                (local_time := bar.time.astimezone(market_timezone)).weekday() < 5
+                and regular_open <= local_time.time() < regular_close
+            )
+        ]
 
     async def get_historical_ticks(
         self,

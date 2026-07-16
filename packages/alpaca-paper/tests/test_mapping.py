@@ -5,10 +5,23 @@ from datetime import UTC, datetime
 import pytest
 
 from algo_trader_broker_adapter_alpaca_paper.mapping import (
+    asset_is_active,
     broker_status,
     map_fill_activity,
     map_trade_update,
 )
+
+
+def test_asset_active_supports_native_status_enum() -> None:
+    from enum import Enum
+
+    class Status(str, Enum):
+        ACTIVE = "active"
+        INACTIVE = "inactive"
+
+    assert asset_is_active({"status": Status.ACTIVE}) is True
+    assert asset_is_active({"status": Status.INACTIVE}) is False
+    assert asset_is_active({"active": True, "status": Status.INACTIVE}) is True
 
 
 @pytest.mark.parametrize(
@@ -55,6 +68,21 @@ def test_trade_update_preserves_uuid_client_id_and_utc() -> None:
     assert update.filled == 4
     assert update.remaining == 6
     assert update.event_time == datetime(2026, 7, 15, 14, 31, tzinfo=UTC)
+    assert update.commission == 0.0
+    assert update.message["commissionReport"] == {
+        "execId": "execution-uuid",
+        "commission": 0.0,
+        "currency": "USD",
+        "authoritativeZero": True,
+        "source": "zero_commission_us_equity_paper",
+    }
+    accounting = update.adapter_metadata["extensions"]["accounting"]
+    assert accounting["commission"]["authoritativeZero"] is True
+    assert accounting["realizedPnl"] == {
+        "model": "matched_fill_ledger_v1",
+        "currency": "USD",
+        "priceMultiplier": 1.0,
+    }
 
 
 def test_fill_activity_uses_stable_activity_id() -> None:
@@ -71,3 +99,18 @@ def test_fill_activity_uses_stable_activity_id() -> None:
 
     assert update.adapter_execution_id == "fill-activity-uuid"
     assert update.adapter_order_id == "order-uuid"
+
+
+def test_fill_activity_canonicalizes_composite_id_to_live_execution_id() -> None:
+    update = map_fill_activity(
+        {
+            "id": "20260715122204835::1f1e081b-a14f-44bc-a6b5-fd45d1ea5491",
+            "order_id": "order-uuid",
+            "symbol": "AAPL",
+            "qty": "1",
+            "price": "327.66",
+            "transaction_time": "2026-07-15T16:22:04+00:00",
+        }
+    )
+
+    assert update.adapter_execution_id == "1f1e081b-a14f-44bc-a6b5-fd45d1ea5491"

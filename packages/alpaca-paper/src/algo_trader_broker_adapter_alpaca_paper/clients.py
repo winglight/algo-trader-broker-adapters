@@ -13,7 +13,12 @@ from algo_trader_broker_sdk import BrokerConnectionError, BrokerOrderError
 
 from .mapping import value
 from .settings import AlpacaPaperSettings
-from .streams import ThreadedAlpacaStream, TradeUpdateStream
+from .streams import (
+    AlpacaStockSubscription,
+    MultiplexedAlpacaStockStream,
+    ThreadedAlpacaStream,
+    TradeUpdateStream,
+)
 
 
 PAPER_TRADING_BASE_URL = "https://paper-api.alpaca.markets"
@@ -28,6 +33,8 @@ class AlpacaClients:
         self._trading: Any | None = None
         self._historical: Any | None = None
         self._trade_stream: TradeUpdateStream | None = None
+        self._stock_stream: MultiplexedAlpacaStockStream | None = None
+        self._stock_stream_lock = asyncio.Lock()
 
     def _load(self) -> None:
         if self._trading is not None:
@@ -267,28 +274,24 @@ class AlpacaClients:
         except (KeyError, TypeError):
             return None
 
-    async def stream_stock(self, symbol: str, kind: str) -> ThreadedAlpacaStream:
+    async def stream_stock(self, symbol: str, kind: str) -> AlpacaStockSubscription:
         from alpaca.data.enums import DataFeed
         from alpaca.data.live import StockDataStream
 
-        stream = StockDataStream(
-            self.settings.api_key_id,
-            self.settings.secret_key,
-            feed=DataFeed.IEX if self.settings.data_feed == "iex" else DataFeed.SIP,
-        )
-        subscribe = {
-            "bars": lambda handler: stream.subscribe_bars(handler, symbol),
-            "trades": lambda handler: stream.subscribe_trades(handler, symbol),
-            "quotes": lambda handler: stream.subscribe_quotes(handler, symbol),
-        }.get(kind)
-        if subscribe is None:
-            raise ValueError(f"Unknown Alpaca stock stream kind: {kind}")
-        return await ThreadedAlpacaStream(
-            stream,
-            subscribe,
-            queue_size=self.settings.stream_queue_size,
-            name=f"alpaca-paper.stock-{kind}-{symbol}",
-        ).start()
+        async with self._stock_stream_lock:
+            if self._stock_stream is None:
+                stream = StockDataStream(
+                    self.settings.api_key_id,
+                    self.settings.secret_key,
+                    feed=DataFeed.IEX if self.settings.data_feed == "iex" else DataFeed.SIP,
+                )
+                self._stock_stream = MultiplexedAlpacaStockStream(
+                    stream,
+                    queue_size=self.settings.stream_queue_size,
+                    name="alpaca-paper.stock-data",
+                )
+            managed = self._stock_stream
+        return await managed.subscribe(symbol, kind)
 
     async def start_trade_updates(
         self,
@@ -322,10 +325,14 @@ class AlpacaClients:
 
     async def close(self) -> None:
         await self.stop_trade_updates()
+        stock_stream = self._stock_stream
+        self._stock_stream = None
+        if stock_stream is not None:
+            await stock_stream.close()
 
 
 def duration_window(duration: str, end: datetime | str | None) -> tuple[datetime, datetime]:
-    if end is None:
+    if end is None or (isinstance(end, str) and not end.strip()):
         end_at = datetime.now(UTC)
     elif isinstance(end, datetime):
         end_at = end if end.tzinfo else end.replace(tzinfo=UTC)

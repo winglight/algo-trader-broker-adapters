@@ -386,6 +386,22 @@ async def test_market_snapshot_history_and_live_bar_preserve_utc() -> None:
 
 
 @pytest.mark.asyncio
+async def test_historical_data_accepts_broker_protocol_blank_end_datetime() -> None:
+    adapter, _ = await connected()
+    contract = {"symbol": "AAPL", "secType": "STK", "currency": "USD"}
+
+    history = await adapter.get_historical_data(
+        contract,
+        end_datetime="",
+        duration="1 D",
+        bar_size="5 mins",
+        use_rth=False,
+    )
+
+    assert history[0].close == 201.0
+
+
+@pytest.mark.asyncio
 async def test_trade_update_handler_uses_execution_id_and_refreshes_snapshots() -> None:
     adapter, backend = await connected()
     updates = []
