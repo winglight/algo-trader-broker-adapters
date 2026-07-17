@@ -41,3 +41,10 @@ PYTHONPATH=../broker-sdk/src:src pytest tests -q
 
 Live credential probes, market-data shadowing, Paper orders, package publishing,
 and remote pushes require separate approval in the main project.
+
+The approved Phase 8 main-project acceptance keeps Alpaca Paper operations to
+whole-share AAPL/SPY tests and an explicitly confirmed one-share TSLA long
+cleanup. The acceptance driver must reject any symbol, side, quantity, live
+endpoint, extended-hours request, or unapproved cancellation outside that
+allowlist; an unknown submit outcome is reconciled by client order ID and is
+never blindly retried.
