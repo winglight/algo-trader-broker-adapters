@@ -284,7 +284,7 @@ class IBKRPaperAdapter:
         return BrokerCapabilities(
             adapter_name=self.adapter_id,
             environment="PAPER",
-            asset_classes={"STK", "FUT"},
+            asset_classes={"STK", "FUT", "CRYPTO"},
             order_types={"MKT", "LMT", "STP", "STP LMT"},
             time_in_force={"DAY", "GTC"},
             market_data_streams={"historical_bars", "realtime_price", "tick_by_tick"},
@@ -296,6 +296,12 @@ class IBKRPaperAdapter:
             supports_scanner=True,
             supports_options=False,
             supports_futures=True,
+            default_asset_class="FUT",
+            symbol_examples={
+                "FUT": ["MNQ", "MES", "M2K"],
+                "STK": ["AAPL", "TSLA", "NVDA"],
+                "CRYPTO": ["BTCUSD", "ETHUSD"],
+            },
         )
 
     def connection_state_snapshot(self) -> BrokerConnectionState:

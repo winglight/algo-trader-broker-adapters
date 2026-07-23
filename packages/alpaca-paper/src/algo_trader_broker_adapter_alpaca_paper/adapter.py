@@ -102,6 +102,11 @@ class AlpacaPaperAdapter:
             supports_scanner=False,
             supports_options=False,
             supports_futures=False,
+            default_asset_class="STK",
+            symbol_examples={
+                "STK": ["AAPL", "TSLA", "NVDA"],
+                "ETF": ["SPY", "QQQ"],
+            },
             native={
                 "dataFeed": self._settings.data_feed,
                 "paperOnly": True,
