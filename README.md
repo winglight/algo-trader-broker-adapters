@@ -82,6 +82,14 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution rules and
 [SECURITY.md](SECURITY.md) for private vulnerability reporting. Never commit
 credentials, account identifiers, order payloads, or captured broker data.
 
+## Codex skills
+
+- [`develop-broker-adapter`](skills/develop-broker-adapter/SKILL.md): scaffold,
+  implement, test, package, and document a new Broker SDK 1.x adapter.
+- [`convert-adapter-to-live`](skills/convert-adapter-to-live/SKILL.md): convert
+  an existing Paper adapter into a separate Live profile and install it into ATI
+  Local Runtime without activation or real-order verification.
+
 ## Disclaimer
 
 - This repository is intended only for software development, research,

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Develop Broker Adapter"
+  short_description: "Build a new isolated Broker SDK adapter package"
+  default_prompt: "Use $develop-broker-adapter to create a new broker adapter package with contract tests and accurate capabilities."

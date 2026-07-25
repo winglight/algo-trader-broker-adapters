@@ -1,0 +1,4 @@
+interface:
+  display_name: "Convert Adapter to Live"
+  short_description: "Convert and safely install a live broker adapter"
+  default_prompt: "Use $convert-adapter-to-live to convert an existing adapter into a separate live profile and install it without activating live trading."
