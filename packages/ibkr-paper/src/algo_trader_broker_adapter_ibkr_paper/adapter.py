@@ -284,7 +284,7 @@ class IBKRPaperAdapter:
         return BrokerCapabilities(
             adapter_name=self.adapter_id,
             environment="PAPER",
-            asset_classes={"STK", "FUT", "CRYPTO"},
+            asset_classes={"STK", "FUT"},
             order_types={"MKT", "LMT", "STP", "STP LMT"},
             time_in_force={"DAY", "GTC"},
             market_data_streams={"historical_bars", "realtime_price", "tick_by_tick"},
@@ -300,7 +300,6 @@ class IBKRPaperAdapter:
             symbol_examples={
                 "FUT": ["MNQ", "MES", "M2K"],
                 "STK": ["AAPL", "TSLA", "NVDA"],
-                "CRYPTO": ["BTCUSD", "ETHUSD"],
             },
         )
 
