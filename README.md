@@ -13,10 +13,11 @@ application's private `src` package.
 
 ## Adapter list
 
-| Adapter | Package and entry point | Intended use | Main capabilities | Limits |
-| --- | --- | --- | --- | --- |
-| IBKR Paper | `packages/ibkr-paper`; `ibkr_paper` | Develop and validate stock and futures workflows against an Interactive Brokers Paper account through IB Gateway | Account, positions and PnL; order submission/cancellation and reconciliation; historical and real-time market data; tick-by-tick data; scanner support; `MKT`, `LMT`, `STP`, and `STP LMT`; `DAY` and `GTC` | Paper only; no live trading, options, DOM, fractional quantities, or order replacement; requires an IBKR Paper account, IB Gateway, and any applicable market-data subscriptions |
-| Alpaca Paper | `packages/alpaca-paper`; `alpaca_paper` | Develop and validate US stock and ETF workflows against Alpaca Paper | Account, positions and orders; fill reconciliation; historical bars, snapshots, and live stock bars/trades/quotes; `MKT`, `LMT`, `STP`, and `STP LMT`; `DAY` and `GTC` | Paper only; whole shares only; no futures, options, crypto, extended-hours orders, order replacement, scanners, or market depth; data feed must be explicitly set to `iex` or `sip` and requires the corresponding entitlement |
+| Adapter | Package and entry point | Intended use | Supported trading products | Main capabilities | Limits |
+| --- | --- | --- | --- | --- | --- |
+| Sim | Built into the official Broker Runner image; `sim` | Run deterministic local development, demonstrations, strategy validation, and end-to-end tests without a broker account or external market-data connection | Stocks: `AAPL`, `MSFT`, `NVDA`, `AMZN`, `META`, `GOOGL`, `TSLA`, `AMD`, `JPM`, `SPY`; index futures: `ES`, `MES`, `NQ`, `MNQ`, `YM`, `MYM`, `RTY`, `M2K` | Simulated account, positions, PnL, orders, historical bars, real-time prices, and tick-by-tick data; `MKT`, `LMT`, `STP`, and `STP LMT`; `DAY` and `GTC`; configurable seed, initial cash, commission, and slippage | Simulation only; fixed instrument set and generated market data; no broker connectivity, options, DOM, fractional quantities, partial fills, scanners, or order replacement; results do not represent broker execution or live-market performance |
+| IBKR Paper | `packages/ibkr-paper`; `ibkr_paper` | Develop and validate workflows against an Interactive Brokers Paper account through IB Gateway | Stocks and futures | Account, positions and PnL; order submission/cancellation and reconciliation; historical and real-time market data; tick-by-tick data; scanner support; `MKT`, `LMT`, `STP`, and `STP LMT`; `DAY` and `GTC` | Paper only; no live trading, options, DOM, fractional quantities, or order replacement; requires an IBKR Paper account, IB Gateway, and any applicable market-data subscriptions |
+| Alpaca Paper | `packages/alpaca-paper`; `alpaca_paper` | Develop and validate workflows against Alpaca Paper | Whole-share US stocks and ETFs | Account, positions and orders; fill reconciliation; historical bars, snapshots, and live stock bars/trades/quotes; `MKT`, `LMT`, `STP`, and `STP LMT`; `DAY` and `GTC` | Paper only; no futures, options, crypto, fractional shares, extended-hours orders, order replacement, scanners, or market depth; data feed must be explicitly set to `iex` or `sip` and requires the corresponding entitlement |
 
 Capabilities are a compatibility boundary, not a promise that a broker will
 accept a particular symbol or order. Broker permissions, subscriptions, market
@@ -24,9 +25,12 @@ hours, exchange rules, and vendor outages still apply. See the
 [compatibility matrix](docs/compatibility-matrix.md) and each package README for
 the current version-specific details.
 
-Installing a package does not activate it. The host application must explicitly
-select the matching entry point and configuration. There is no automatic
-provider or market-data fallback.
+`sim` is part of the official Broker Runner image and is always installed; it is
+listed here because it is a selectable adapter, but its source package is not
+published from this repository. Installing an IBKR Paper or Alpaca Paper package
+does not activate it. The host application must explicitly select the matching
+entry point and configuration. There is no automatic provider or market-data
+fallback.
 
 ## Development
 
