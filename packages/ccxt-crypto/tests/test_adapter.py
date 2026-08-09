@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 from algo_trader_broker_adapter_ccxt_crypto import CCXTCryptoAdapter
-from algo_trader_broker_sdk import BrokerOrderError
+from algo_trader_broker_sdk import BrokerConnectionError, BrokerOrderError
 
 from .fakes import ORDER, FakeClient, settings
 
@@ -35,6 +35,23 @@ async def test_inactive_install_performs_no_exchange_io() -> None:
     adapter = CCXTCryptoAdapter(settings(public_data_enabled=False), backend=backend)
     await adapter.start()
     assert adapter.connection_state_snapshot().state == "installed"
+    assert backend.calls == []
+    await adapter.close()
+
+
+@pytest.mark.asyncio
+async def test_inactive_profile_endpoints_cannot_bypass_network_gates() -> None:
+    backend = FakeClient()
+    adapter = CCXTCryptoAdapter(settings(public_data_enabled=False), backend=backend)
+    await adapter.start()
+
+    with pytest.raises(BrokerConnectionError):
+        await adapter.market_metadata_v2()
+    with pytest.raises(BrokerConnectionError):
+        await adapter.request_market_snapshot({"symbol": "BTC/USDT"})
+    with pytest.raises(BrokerConnectionError):
+        await adapter.request_open_orders()
+
     assert backend.calls == []
     await adapter.close()
 
