@@ -8,15 +8,15 @@ import hashlib
 import importlib.metadata
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 from uuid import uuid4
-
 
 ROOT = Path(__file__).resolve().parents[1]
 IB_PACKAGE = ROOT / "packages" / "ibkr-paper"
 ALPACA_PACKAGE = ROOT / "packages" / "alpaca-paper"
+CCXT_CRYPTO_PACKAGE = ROOT / "packages" / "ccxt-crypto"
 
 
 def _version(distribution: str, default: str) -> str:
@@ -35,7 +35,7 @@ def main() -> int:
     output.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ)
     env.setdefault("SOURCE_DATE_EPOCH", "1784044800")
-    for package in (args.sdk_path.resolve(), IB_PACKAGE, ALPACA_PACKAGE):
+    for package in (args.sdk_path.resolve(), IB_PACKAGE, ALPACA_PACKAGE, CCXT_CRYPTO_PACKAGE):
         subprocess.run(
             [
                 sys.executable,
@@ -51,15 +51,38 @@ def main() -> int:
             check=True,
             env=env,
         )
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "download",
+            "--only-binary=:all:",
+            "--no-deps",
+            "--dest",
+            str(output),
+            "ccxt==4.5.56",
+        ],
+        check=True,
+        env=env,
+    )
 
     wheels = sorted(output.glob("*.whl"))
-    sums = []
+    sums: list[str] = []
+    digests: dict[str, str] = {}
     for wheel in wheels:
         digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
+        digests[wheel.name] = digest
         sums.append(f"{digest}  {wheel.name}")
     (output / "SHA256SUMS").write_text("\n".join(sums) + "\n", encoding="utf-8")
 
     namespace = f"https://github.com/winglight/algo-trader-broker-adapters/spdx/{uuid4()}"
+    ccxt_wheel = next(
+        (name for name in digests if name.lower().startswith("ccxt-4.5.56-")),
+        None,
+    )
+    if ccxt_wheel is None:
+        raise RuntimeError("the pinned ccxt==4.5.56 wheel was not downloaded")
     sbom = {
         "spdxVersion": "SPDX-2.3",
         "dataLicense": "CC0-1.0",
@@ -70,7 +93,11 @@ def main() -> int:
             "created": "2026-07-15T00:00:00Z",
             "creators": ["Tool: build_verified_artifacts.py"],
         },
-        "documentDescribes": ["SPDXRef-IBKRAdapter", "SPDXRef-AlpacaAdapter"],
+        "documentDescribes": [
+            "SPDXRef-IBKRAdapter",
+            "SPDXRef-AlpacaAdapter",
+            "SPDXRef-CCXTCryptoAdapter",
+        ],
         "packages": [
             {
                 "name": "algo-trader-broker-adapter-ibkr-paper",
@@ -95,6 +122,28 @@ def main() -> int:
                 "downloadLocation": "NOASSERTION",
                 "filesAnalyzed": False,
                 "licenseConcluded": "Apache-2.0",
+            },
+            {
+                "name": "algo-trader-broker-adapter-ccxt-crypto",
+                "SPDXID": "SPDXRef-CCXTCryptoAdapter",
+                "versionInfo": "0.1.0",
+                "downloadLocation": "NOASSERTION",
+                "filesAnalyzed": False,
+                "licenseConcluded": "Apache-2.0",
+            },
+            {
+                "name": "ccxt",
+                "SPDXID": "SPDXRef-CCXT",
+                "versionInfo": "4.5.56",
+                "downloadLocation": "https://pypi.org/project/ccxt/4.5.56/",
+                "filesAnalyzed": False,
+                "licenseConcluded": "MIT",
+                "checksums": [
+                    {
+                        "algorithm": "SHA256",
+                        "checksumValue": digests[ccxt_wheel],
+                    }
+                ],
             },
             {
                 "name": "alpaca-py",
@@ -133,6 +182,16 @@ def main() -> int:
                 "spdxElementId": "SPDXRef-IBKRAdapter",
                 "relationshipType": "DEPENDS_ON",
                 "relatedSpdxElement": "SPDXRef-IBAsync",
+            },
+            {
+                "spdxElementId": "SPDXRef-CCXTCryptoAdapter",
+                "relationshipType": "DEPENDS_ON",
+                "relatedSpdxElement": "SPDXRef-BrokerSDK",
+            },
+            {
+                "spdxElementId": "SPDXRef-CCXTCryptoAdapter",
+                "relationshipType": "DEPENDS_ON",
+                "relatedSpdxElement": "SPDXRef-CCXT",
             },
         ],
     }
