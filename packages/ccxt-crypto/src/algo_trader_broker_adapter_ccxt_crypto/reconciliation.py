@@ -8,6 +8,8 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
+from algo_trader_broker_sdk import BrokerConnectionError
+
 from .mapping import balance_payloads, fill, order_update, positions
 from .quantizer import canonical
 from .settings import CCXTCryptoSettings
@@ -25,12 +27,17 @@ class Reconciler:
             self._validate_balance_boundary(balance)
             orders: list[Mapping[str, Any]] = []
             trades: list[Mapping[str, Any]] = []
-            for symbol in self.settings.allowed_symbols:
-                open_orders, closed_orders, symbol_trades = await asyncio.gather(
-                    self.client.fetch_open_orders(symbol),
-                    self.client.fetch_closed_orders(symbol),
-                    self.client.fetch_my_trades(symbol),
+            symbol_snapshots = await asyncio.gather(
+                *(
+                    asyncio.gather(
+                        self.client.fetch_open_orders(symbol),
+                        self.client.fetch_closed_orders(symbol),
+                        self.client.fetch_my_trades(symbol),
+                    )
+                    for symbol in self.settings.allowed_symbols
                 )
+            )
+            for open_orders, closed_orders, symbol_trades in symbol_snapshots:
                 by_id: dict[str, Mapping[str, Any]] = {}
                 for order in [*open_orders, *closed_orders]:
                     order_id = str(order.get("id") or "").strip()
@@ -107,9 +114,15 @@ class Reconciler:
             liability = Decimal(str(item.get("liab") or "0"))
             total = Decimal(str(item.get("cashBal") or "0"))
             if liability != 0:
-                raise ValueError(f"OKX Spot liability must be zero: {currency}")
+                raise BrokerConnectionError(
+                    "OKX Demo Spot account contains a non-zero liability",
+                    details={"currency": currency},
+                )
             if currency not in {"BTC", "ETH", "USDT"} and total != 0:
-                raise ValueError(f"unexpected non-zero OKX asset balance: {currency}")
+                raise BrokerConnectionError(
+                    "OKX Demo account contains a non-zero asset outside BTC/ETH/USDT",
+                    details={"currency": currency},
+                )
 
     @staticmethod
     def _average_prices(trades: list[Mapping[str, Any]]) -> dict[str, Decimal]:

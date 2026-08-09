@@ -87,8 +87,8 @@ class FakeClient:
         self.closed = False
         self._block = asyncio.Event()
 
-    async def load_markets(self):
-        self.calls.append(("load_markets", None))
+    async def load_markets(self, symbols=None):
+        self.calls.append(("load_markets", symbols))
         return MARKETS
 
     async def fetch_time(self):

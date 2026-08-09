@@ -150,9 +150,19 @@ class CCXTCryptoAdapter:
                         details={"clock_skew_ms": skew},
                     )
             if self._settings.private_read_enabled:
+                fee_payloads = await asyncio.gather(
+                    *(
+                        self._client.fetch_trading_fee(symbol)
+                        for symbol in self._settings.allowed_symbols
+                    )
+                )
                 self._reported_fee_tiers = {
-                    symbol: reported_fee_tier(await self._client.fetch_trading_fee(symbol))
-                    for symbol in self._settings.allowed_symbols
+                    symbol: reported_fee_tier(payload)
+                    for symbol, payload in zip(
+                        self._settings.allowed_symbols,
+                        fee_payloads,
+                        strict=True,
+                    )
                 }
                 snapshot = await self._reconciler.snapshot()
                 self._balance = await self._client.fetch_balance()
@@ -259,7 +269,7 @@ class CCXTCryptoAdapter:
         }
 
     async def _load_and_validate_markets(self) -> None:
-        markets = await self._client.load_markets()
+        markets = await self._client.load_markets(self._settings.allowed_symbols)
         rules: dict[str, MarketRules] = {}
         for symbol in self._settings.allowed_symbols:
             market = markets.get(symbol)

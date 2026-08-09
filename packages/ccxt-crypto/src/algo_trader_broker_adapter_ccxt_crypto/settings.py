@@ -76,6 +76,7 @@ class CCXTCryptoSettings:
     trading_enabled: bool
     market_order_enabled: bool
     rest_max_concurrency: int
+    request_timeout_ms: int
     reconcile_interval_seconds: int
     full_reconcile_interval_seconds: int
     clock_skew_block_ms: int
@@ -146,6 +147,9 @@ class CCXTCryptoSettings:
             trading_enabled=trading_enabled,
             market_order_enabled=market_enabled,
             rest_max_concurrency=_int(settings, "rest_max_concurrency", 4, 1, 4),
+            request_timeout_ms=_int(
+                settings, "request_timeout_ms", 30000, 5000, 60000
+            ),
             reconcile_interval_seconds=_int(
                 settings, "reconcile_interval_seconds", 60, 15, 3600
             ),
@@ -177,6 +181,7 @@ class CCXTCryptoSettings:
             "trading_enabled": self.trading_enabled,
             "market_order_enabled": self.market_order_enabled,
             "rest_max_concurrency": self.rest_max_concurrency,
+            "request_timeout_ms": self.request_timeout_ms,
             "reconcile_interval_seconds": self.reconcile_interval_seconds,
             "full_reconcile_interval_seconds": self.full_reconcile_interval_seconds,
             "clock_skew_block_ms": self.clock_skew_block_ms,

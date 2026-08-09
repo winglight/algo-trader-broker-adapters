@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urlparse
 
-from algo_trader_broker_sdk import BrokerConnectionError, BrokerContractError
+from algo_trader_broker_sdk import BrokerConnectionError, BrokerContractError, BrokerError
 
 from .settings import CCXTCryptoSettings
 
@@ -16,16 +16,37 @@ _DEMO_WS_HOST = "wspap.okx.com"
 _PRODUCTION_WS_HOST = "ws.okx.com"
 
 
-def _hosts(value: Any) -> set[str]:
+def _exchange_config(settings: CCXTCryptoSettings) -> dict[str, Any]:
+    return {
+        "enableRateLimit": True,
+        "timeout": settings.request_timeout_ms,
+        "options": {
+            "defaultType": "spot",
+            "fetchMarkets": {"types": ["spot"]},
+        },
+        **(
+            {
+                "apiKey": settings.api_key,
+                "secret": settings.secret,
+                "password": settings.passphrase,
+            }
+            if settings.api_key
+            else {}
+        ),
+    }
+
+
+def _hosts(value: Any, *, hostname: str = "") -> set[str]:
     result: set[str] = set()
     if isinstance(value, Mapping):
         for item in value.values():
-            result.update(_hosts(item))
+            result.update(_hosts(item, hostname=hostname))
     elif isinstance(value, (list, tuple, set)):
         for item in value:
-            result.update(_hosts(item))
+            result.update(_hosts(item, hostname=hostname))
     elif isinstance(value, str) and "://" in value:
-        host = (urlparse(value).hostname or "").lower()
+        resolved = value.replace("{hostname}", hostname) if hostname else value
+        host = (urlparse(resolved).hostname or "").lower()
         if host:
             result.add(host)
     return result
@@ -42,19 +63,7 @@ class OKXDemoClient:
                 import ccxt.pro as ccxtpro
             except ImportError as exc:  # pragma: no cover - installation failure path
                 raise BrokerConnectionError("ccxt.pro is not installed") from exc
-            config: dict[str, Any] = {
-                "enableRateLimit": True,
-                "options": {"defaultType": "spot"},
-            }
-            if settings.api_key:
-                config.update(
-                    {
-                        "apiKey": settings.api_key,
-                        "secret": settings.secret,
-                        "password": settings.passphrase,
-                    }
-                )
-            exchange = ccxtpro.okx(config)
+            exchange = ccxtpro.okx(_exchange_config(settings))
         self.exchange = exchange
         self.exchange.set_sandbox_mode(True)
         self._verify_sandbox()
@@ -75,20 +84,35 @@ class OKXDemoClient:
         if simulated != "1":
             raise BrokerContractError("OKX Demo REST header x-simulated-trading=1 is required")
         urls = getattr(self.exchange, "urls", {}) or {}
-        api_hosts = _hosts(urls.get("api") if isinstance(urls, Mapping) else {})
+        hostname = str(getattr(self.exchange, "hostname", "") or "").strip().lower()
+        api_hosts = _hosts(
+            urls.get("api") if isinstance(urls, Mapping) else {},
+            hostname=hostname,
+        )
         rest_hosts = api_hosts & _REST_HOSTS
         if not rest_hosts:
             raise BrokerContractError(
                 "CCXT OKX REST host is outside the approved allowlist",
                 details={"approved": sorted(_REST_HOSTS)},
             )
-        test_hosts = _hosts(urls.get("test") if isinstance(urls, Mapping) else {})
+        test_hosts = _hosts(
+            urls.get("test") if isinstance(urls, Mapping) else {},
+            hostname=hostname,
+        )
         if _DEMO_WS_HOST not in test_hosts or _PRODUCTION_WS_HOST in test_hosts:
             raise BrokerContractError("OKX Demo WebSocket host must be wspap.okx.com")
 
     async def _call(self, method: str, *args: Any, **kwargs: Any) -> Any:
         async with self._semaphore:
-            return await getattr(self.exchange, method)(*args, **kwargs)
+            try:
+                return await getattr(self.exchange, method)(*args, **kwargs)
+            except BrokerError:
+                raise
+            except Exception as exc:
+                raise BrokerConnectionError(
+                    f"OKX Demo {method} request failed",
+                    details={"operation": method, "error_type": type(exc).__name__},
+                ) from exc
 
     async def _read(self, method: str, *args: Any, **kwargs: Any) -> Any:
         """Bounded retry for OKX rate limiting; never used by mutations."""
@@ -102,8 +126,19 @@ class OKXDemoClient:
                 await asyncio.sleep(0.25 * (2**attempt))
         raise AssertionError("unreachable")
 
-    async def load_markets(self) -> Mapping[str, Any]:
-        return await self._read("load_markets")
+    async def load_markets(self, symbols: tuple[str, ...]) -> Mapping[str, Any]:
+        requested = tuple(dict.fromkeys(symbols))
+        batches = await asyncio.gather(
+            *(
+                self._read(
+                    "fetch_markets",
+                    {"instId": symbol.replace("/", "-")},
+                )
+                for symbol in requested
+            )
+        )
+        markets = [market for batch in batches for market in batch]
+        return self.exchange.set_markets(markets)
 
     async def fetch_time(self) -> int:
         return int(await self._read("fetch_time"))
@@ -188,8 +223,15 @@ class OKXDemoClient:
 
     def sandbox_evidence(self) -> dict[str, Any]:
         urls = getattr(self.exchange, "urls", {}) or {}
-        api_hosts = _hosts(urls.get("api") if isinstance(urls, Mapping) else {})
-        test_hosts = _hosts(urls.get("test") if isinstance(urls, Mapping) else {})
+        hostname = str(getattr(self.exchange, "hostname", "") or "").strip().lower()
+        api_hosts = _hosts(
+            urls.get("api") if isinstance(urls, Mapping) else {},
+            hostname=hostname,
+        )
+        test_hosts = _hosts(
+            urls.get("test") if isinstance(urls, Mapping) else {},
+            hostname=hostname,
+        )
         return {
             "sandboxMode": True,
             "simulatedTradingHeader": True,
