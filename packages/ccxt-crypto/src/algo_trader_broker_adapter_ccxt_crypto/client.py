@@ -23,6 +23,7 @@ def _exchange_config(settings: CCXTCryptoSettings) -> dict[str, Any]:
         "options": {
             "defaultType": "spot",
             "fetchMarkets": {"types": ["spot"]},
+            "adjustForTimeDifference": True,
         },
         **(
             {

@@ -73,6 +73,7 @@ def test_ccxt_market_discovery_is_restricted_to_spot() -> None:
     assert config["options"] == {
         "defaultType": "spot",
         "fetchMarkets": {"types": ["spot"]},
+        "adjustForTimeDifference": True,
     }
     assert config["timeout"] == 30000
 
