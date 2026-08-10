@@ -695,7 +695,7 @@ class CCXTCryptoAdapter:
                 self._mark_private_stream_ready("balance")
                 if self._account_update_handler is not None:
                     await self._account_update_handler(
-                        account_summary(self._balance, account_id="okx-demo")
+                        await self._account_summary_items(account_id="okx-demo")
                     )
                 if self._position_update_handler is not None:
                     await self._position_update_handler(
@@ -781,11 +781,32 @@ class CCXTCryptoAdapter:
             except Exception as exc:  # noqa: BLE001 - bounded provider recovery loop
                 self._reconnect_reason = f"reconciliation_failed:{type(exc).__name__}"
 
+    async def _account_summary_items(self, *, account_id: str) -> list[AccountSummaryItem]:
+        symbols = ("BTC/USDT", "ETH/USDT")
+        tickers = await asyncio.gather(
+            *(self._client.fetch_ticker(symbol) for symbol in symbols)
+        )
+        prices_in_usdt: dict[str, Decimal] = {"USDT": Decimal(1)}
+        for symbol, ticker in zip(symbols, tickers, strict=True):
+            raw_price = ticker.get("last") or ticker.get("close")
+            price = Decimal(str(raw_price or "0"))
+            if price <= 0:
+                raise BrokerConnectionError(
+                    f"OKX Demo returned no valuation price for {symbol}",
+                    details={"symbol": symbol},
+                )
+            prices_in_usdt[symbol.split("/", 1)[0]] = price
+        return account_summary(
+            self._balance,
+            account_id=account_id,
+            prices_in_usdt=prices_in_usdt,
+        )
+
     async def get_account_summary(self, account: str | None = None) -> list[AccountSummaryItem]:
         await self.ensure_connected()
         self._require_private_read()
         self._balance = await self._client.fetch_balance()
-        return account_summary(self._balance, account_id=account or "okx-demo")
+        return await self._account_summary_items(account_id=account or "okx-demo")
 
     async def get_account_pnl(
         self,

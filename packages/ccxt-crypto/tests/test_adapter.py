@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 
 import pytest
 from algo_trader_broker_adapter_ccxt_crypto import CCXTCryptoAdapter
 from algo_trader_broker_sdk import BrokerConnectionError, BrokerOrderError
 
-from .fakes import ORDER, FakeClient, settings
+from .fakes import BALANCE, ORDER, FakeClient, settings
 
 
 def order_payload(**overrides):
@@ -92,6 +93,51 @@ async def test_public_stream_methods_follow_runner_awaitable_contract(caplog) ->
     assert "broker.crypto.metadata_accepted" in events
     assert events.count("broker.crypto.public_stream_ready") == 3
     assert "broker.crypto.readiness_changed" in events
+
+    await adapter.close()
+
+
+@pytest.mark.asyncio
+async def test_account_summary_aggregates_assets_into_stable_valuation_units() -> None:
+    class ValuedBalanceClient(FakeClient):
+        async def fetch_balance(self):
+            balance = deepcopy(BALANCE)
+            for item in balance["info"]["data"][0]["details"]:
+                if item["ccy"] == "BTC":
+                    item.update({"cashBal": "1", "availBal": "0.5", "eqUsd": "9900"})
+                if item["ccy"] == "ETH":
+                    item.update({"cashBal": "2", "availBal": "1", "eqUsd": "19800"})
+                if item["ccy"] == "USDT":
+                    item.update({"eqUsd": "999"})
+            return balance
+
+    backend = ValuedBalanceClient()
+    adapter = CCXTCryptoAdapter(
+        settings(
+            private_read_enabled=True,
+            api_key="key",
+            secret="secret",
+            passphrase="passphrase",
+        ),
+        backend=backend,
+    )
+    await adapter.start()
+
+    summary = await adapter.get_account_summary()
+    by_tag = {item.tag: item for item in summary}
+
+    assert len(by_tag) == len(summary)
+    assert by_tag["NetLiquidation"].currency == "USD"
+    assert by_tag["NetLiquidation"].value == "30699"
+    assert by_tag["AvailableFunds"].value == "15849"
+    assert by_tag["NetLiquidationUSDT"].currency == "USDT"
+    assert by_tag["NetLiquidationUSDT"].value == "31000"
+    assert by_tag["NetLiquidationUSDC"].currency == "USDC"
+    assert by_tag["NetLiquidationUSDC"].value == "30699"
+    assert {value for name, value in backend.calls if name == "fetch_ticker"} == {
+        "BTC/USDT",
+        "ETH/USDT",
+    }
 
     await adapter.close()
 

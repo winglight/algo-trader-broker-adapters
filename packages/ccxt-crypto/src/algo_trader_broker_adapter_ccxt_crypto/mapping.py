@@ -219,16 +219,85 @@ def positions(
     ]
 
 
-def account_summary(balance: Mapping[str, Any], *, account_id: str) -> list[AccountSummaryItem]:
-    result: list[AccountSummaryItem] = []
+def account_summary(
+    balance: Mapping[str, Any],
+    *,
+    account_id: str,
+    prices_in_usdt: Mapping[str, Decimal],
+) -> list[AccountSummaryItem]:
+    """Return one coherent account valuation instead of duplicate per-asset tags.
+
+    OKX reports one balance row per asset. Reusing ``CashBalance`` for every row
+    caused the account service to retain the first row's currency while the last
+    row overwrote its value. Phase 4 values the allowlisted Spot inventory in
+    USDT, with USD/USDC stable-unit views exposed explicitly for the dashboard.
+    """
+
+    total_usdt = Decimal(0)
+    available_usdt = Decimal(0)
+    total_usd = Decimal(0)
+    available_usd = Decimal(0)
     for currency, item in _currency_records(balance):
-        if currency in {"BTC", "ETH", "USDT"}:
-            result.extend(
-                (
-                    AccountSummaryItem(account_id, "CashBalance", canonical(decimal(item.get("cashBal"))), currency),
-                    AccountSummaryItem(account_id, "AvailableFunds", canonical(decimal(item.get("availBal"))), currency),
-                )
+        if currency not in {"BTC", "ETH", "USDT"}:
+            continue
+        price = prices_in_usdt.get(currency)
+        cash = decimal(item.get("cashBal"))
+        available = decimal(item.get("availBal"))
+        if price is None:
+            if cash or available:
+                raise ValueError(f"missing USDT valuation price for {currency}")
+            price = Decimal(0)
+        usdt_value = cash * price
+        available_usdt_value = available * price
+        total_usdt += usdt_value
+        available_usdt += available_usdt_value
+
+        raw_usd_value = item.get("eqUsd")
+        usd_value = decimal(raw_usd_value) if raw_usd_value not in (None, "") else usdt_value
+        total_usd += usd_value
+        if cash:
+            available_usd += usd_value * available / cash
+        elif not available:
+            available_usd += Decimal(0)
+        else:
+            # A provider row with available funds but no cash balance is
+            # inconsistent; retain the bounded USDT fallback rather than
+            # inventing a division-based FX rate.
+            available_usd += available_usdt_value
+
+    # USD uses OKX's per-asset eqUsd when available. USDC follows the reviewed
+    # 1:1 USD stable-unit accounting policy, so no unapproved FX instrument is
+    # queried by the adapter.
+    def values(total: Decimal, available: Decimal) -> dict[str, Decimal]:
+        return {
+            "NetLiquidation": total,
+            "TotalCashValue": total,
+            "CashBalance": total,
+            "AvailableFunds": available,
+            "InitialMarginRequirement": Decimal(0),
+            "MaintenanceMargin": Decimal(0),
+            "RealizedPnL": Decimal(0),
+            "UnrealizedPnL": Decimal(0),
+        }
+
+    usd_values = values(total_usd, available_usd)
+    result = [
+        AccountSummaryItem(account_id, tag, canonical(amount), "USD")
+        for tag, amount in usd_values.items()
+    ]
+    for currency, currency_values in (
+        ("USDT", values(total_usdt, available_usdt)),
+        ("USDC", usd_values),
+    ):
+        result.extend(
+            AccountSummaryItem(
+                account_id,
+                f"{tag}{currency}",
+                canonical(amount),
+                currency,
             )
+            for tag, amount in currency_values.items()
+        )
     return result
 
 
