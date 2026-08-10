@@ -5,12 +5,12 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from algo_trader_broker_sdk import BrokerConnectionError
 
-from .mapping import balance_payloads, fill, order_update, positions
+from .mapping import balance_payloads, fill, instrument_id, order_update, positions
 from .quantizer import canonical
 from .settings import CCXTCryptoSettings
 
@@ -20,6 +20,7 @@ class Reconciler:
         self.client = client
         self.settings = settings
         self._lock = asyncio.Lock()
+        self._external_asset_baselines: dict[str, Decimal] = {}
 
     async def snapshot(self) -> dict[str, Any]:
         async with self._lock:
@@ -77,10 +78,29 @@ class Reconciler:
                 if quantity == 0:
                     continue
                 average = average_by_instrument.get(item["instrumentId"])
+                uses_external_baseline = average is None
                 if average is None:
-                    raise ValueError(
-                        f"non-zero OKX Demo balance has no reconciled fill basis: {item['instrumentId']}"
+                    average = self._external_asset_baselines.get(item["instrumentId"])
+                if average is None:
+                    symbol = next(
+                        (
+                            candidate
+                            for candidate in self.settings.allowed_symbols
+                            if instrument_id(candidate) == item["instrumentId"]
+                        ),
+                        None,
                     )
+                    if symbol is None:
+                        raise BrokerConnectionError(
+                            "OKX asset balance has no supported instrument mapping",
+                            details={"instrument_id": item["instrumentId"]},
+                        )
+                    ticker = await self.client.fetch_ticker(symbol)
+                    average = self._baseline_price(ticker)
+                    self._external_asset_baselines[item["instrumentId"]] = average
+                if uses_external_baseline:
+                    item["positionGroupId"] = "external-asset-baseline"
+                    item["markPriceDecimal"] = canonical(average)
                 item["averagePriceDecimal"] = canonical(average)
 
             return {
@@ -112,17 +132,9 @@ class Reconciler:
                 continue
             currency = str(item.get("ccy") or "").upper()
             liability = Decimal(str(item.get("liab") or "0"))
-            total = Decimal(str(item.get("cashBal") or "0"))
             if liability != 0:
                 raise BrokerConnectionError(
                     "OKX Demo Spot account contains a non-zero liability",
-                    details={"currency": currency},
-                )
-            # OKX Demo may provision a non-tradable OKB balance by default.
-            # Keep rejecting every other asset outside the approved universe.
-            if currency not in {"BTC", "ETH", "USDT", "OKB"} and total != 0:
-                raise BrokerConnectionError(
-                    "OKX Demo account contains a non-zero asset outside BTC/ETH/USDT",
                     details={"currency": currency},
                 )
 
@@ -153,6 +165,26 @@ class Reconciler:
             for key, quantity in quantities.items()
             if quantity > 0 and costs.get(key, Decimal(0)) > 0
         }
+
+    @staticmethod
+    def _baseline_price(ticker: Mapping[str, Any]) -> Decimal:
+        for key in ("last", "close"):
+            try:
+                value = Decimal(str(ticker.get(key) or "0"))
+            except InvalidOperation:
+                continue
+            if value.is_finite() and value > 0:
+                return value
+        try:
+            bid = Decimal(str(ticker.get("bid") or "0"))
+            ask = Decimal(str(ticker.get("ask") or "0"))
+        except InvalidOperation as exc:
+            raise BrokerConnectionError(
+                "OKX asset balance has no positive valuation baseline"
+            ) from exc
+        if bid.is_finite() and ask.is_finite() and bid > 0 and ask > 0:
+            return (bid + ask) / Decimal(2)
+        raise BrokerConnectionError("OKX asset balance has no positive valuation baseline")
 
 
 def clock_skew_ms(exchange_time_ms: int) -> int:
