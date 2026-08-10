@@ -56,19 +56,34 @@ def _hosts(value: Any, *, hostname: str = "") -> set[str]:
 
 
 class OKXDemoClient:
-    """Owns one exchange instance and applies all sandbox guards before I/O."""
+    """Own isolated REST/WS exchanges and apply sandbox guards before I/O."""
 
-    def __init__(self, settings: CCXTCryptoSettings, *, exchange: Any | None = None) -> None:
+    def __init__(
+        self,
+        settings: CCXTCryptoSettings,
+        *,
+        exchange: Any | None = None,
+        ws_exchange: Any | None = None,
+    ) -> None:
         self.settings = settings
         self._semaphore = asyncio.Semaphore(settings.rest_max_concurrency)
         if exchange is None:
             try:
+                import ccxt.async_support as ccxtasync
                 import ccxt.pro as ccxtpro
             except ImportError as exc:  # pragma: no cover - installation failure path
-                raise BrokerConnectionError("ccxt.pro is not installed") from exc
-            exchange = ccxtpro.okx(_exchange_config(settings))
+                raise BrokerConnectionError("ccxt async/pro is not installed") from exc
+            exchange = ccxtasync.okx(_exchange_config(settings))
+            ws_exchange = ccxtpro.okx(_exchange_config(settings))
+        elif ws_exchange is None:
+            # Preserve the narrow fake-injection contract used by unit tests and
+            # downstream adapters. Production always constructs isolated clients.
+            ws_exchange = exchange
         self.exchange = exchange
+        self.ws_exchange = ws_exchange
         self.exchange.set_sandbox_mode(True)
+        if self.ws_exchange is not self.exchange:
+            self.ws_exchange.set_sandbox_mode(True)
         self._verify_sandbox()
         LOGGER.warning(
             "OKX Demo sandbox host and simulated-trading boundary verified",
@@ -81,10 +96,11 @@ class OKXDemoClient:
         )
 
     def _verify_sandbox(self) -> None:
-        options = getattr(self.exchange, "options", {}) or {}
+        for boundary, exchange in (("REST", self.exchange), ("WebSocket", self.ws_exchange)):
+            options = getattr(exchange, "options", {}) or {}
+            if options.get("sandboxMode") is not True:
+                raise BrokerContractError(f"CCXT OKX {boundary} sandboxMode was not enabled")
         headers = getattr(self.exchange, "headers", {}) or {}
-        if options.get("sandboxMode") is not True:
-            raise BrokerContractError("CCXT OKX sandboxMode was not enabled")
         simulated = next(
             (
                 str(value)
@@ -107,9 +123,11 @@ class OKXDemoClient:
                 "CCXT OKX REST host is outside the approved allowlist",
                 details={"approved": sorted(_REST_HOSTS)},
             )
+        ws_urls = getattr(self.ws_exchange, "urls", {}) or {}
+        ws_hostname = str(getattr(self.ws_exchange, "hostname", "") or "").strip().lower()
         test_hosts = _hosts(
-            urls.get("test") if isinstance(urls, Mapping) else {},
-            hostname=hostname,
+            ws_urls.get("test") if isinstance(ws_urls, Mapping) else {},
+            hostname=ws_hostname,
         )
         if _DEMO_WS_HOST not in test_hosts or _PRODUCTION_WS_HOST in test_hosts:
             raise BrokerContractError("OKX Demo WebSocket host must be wspap.okx.com")
@@ -178,7 +196,10 @@ class OKXDemoClient:
             )
         )
         markets = [market for batch in batches for market in batch]
-        return self.exchange.set_markets(markets)
+        result = self.exchange.set_markets(markets)
+        if self.ws_exchange is not self.exchange:
+            self.ws_exchange.set_markets(markets)
+        return result
 
     async def fetch_time(self) -> int:
         return int(await self._read("fetch_time"))
@@ -241,25 +262,27 @@ class OKXDemoClient:
         return list(await self._read("fetch_my_trades", symbol, None, 100))
 
     async def watch_ticker(self, symbol: str) -> Mapping[str, Any]:
-        return await self.exchange.watch_ticker(symbol)
+        return await self.ws_exchange.watch_ticker(symbol)
 
     async def watch_trades(self, symbol: str) -> list[Mapping[str, Any]]:
-        return list(await self.exchange.watch_trades(symbol))
+        return list(await self.ws_exchange.watch_trades(symbol))
 
     async def watch_ohlcv(self, symbol: str, timeframe: str) -> list[list[Any]]:
-        return list(await self.exchange.watch_ohlcv(symbol, timeframe))
+        return list(await self.ws_exchange.watch_ohlcv(symbol, timeframe))
 
     async def watch_orders(self) -> list[Mapping[str, Any]]:
-        return list(await self.exchange.watch_orders())
+        return list(await self.ws_exchange.watch_orders())
 
     async def watch_my_trades(self) -> list[Mapping[str, Any]]:
-        return list(await self.exchange.watch_my_trades())
+        return list(await self.ws_exchange.watch_my_trades())
 
     async def watch_balance(self) -> Mapping[str, Any]:
-        return await self.exchange.watch_balance({"type": "spot"})
+        return await self.ws_exchange.watch_balance({"type": "spot"})
 
     async def close(self) -> None:
         await self.exchange.close()
+        if self.ws_exchange is not self.exchange:
+            await self.ws_exchange.close()
 
     def sandbox_evidence(self) -> dict[str, Any]:
         urls = getattr(self.exchange, "urls", {}) or {}
@@ -268,9 +291,11 @@ class OKXDemoClient:
             urls.get("api") if isinstance(urls, Mapping) else {},
             hostname=hostname,
         )
+        ws_urls = getattr(self.ws_exchange, "urls", {}) or {}
+        ws_hostname = str(getattr(self.ws_exchange, "hostname", "") or "").strip().lower()
         test_hosts = _hosts(
-            urls.get("test") if isinstance(urls, Mapping) else {},
-            hostname=hostname,
+            ws_urls.get("test") if isinstance(ws_urls, Mapping) else {},
+            hostname=ws_hostname,
         )
         return {
             "sandboxMode": True,

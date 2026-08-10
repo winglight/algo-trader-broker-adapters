@@ -26,11 +26,15 @@ class FakeExchange:
             "test": {"ws": test_ws},
         }
         self.sandbox_calls = 0
+        self.closed = False
 
     def set_sandbox_mode(self, enabled):
         self.sandbox_calls += 1
         self.options["sandboxMode"] = enabled
         self.headers["x-simulated-trading"] = "1"
+
+    async def close(self):
+        self.closed = True
 
 
 class NarrowMarketsExchange(FakeExchange):
@@ -73,6 +77,26 @@ def test_client_enables_and_verifies_okx_demo_before_io(caplog) -> None:
         getattr(record, "event", None) == "broker.crypto.sandbox_host_verified"
         for record in caplog.records
     )
+
+
+def test_client_isolates_rest_and_websocket_boundaries() -> None:
+    rest_exchange = FakeExchange()
+    websocket_exchange = FakeExchange()
+    client = OKXDemoClient(
+        parsed_settings(),
+        exchange=rest_exchange,
+        ws_exchange=websocket_exchange,
+    )
+
+    assert client.exchange is rest_exchange
+    assert client.ws_exchange is websocket_exchange
+    assert rest_exchange.sandbox_calls == 1
+    assert websocket_exchange.sandbox_calls == 1
+
+    asyncio.run(client.close())
+
+    assert rest_exchange.closed is True
+    assert websocket_exchange.closed is True
 
 
 def test_read_rate_limit_is_logged_and_retried(caplog) -> None:
