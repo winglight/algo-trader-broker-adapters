@@ -107,6 +107,30 @@ class FakeClient:
             "timestamp": int(datetime.now(UTC).timestamp() * 1000),
         }
 
+    async def watch_ticker(self, symbol):
+        self.calls.append(("watch_ticker", symbol))
+        return {
+            "bid": "9999",
+            "ask": "10001",
+            "last": "10000",
+            "close": "9998",
+            "timestamp": int(datetime.now(UTC).timestamp() * 1000),
+        }
+
+    async def watch_trades(self, symbol):
+        self.calls.append(("watch_trades", symbol))
+        return [
+            {
+                "price": "10000",
+                "amount": "0.001",
+                "timestamp": int(datetime.now(UTC).timestamp() * 1000),
+            }
+        ]
+
+    async def watch_ohlcv(self, symbol, timeframe):
+        self.calls.append(("watch_ohlcv", (symbol, timeframe)))
+        return [[1786262400000, "1", "2", "0.5", "1.5", "10"]]
+
     async def fetch_trading_fee(self, symbol):
         self.calls.append(("fetch_trading_fee", symbol))
         return {"maker": "0.0008", "taker": "0.001"}

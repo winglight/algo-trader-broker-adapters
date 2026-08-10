@@ -57,6 +57,35 @@ async def test_inactive_profile_endpoints_cannot_bypass_network_gates() -> None:
 
 
 @pytest.mark.asyncio
+async def test_public_stream_methods_follow_runner_awaitable_contract() -> None:
+    backend = FakeClient()
+    adapter = CCXTCryptoAdapter(settings(), backend=backend)
+    await adapter.start()
+
+    ticker_stream = await adapter.stream_real_time_price(
+        {"symbol": "BTC/USDT"}, snapshot=True
+    )
+    ticker = await anext(ticker_stream)
+    assert ticker.symbol == "BTC/USDT"
+    assert ticker.last == 10000.0
+
+    trade_stream = await adapter.stream_tick_by_tick_data(
+        {"symbol": "BTC/USDT"}, tick_type="Last", number_of_ticks=1
+    )
+    trade = await anext(trade_stream)
+    assert trade.price == 10000.0
+    assert trade.size == 0.001
+
+    bar_stream = await adapter.stream_historical_bars(
+        {"symbol": "BTC/USDT"}, bar_size="1 min"
+    )
+    bar = await anext(bar_stream)
+    assert bar.close == 1.5
+
+    await adapter.close()
+
+
+@pytest.mark.asyncio
 async def test_market_order_uses_base_quantity_cash_and_client_identity() -> None:
     backend = FakeClient()
     adapter = CCXTCryptoAdapter(

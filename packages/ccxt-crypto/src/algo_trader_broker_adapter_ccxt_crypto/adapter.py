@@ -784,10 +784,14 @@ class CCXTCryptoAdapter:
         timeframe = {"1 min": "1m", "5 mins": "5m", "1 hour": "1h", "1 day": "1d"}.get(bar_size)
         if symbol not in self._settings.allowed_symbols or timeframe is None:
             raise unsupported("requested historical bar stream")
-        while True:
-            rows = await self._client.watch_ohlcv(symbol, timeframe)
-            if rows:
-                yield self._bar(rows[-1])
+
+        async def iterator() -> AsyncIterator[HistoricalBar]:
+            while True:
+                rows = await self._client.watch_ohlcv(symbol, timeframe)
+                if rows:
+                    yield self._bar(rows[-1])
+
+        return iterator()
 
     async def stream_real_time_price(
         self, contract: Mapping[str, Any], *, snapshot: bool = False
@@ -797,19 +801,23 @@ class CCXTCryptoAdapter:
         symbol = str(contract.get("symbol") or "").upper()
         if symbol not in self._settings.allowed_symbols:
             raise unsupported("non-allowlisted instruments")
-        while True:
-            ticker = await self._client.watch_ticker(symbol)
-            yield RealTimePrice(
-                symbol=symbol,
-                bid=float(ticker["bid"]) if ticker.get("bid") is not None else None,
-                ask=float(ticker["ask"]) if ticker.get("ask") is not None else None,
-                last=float(ticker["last"]) if ticker.get("last") is not None else None,
-                last_size=None,
-                close=float(ticker["close"]) if ticker.get("close") is not None else None,
-                timestamp=datetime.fromisoformat(timestamp(ticker.get("timestamp"))),
-            )
-            if snapshot:
-                return
+
+        async def iterator() -> AsyncIterator[RealTimePrice]:
+            while True:
+                ticker = await self._client.watch_ticker(symbol)
+                yield RealTimePrice(
+                    symbol=symbol,
+                    bid=float(ticker["bid"]) if ticker.get("bid") is not None else None,
+                    ask=float(ticker["ask"]) if ticker.get("ask") is not None else None,
+                    last=float(ticker["last"]) if ticker.get("last") is not None else None,
+                    last_size=None,
+                    close=float(ticker["close"]) if ticker.get("close") is not None else None,
+                    timestamp=datetime.fromisoformat(timestamp(ticker.get("timestamp"))),
+                )
+                if snapshot:
+                    return
+
+        return iterator()
 
     async def stream_tick_by_tick_data(
         self,
@@ -826,18 +834,22 @@ class CCXTCryptoAdapter:
         symbol = str(contract.get("symbol") or "").upper()
         if symbol not in self._settings.allowed_symbols:
             raise unsupported("non-allowlisted instruments")
-        emitted = 0
-        while number_of_ticks <= 0 or emitted < number_of_ticks:
-            for trade in await self._client.watch_trades(symbol):
-                yield TickByTickLast(
-                    time=datetime.fromisoformat(timestamp(trade.get("timestamp"))),
-                    price=float(trade.get("price") or 0),
-                    size=float(trade.get("amount") or 0),
-                    exchange="OKX",
-                )
-                emitted += 1
-                if number_of_ticks > 0 and emitted >= number_of_ticks:
-                    return
+
+        async def iterator() -> AsyncIterator[TickByTickLast]:
+            emitted = 0
+            while number_of_ticks <= 0 or emitted < number_of_ticks:
+                for trade in await self._client.watch_trades(symbol):
+                    yield TickByTickLast(
+                        time=datetime.fromisoformat(timestamp(trade.get("timestamp"))),
+                        price=float(trade.get("price") or 0),
+                        size=float(trade.get("amount") or 0),
+                        exchange="OKX",
+                    )
+                    emitted += 1
+                    if number_of_ticks > 0 and emitted >= number_of_ticks:
+                        return
+
+        return iterator()
 
     async def get_historical_ticks(self, *args: Any, **kwargs: Any) -> list[HistoricalTickBidAsk | HistoricalTickLast]:
         raise unsupported("historical ticks")
