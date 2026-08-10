@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import logging
 import random
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
 from contextlib import suppress
@@ -51,6 +52,7 @@ _SYMBOL_BY_INSTRUMENT = {
     "crypto-spot:BTC-USDT:OKX": "BTC/USDT",
     "crypto-spot:ETH-USDT:OKX": "ETH/USDT",
 }
+LOGGER = logging.getLogger(__name__)
 
 
 def _field(payload: Mapping[str, Any], camel: str, snake: str | None = None) -> Any:
@@ -77,6 +79,9 @@ class CCXTCryptoAdapter:
         self._trade_update_handler: Callable[[TradeUpdate], Awaitable[None]] | None = None
         self._position_update_handler: Callable[[list[PositionItem]], Awaitable[None]] | None = None
         self._account_update_handler: Callable[[list[AccountSummaryItem]], Awaitable[None]] | None = None
+        self._reconciliation_handler: (
+            Callable[[Mapping[str, Any], int], Awaitable[None] | None] | None
+        ) = None
         self._connection_listeners: list[
             Callable[[str, Mapping[str, Any]], Awaitable[None] | None]
         ] = []
@@ -87,6 +92,8 @@ class CCXTCryptoAdapter:
         self._metadata_approval_required = False
         self._fee_policy = CryptoSpotFeePolicy()
         self._reported_fee_tiers: dict[str, dict[str, str | None]] = {}
+        self._public_streams_ready: set[str] = set()
+        self._private_streams_ready: set[str] = set()
         self._lifecycle_lock = asyncio.Lock()
 
     def manifest(self) -> BrokerAdapterManifest:
@@ -164,19 +171,26 @@ class CCXTCryptoAdapter:
                         strict=True,
                     )
                 }
-                snapshot = await self._reconciler.snapshot()
+                snapshot = await self._capture_reconciliation(
+                    generation=self._generation + 1
+                )
                 self._balance = await self._client.fetch_balance()
                 if snapshot.get("orderUpdates") is None:
                     raise BrokerConnectionError("OKX initial reconciliation did not complete")
                 self._start_private_streams()
-                self._state = "reconciled" if not self._settings.trading_enabled else "trading_ready"
+                next_state = (
+                    "reconciled"
+                    if not self._settings.trading_enabled
+                    else "trading_ready"
+                )
             elif self._settings.public_data_enabled:
-                self._state = "public_ready"
+                next_state = "public_ready"
             else:
-                self._state = "installed"
+                next_state = "installed"
             self._generation += 1
             self._connected = True
             self._connected_since = datetime.now(UTC)
+            self._set_state(next_state, reason="connect")
             await self._notify_connection(
                 "connected",
                 {
@@ -203,7 +217,7 @@ class CCXTCryptoAdapter:
                     await task
             await self._client.close()
             self._connected = False
-            self._state = "disconnected"
+            self._set_state("disconnected", reason="closed")
             await self._notify_connection("disconnected", {"reason": "closed"})
 
     async def disconnect(self, reason: str | None = None) -> None:
@@ -220,14 +234,14 @@ class CCXTCryptoAdapter:
             with suppress(asyncio.CancelledError):
                 await task
         self._connected = False
-        self._state = "disconnected"
+        self._set_state("disconnected", reason=reason or "disconnect")
         await self._notify_connection("disconnected", {"reason": reason})
 
     async def reconnect(self, *, reason: str | None = None) -> None:
         await self.disconnect(reason=reason)
         await self.connect()
         if self._settings.private_read_enabled:
-            await self._reconciler.snapshot()
+            await self._capture_reconciliation()
         for factory in tuple(self._resub_tasks):
             await factory()
 
@@ -288,6 +302,20 @@ class CCXTCryptoAdapter:
                 )
             rules[symbol] = rule
         self._rules = rules
+        LOGGER.info(
+            "OKX Demo market metadata accepted",
+            extra={
+                "event": "broker.crypto.metadata_accepted",
+                "broker.adapter_id": self.adapter_id,
+                "broker.execution_target_id": self._settings.execution_target_id,
+                "broker.instruments": sorted(
+                    rule.instrument_id for rule in rules.values()
+                ),
+                "broker.metadata_hashes": {
+                    symbol: rule.metadata_hash for symbol, rule in sorted(rules.items())
+                },
+            },
+        )
 
     async def market_metadata_v2(self) -> list[dict[str, Any]]:
         await self.ensure_connected()
@@ -388,7 +416,9 @@ class CCXTCryptoAdapter:
             if self._mutation_outcome_is_unknown(exc):
                 order = await self._client.fetch_order_by_client_id(native_client_id, symbol)
                 if order is None:
-                    raise unknown_outcome(client_order_id=full_client_id) from None
+                    raise self._unknown_order_outcome(
+                        operation="place_order", client_order_id=full_client_id
+                    ) from None
             else:
                 raise order_error(
                     "OKX Demo rejected the order request",
@@ -403,7 +433,10 @@ class CCXTCryptoAdapter:
         )
         broker_id = result["identity"]["brokerOrderId"]
         if not broker_id:
-            raise unknown_outcome(client_order_id=full_client_id)
+            raise self._unknown_order_outcome(
+                operation="place_order_acknowledgement",
+                client_order_id=full_client_id,
+            )
         self._order_symbols[broker_id] = symbol
         return result
 
@@ -436,7 +469,9 @@ class CCXTCryptoAdapter:
             try:
                 order = await self._client.fetch_order(order_id, symbol)
             except Exception:  # noqa: BLE001 - provider failure preserves UNKNOWN outcome
-                raise unknown_outcome(client_order_id=order_id) from None
+                raise self._unknown_order_outcome(
+                    operation="cancel_order", client_order_id=order_id
+                ) from None
         self._order_symbols[order_id] = symbol
         return order_update(
             order,
@@ -462,7 +497,105 @@ class CCXTCryptoAdapter:
         await self.ensure_connected()
         if not self._settings.private_read_enabled:
             raise BrokerConnectionError("private_read_enabled is required for reconciliation")
-        return await self._reconciler.snapshot()
+        return await self._capture_reconciliation()
+
+    def set_reconciliation_handler(
+        self,
+        handler: Callable[[Mapping[str, Any], int], Awaitable[None] | None] | None,
+    ) -> None:
+        self._reconciliation_handler = handler
+
+    async def _capture_reconciliation(
+        self, *, generation: int | None = None
+    ) -> dict[str, Any]:
+        snapshot = await self._reconciler.snapshot()
+        handler = self._reconciliation_handler
+        if handler is not None:
+            result = handler(
+                snapshot,
+                self._generation if generation is None else int(generation),
+            )
+            if inspect.isawaitable(result):
+                await result
+        LOGGER.info(
+            "OKX Demo reconciliation completed",
+            extra={
+                "event": "broker.crypto.reconciliation_completed",
+                "broker.adapter_id": self.adapter_id,
+                "broker.execution_target_id": self._settings.execution_target_id,
+                "broker.generation": (
+                    self._generation if generation is None else int(generation)
+                ),
+                "broker.order_update_count": len(snapshot.get("orderUpdates") or []),
+                "broker.fill_count": len(snapshot.get("fills") or []),
+                "broker.position_count": len(snapshot.get("positions") or []),
+                "broker.balance_count": len(snapshot.get("balances") or []),
+            },
+        )
+        return snapshot
+
+    def _set_state(self, state: str, *, reason: str) -> None:
+        previous = self._state
+        self._state = state
+        if previous == state:
+            return
+        LOGGER.info(
+            "OKX Demo adapter readiness changed",
+            extra={
+                "event": "broker.crypto.readiness_changed",
+                "broker.adapter_id": self.adapter_id,
+                "broker.execution_target_id": self._settings.execution_target_id,
+                "broker.previous_state": previous,
+                "broker.state": state,
+                "broker.reason": reason,
+                "broker.generation": self._generation,
+            },
+        )
+
+    def _mark_public_stream_ready(self, stream: str, symbol: str) -> None:
+        key = f"{stream}:{symbol}"
+        if key in self._public_streams_ready:
+            return
+        self._public_streams_ready.add(key)
+        LOGGER.info(
+            "OKX Demo public stream received its first event",
+            extra={
+                "event": "broker.crypto.public_stream_ready",
+                "broker.adapter_id": self.adapter_id,
+                "broker.market_data_target_id": self._settings.market_data_target_id,
+                "broker.stream": stream,
+                "broker.symbol": symbol,
+            },
+        )
+
+    def _mark_private_stream_ready(self, stream: str) -> None:
+        if stream in self._private_streams_ready:
+            return
+        self._private_streams_ready.add(stream)
+        LOGGER.info(
+            "OKX Demo private stream received its first event",
+            extra={
+                "event": "broker.crypto.private_stream_ready",
+                "broker.adapter_id": self.adapter_id,
+                "broker.execution_target_id": self._settings.execution_target_id,
+                "broker.stream": stream,
+                "broker.ready_streams": sorted(self._private_streams_ready),
+            },
+        )
+
+    def _unknown_order_outcome(
+        self, *, operation: str, client_order_id: str
+    ) -> BrokerOrderError:
+        LOGGER.error(
+            "OKX Demo order outcome is unknown",
+            extra={
+                "event": "broker.crypto.order_unknown",
+                "broker.adapter_id": self.adapter_id,
+                "broker.execution_target_id": self._settings.execution_target_id,
+                "broker.operation": operation,
+            },
+        )
+        return unknown_outcome(client_order_id=client_order_id)
 
     def set_trade_update_handler(
         self, handler: Callable[[TradeUpdate], Awaitable[None]] | None
@@ -519,7 +652,7 @@ class CCXTCryptoAdapter:
             try:
                 await asyncio.sleep(self._settings.reconcile_interval_seconds)
                 elapsed += self._settings.reconcile_interval_seconds
-                await self._reconciler.snapshot()
+                await self._capture_reconciliation()
                 if elapsed >= self._settings.full_reconcile_interval_seconds:
                     previous = {
                         symbol: rule.metadata_hash for symbol, rule in self._rules.items()
@@ -545,6 +678,7 @@ class CCXTCryptoAdapter:
         while True:
             try:
                 orders = await self._client.watch_orders()
+                self._mark_private_stream_ready("orders")
                 if self._trade_update_handler is not None:
                     for order in orders:
                         await self._trade_update_handler(legacy_trade_update(order))
@@ -558,6 +692,7 @@ class CCXTCryptoAdapter:
         while True:
             try:
                 self._balance = await self._client.watch_balance()
+                self._mark_private_stream_ready("balance")
                 if self._account_update_handler is not None:
                     await self._account_update_handler(
                         account_summary(self._balance, account_id="okx-demo")
@@ -576,6 +711,7 @@ class CCXTCryptoAdapter:
         while True:
             try:
                 trades = await self._client.watch_my_trades()
+                self._mark_private_stream_ready("trades")
                 if self._trade_update_handler is not None:
                     for trade in trades:
                         await self._trade_update_handler(legacy_fill_update(trade))
@@ -586,7 +722,7 @@ class CCXTCryptoAdapter:
                 return
 
     async def _stream_failed(self, stream: str, exc: Exception) -> None:
-        self._state = "blocked"
+        self._set_state("blocked", reason=f"private_{stream}_stream_failed")
         await self._notify_connection(
             "disconnected",
             {
@@ -612,7 +748,9 @@ class CCXTCryptoAdapter:
             delay = min(30.0, float(2 ** (attempt - 1)))
             await asyncio.sleep(delay + random.uniform(0.0, delay * 0.25))
             try:
-                await self._reconciler.snapshot()
+                await self._capture_reconciliation(
+                    generation=self._generation + 1
+                )
                 previous = asyncio.current_task()
                 stale, self._stream_tasks = self._stream_tasks, []
                 for task in stale:
@@ -624,8 +762,9 @@ class CCXTCryptoAdapter:
                             await task
                 self._generation += 1
                 self._start_private_streams()
-                self._state = (
-                    "trading_ready" if self._settings.trading_enabled else "reconciled"
+                self._set_state(
+                    "trading_ready" if self._settings.trading_enabled else "reconciled",
+                    reason="private_stream_recovered",
                 )
                 await self._notify_connection(
                     "connected",
@@ -789,6 +928,7 @@ class CCXTCryptoAdapter:
             while True:
                 rows = await self._client.watch_ohlcv(symbol, timeframe)
                 if rows:
+                    self._mark_public_stream_ready("bar", symbol)
                     yield self._bar(rows[-1])
 
         return iterator()
@@ -805,6 +945,7 @@ class CCXTCryptoAdapter:
         async def iterator() -> AsyncIterator[RealTimePrice]:
             while True:
                 ticker = await self._client.watch_ticker(symbol)
+                self._mark_public_stream_ready("ticker", symbol)
                 yield RealTimePrice(
                     symbol=symbol,
                     bid=float(ticker["bid"]) if ticker.get("bid") is not None else None,
@@ -839,6 +980,7 @@ class CCXTCryptoAdapter:
             emitted = 0
             while number_of_ticks <= 0 or emitted < number_of_ticks:
                 for trade in await self._client.watch_trades(symbol):
+                    self._mark_public_stream_ready("trade", symbol)
                     yield TickByTickLast(
                         time=datetime.fromisoformat(timestamp(trade.get("timestamp"))),
                         price=float(trade.get("price") or 0),

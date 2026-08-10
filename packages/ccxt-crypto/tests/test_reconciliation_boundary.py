@@ -106,7 +106,7 @@ def test_reconciliation_ignores_holdings_outside_the_supported_asset_universe() 
     assert {item["currency"] for item in result["balances"]} == {"BTC", "ETH", "USDT"}
 
 
-def test_reconciliation_still_rejects_spot_liabilities() -> None:
+def test_reconciliation_still_rejects_spot_liabilities(caplog) -> None:
     with pytest.raises(
         BrokerConnectionError,
         match="non-zero liability",
@@ -114,3 +114,7 @@ def test_reconciliation_still_rejects_spot_liabilities() -> None:
         asyncio.run(Reconciler(_LiabilityClient(), _private_read_settings()).snapshot())
 
     assert raised.value.details == {"currency": "BTC"}
+    assert any(
+        getattr(record, "event", None) == "broker.crypto.balance_drift"
+        for record in caplog.records
+    )

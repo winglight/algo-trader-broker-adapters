@@ -47,15 +47,46 @@ class NarrowMarketsExchange(FakeExchange):
         return {market["symbol"]: market for market in markets}
 
 
+class RateLimitedExchange(FakeExchange):
+    def __init__(self) -> None:
+        super().__init__()
+        self.attempts = 0
+
+    async def fetch_time(self):
+        self.attempts += 1
+        if self.attempts < 3:
+            raise RuntimeError("OKX 50011 rate limit reached")
+        return 1786320000000
+
+
 def parsed_settings():
     return CCXTCryptoSettings.from_mapping(settings(public_data_enabled=False))
 
 
-def test_client_enables_and_verifies_okx_demo_before_io() -> None:
+def test_client_enables_and_verifies_okx_demo_before_io(caplog) -> None:
+    caplog.set_level("INFO")
     exchange = FakeExchange()
     client = OKXDemoClient(parsed_settings(), exchange=exchange)
     assert exchange.sandbox_calls == 1
     assert client.sandbox_evidence()["simulatedTradingHeader"] is True
+    assert any(
+        getattr(record, "event", None) == "broker.crypto.sandbox_host_verified"
+        for record in caplog.records
+    )
+
+
+def test_read_rate_limit_is_logged_and_retried(caplog) -> None:
+    exchange = RateLimitedExchange()
+    client = OKXDemoClient(parsed_settings(), exchange=exchange)
+
+    assert asyncio.run(client.fetch_time()) == 1786320000000
+    events = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "broker.crypto.rate_limited"
+    ]
+    assert len(events) == 2
+    assert exchange.attempts == 3
 
 
 def test_client_resolves_ccxt_hostname_template_before_allowlist_check() -> None:

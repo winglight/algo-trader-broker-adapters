@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urlparse
@@ -14,6 +15,7 @@ from .settings import CCXTCryptoSettings
 _REST_HOSTS = {"www.okx.com", "openapi.okx.com"}
 _DEMO_WS_HOST = "wspap.okx.com"
 _PRODUCTION_WS_HOST = "ws.okx.com"
+LOGGER = logging.getLogger(__name__)
 
 
 def _exchange_config(settings: CCXTCryptoSettings) -> dict[str, Any]:
@@ -68,6 +70,15 @@ class OKXDemoClient:
         self.exchange = exchange
         self.exchange.set_sandbox_mode(True)
         self._verify_sandbox()
+        LOGGER.info(
+            "OKX Demo sandbox host and simulated-trading boundary verified",
+            extra={
+                "event": "broker.crypto.sandbox_host_verified",
+                "broker.adapter_id": "ccxt_crypto",
+                "broker.exchange_id": "okx",
+                "broker.environment": "PAPER",
+            },
+        )
 
     def _verify_sandbox(self) -> None:
         options = getattr(self.exchange, "options", {}) or {}
@@ -122,10 +133,38 @@ class OKXDemoClient:
             try:
                 return await self._call(method, *args, **kwargs)
             except Exception as exc:
-                if "50011" not in str(exc) or attempt == 2:
+                if not self._is_rate_limited(exc):
+                    raise
+                LOGGER.warning(
+                    "OKX Demo read request was rate limited",
+                    extra={
+                        "event": "broker.crypto.rate_limited",
+                        "broker.adapter_id": "ccxt_crypto",
+                        "broker.operation": method,
+                        "broker.retry_attempt": attempt + 1,
+                    },
+                )
+                if attempt == 2:
                     raise
                 await asyncio.sleep(0.25 * (2**attempt))
         raise AssertionError("unreachable")
+
+    @staticmethod
+    def _is_rate_limited(exc: Exception) -> bool:
+        current: BaseException | None = exc
+        visited: set[int] = set()
+        while current is not None and id(current) not in visited:
+            visited.add(id(current))
+            details = getattr(current, "details", None)
+            error_type = (
+                str(details.get("error_type") or "")
+                if isinstance(details, Mapping)
+                else ""
+            )
+            if "50011" in str(current) or "ratelimit" in error_type.lower():
+                return True
+            current = current.__cause__ or current.__context__
+        return False
 
     async def load_markets(self, symbols: tuple[str, ...]) -> Mapping[str, Any]:
         requested = tuple(dict.fromkeys(symbols))

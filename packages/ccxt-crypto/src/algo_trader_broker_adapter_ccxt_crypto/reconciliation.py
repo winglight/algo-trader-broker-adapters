@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
@@ -13,6 +14,8 @@ from algo_trader_broker_sdk import BrokerConnectionError
 from .mapping import balance_payloads, fill, instrument_id, order_update, positions
 from .quantizer import canonical
 from .settings import CCXTCryptoSettings
+
+LOGGER = logging.getLogger(__name__)
 
 
 class Reconciler:
@@ -133,6 +136,15 @@ class Reconciler:
             currency = str(item.get("ccy") or "").upper()
             liability = Decimal(str(item.get("liab") or "0"))
             if liability != 0:
+                LOGGER.error(
+                    "OKX Demo balance reconciliation found a non-zero liability",
+                    extra={
+                        "event": "broker.crypto.balance_drift",
+                        "broker.adapter_id": "ccxt_crypto",
+                        "broker.drift_type": "non_zero_liability",
+                        "broker.currency": currency,
+                    },
+                )
                 raise BrokerConnectionError(
                     "OKX Demo Spot account contains a non-zero liability",
                     details={"currency": currency},

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from algo_trader_broker_adapter_ccxt_crypto import CCXTCryptoAdapter
 from algo_trader_broker_sdk import BrokerConnectionError, BrokerOrderError
@@ -57,7 +59,8 @@ async def test_inactive_profile_endpoints_cannot_bypass_network_gates() -> None:
 
 
 @pytest.mark.asyncio
-async def test_public_stream_methods_follow_runner_awaitable_contract() -> None:
+async def test_public_stream_methods_follow_runner_awaitable_contract(caplog) -> None:
+    caplog.set_level("INFO")
     backend = FakeClient()
     adapter = CCXTCryptoAdapter(settings(), backend=backend)
     await adapter.start()
@@ -81,6 +84,14 @@ async def test_public_stream_methods_follow_runner_awaitable_contract() -> None:
     )
     bar = await anext(bar_stream)
     assert bar.close == 1.5
+
+    events = [
+        getattr(record, "event", None)
+        for record in caplog.records
+    ]
+    assert "broker.crypto.metadata_accepted" in events
+    assert events.count("broker.crypto.public_stream_ready") == 3
+    assert "broker.crypto.readiness_changed" in events
 
     await adapter.close()
 
@@ -156,7 +167,7 @@ async def test_timeout_reconciles_once_and_never_resubmits() -> None:
 
 
 @pytest.mark.asyncio
-async def test_unresolved_timeout_is_unknown_and_suppresses_retry() -> None:
+async def test_unresolved_timeout_is_unknown_and_suppresses_retry(caplog) -> None:
     backend = FakeClient()
     backend.create_timeout = True
     adapter = CCXTCryptoAdapter(
@@ -176,6 +187,10 @@ async def test_unresolved_timeout_is_unknown_and_suppresses_retry() -> None:
     assert exc.value.code == "order_outcome_unknown"
     assert exc.value.details["retry_allowed"] is False
     assert len([name for name, _ in backend.calls if name == "create_order"]) == 1
+    assert any(
+        getattr(record, "event", None) == "broker.crypto.order_unknown"
+        for record in caplog.records
+    )
     await adapter.close()
 
 
@@ -228,3 +243,85 @@ async def test_reconciliation_has_target_scoped_decimal_payloads() -> None:
     assert {item["currency"] for item in result["balances"]} == {"BTC", "ETH", "USDT"}
     assert all(item["quantityDecimal"] == "0" for item in result["positions"])
     await adapter.close()
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_handler_receives_snapshot_and_generation(caplog) -> None:
+    caplog.set_level("INFO")
+    backend = FakeClient()
+    adapter = CCXTCryptoAdapter(
+        settings(
+            private_read_enabled=True,
+            api_key="key",
+            secret="secret",
+            passphrase="passphrase",
+        ),
+        backend=backend,
+    )
+    evidence = []
+
+    async def handler(snapshot, generation):
+        evidence.append((snapshot["executionTargetId"], generation))
+
+    adapter.set_reconciliation_handler(handler)
+    await adapter.start()
+    await adapter.reconcile_v2()
+
+    assert evidence == [
+        ("okx-spot-demo-paper-1", 1),
+        ("okx-spot-demo-paper-1", 1),
+    ]
+    assert sum(
+        getattr(record, "event", None)
+        == "broker.crypto.reconciliation_completed"
+        for record in caplog.records
+    ) == 2
+    await adapter.close()
+
+
+@pytest.mark.asyncio
+async def test_private_stream_first_events_are_logged(caplog) -> None:
+    caplog.set_level("INFO")
+
+    class FirstEventClient(FakeClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.seen: set[str] = set()
+            self.wait_forever = asyncio.Event()
+
+        async def _first(self, stream, value):
+            if stream not in self.seen:
+                self.seen.add(stream)
+                return value
+            await self.wait_forever.wait()
+            raise AssertionError("unreachable")
+
+        async def watch_orders(self):
+            return await self._first("orders", [])
+
+        async def watch_balance(self):
+            return await self._first("balance", await self.fetch_balance())
+
+        async def watch_my_trades(self):
+            return await self._first("trades", [])
+
+    backend = FirstEventClient()
+    adapter = CCXTCryptoAdapter(
+        settings(
+            private_read_enabled=True,
+            api_key="key",
+            secret="secret",
+            passphrase="passphrase",
+        ),
+        backend=backend,
+    )
+    await adapter.start()
+    await asyncio.sleep(0.01)
+    await adapter.close()
+
+    ready_streams = {
+        getattr(record, "broker.stream", None)
+        for record in caplog.records
+        if getattr(record, "event", None) == "broker.crypto.private_stream_ready"
+    }
+    assert ready_streams == {"orders", "balance", "trades"}
