@@ -54,6 +54,7 @@ _SYMBOL_BY_INSTRUMENT = {
     "crypto-spot:ETH-USDT:OKX": "ETH/USDT",
 }
 LOGGER = logging.getLogger(__name__)
+_PUBLIC_TICKER_MAX_AGE_MS = 120_000
 _PUBLIC_TRADE_MAX_AGE_MS = 120_000
 _PUBLIC_TRADE_DEDUP_WINDOW = 4_096
 
@@ -967,8 +968,29 @@ class CCXTCryptoAdapter:
             raise unsupported("non-allowlisted instruments")
 
         async def iterator() -> AsyncIterator[RealTimePrice]:
+            last_key: tuple[Any, ...] | None = None
             while True:
                 ticker = await self._client.watch_ticker(symbol)
+                raw_timestamp = ticker.get("timestamp")
+                if raw_timestamp in (None, ""):
+                    continue
+                try:
+                    ticker_timestamp_ms = int(str(raw_timestamp))
+                except (TypeError, ValueError):
+                    continue
+                now_ms = int(datetime.now(UTC).timestamp() * 1000)
+                if now_ms - ticker_timestamp_ms > _PUBLIC_TICKER_MAX_AGE_MS:
+                    continue
+                key = (
+                    ticker_timestamp_ms,
+                    ticker.get("bid"),
+                    ticker.get("ask"),
+                    ticker.get("last"),
+                    ticker.get("close"),
+                )
+                if key == last_key:
+                    continue
+                last_key = key
                 self._mark_public_stream_ready("ticker", symbol)
                 yield RealTimePrice(
                     symbol=symbol,
@@ -977,7 +999,7 @@ class CCXTCryptoAdapter:
                     last=float(ticker["last"]) if ticker.get("last") is not None else None,
                     last_size=None,
                     close=float(ticker["close"]) if ticker.get("close") is not None else None,
-                    timestamp=datetime.fromisoformat(timestamp(ticker.get("timestamp"))),
+                    timestamp=datetime.fromisoformat(timestamp(ticker_timestamp_ms)),
                 )
                 if snapshot:
                     return

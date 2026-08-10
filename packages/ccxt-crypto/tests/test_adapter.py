@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from copy import deepcopy
 from datetime import UTC, datetime
 
@@ -138,6 +139,56 @@ async def test_trade_stream_discards_cached_stale_and_duplicate_rows() -> None:
 
     assert (first.price, first.size) == (10001.0, 0.002)
     assert (second.price, second.size) == (10002.0, 0.003)
+    await adapter.close()
+
+
+@pytest.mark.asyncio
+async def test_ticker_stream_discards_cached_stale_and_duplicate_rows() -> None:
+    class CachedTickerClient(FakeClient):
+        def __init__(self) -> None:
+            super().__init__()
+            now_ms = int(datetime.now(UTC).timestamp() * 1000)
+            fresh = {
+                "bid": "10000",
+                "ask": "10002",
+                "last": "10001",
+                "close": "9999",
+                "timestamp": now_ms,
+            }
+            self.tickers = deque(
+                [
+                    {
+                        "bid": "9998",
+                        "ask": "10000",
+                        "last": "9999",
+                        "close": "9997",
+                        "timestamp": now_ms - 121_000,
+                    },
+                    fresh,
+                    dict(fresh),
+                    {
+                        "bid": "10001",
+                        "ask": "10003",
+                        "last": "10002",
+                        "close": "9999",
+                        "timestamp": now_ms + 1,
+                    },
+                ]
+            )
+
+        async def watch_ticker(self, symbol):
+            self.calls.append(("watch_ticker", symbol))
+            return self.tickers.popleft()
+
+    adapter = CCXTCryptoAdapter(settings(), backend=CachedTickerClient())
+    await adapter.start()
+    stream = await adapter.stream_real_time_price({"symbol": "BTC/USDT"})
+
+    first = await anext(stream)
+    second = await anext(stream)
+
+    assert (first.bid, first.ask, first.last) == (10000.0, 10002.0, 10001.0)
+    assert (second.bid, second.ask, second.last) == (10001.0, 10003.0, 10002.0)
     await adapter.close()
 
 
