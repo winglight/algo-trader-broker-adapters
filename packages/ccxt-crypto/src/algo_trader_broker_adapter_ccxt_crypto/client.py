@@ -70,7 +70,7 @@ class OKXDemoClient:
         self.exchange = exchange
         self.exchange.set_sandbox_mode(True)
         self._verify_sandbox()
-        LOGGER.info(
+        LOGGER.warning(
             "OKX Demo sandbox host and simulated-trading boundary verified",
             extra={
                 "event": "broker.crypto.sandbox_host_verified",

@@ -302,7 +302,7 @@ class CCXTCryptoAdapter:
                 )
             rules[symbol] = rule
         self._rules = rules
-        LOGGER.info(
+        LOGGER.warning(
             "OKX Demo market metadata accepted",
             extra={
                 "event": "broker.crypto.metadata_accepted",
@@ -517,7 +517,7 @@ class CCXTCryptoAdapter:
             )
             if inspect.isawaitable(result):
                 await result
-        LOGGER.info(
+        LOGGER.warning(
             "OKX Demo reconciliation completed",
             extra={
                 "event": "broker.crypto.reconciliation_completed",
@@ -539,7 +539,7 @@ class CCXTCryptoAdapter:
         self._state = state
         if previous == state:
             return
-        LOGGER.info(
+        LOGGER.warning(
             "OKX Demo adapter readiness changed",
             extra={
                 "event": "broker.crypto.readiness_changed",
@@ -557,7 +557,7 @@ class CCXTCryptoAdapter:
         if key in self._public_streams_ready:
             return
         self._public_streams_ready.add(key)
-        LOGGER.info(
+        LOGGER.warning(
             "OKX Demo public stream received its first event",
             extra={
                 "event": "broker.crypto.public_stream_ready",
@@ -572,7 +572,7 @@ class CCXTCryptoAdapter:
         if stream in self._private_streams_ready:
             return
         self._private_streams_ready.add(stream)
-        LOGGER.info(
+        LOGGER.warning(
             "OKX Demo private stream received its first event",
             extra={
                 "event": "broker.crypto.private_stream_ready",
