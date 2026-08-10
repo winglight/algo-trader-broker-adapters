@@ -118,7 +118,9 @@ class Reconciler:
                     "OKX Demo Spot account contains a non-zero liability",
                     details={"currency": currency},
                 )
-            if currency not in {"BTC", "ETH", "USDT"} and total != 0:
+            # OKX Demo may provision a non-tradable OKB balance by default.
+            # Keep rejecting every other asset outside the approved universe.
+            if currency not in {"BTC", "ETH", "USDT", "OKB"} and total != 0:
                 raise BrokerConnectionError(
                     "OKX Demo account contains a non-zero asset outside BTC/ETH/USDT",
                     details={"currency": currency},

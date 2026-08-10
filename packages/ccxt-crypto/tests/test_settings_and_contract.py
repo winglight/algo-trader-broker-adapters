@@ -58,3 +58,14 @@ def test_package_is_isolated_and_pins_ccxt() -> None:
     assert "ati_shared_sdk" not in source
     assert '"ccxt==4.5.56"' in pyproject
     assert 'ccxt_crypto = "algo_trader_broker_adapter_ccxt_crypto:create_adapter"' in pyproject
+
+
+def test_verified_artifacts_download_the_complete_ccxt_wheelhouse() -> None:
+    script = (Path(__file__).parents[3] / "scripts" / "build_verified_artifacts.py").read_text()
+    ccxt_download = script.split('"pip",\n            "download",', 1)[1].split(
+        "subprocess.run(", 1
+    )[0]
+
+    assert '"ccxt==4.5.56"' in ccxt_download
+    assert '"--only-binary=:all:"' in ccxt_download
+    assert '"--no-deps"' not in ccxt_download

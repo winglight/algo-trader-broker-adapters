@@ -174,7 +174,9 @@ def balance_payloads(
     now = timestamp()
     for currency, item in _currency_records(balance):
         if currency not in {"BTC", "ETH", "USDT"}:
-            if decimal(item.get("cashBal")) != 0:
+            # OKX Demo may provision OKB automatically. It is neither exposed
+            # as a supported balance nor treated as a tradable position.
+            if currency != "OKB" and decimal(item.get("cashBal")) != 0:
                 raise ValueError(f"unexpected non-zero OKX Demo asset: {currency}")
             continue
         if decimal(item.get("liab")) != 0:

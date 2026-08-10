@@ -58,7 +58,6 @@ def main() -> int:
             "pip",
             "download",
             "--only-binary=:all:",
-            "--no-deps",
             "--dest",
             str(output),
             "ccxt==4.5.56",
