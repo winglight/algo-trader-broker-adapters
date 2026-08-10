@@ -1,0 +1,26 @@
+# CCXT Adapter runtime wheelhouse lock.
+#
+# These packages are installed with the Adapter, not in the shared base image.
+# Versions are the ARM64/Python 3.11 wheel set verified for ccxt==4.5.56.
+ccxt==4.5.56
+aiodns==4.0.4
+aiohappyeyeballs==2.7.1
+aiohttp==3.14.3
+aiosignal==1.4.0
+attrs==26.1.0
+certifi==2026.7.22
+cffi==2.1.1
+charset-normalizer==3.4.9
+coincurve==21.0.0
+cryptography==50.0.0
+frozenlist==1.8.0
+idna==3.18
+multidict==6.7.1
+propcache==0.5.2
+pycares==5.0.1
+pycparser==3.0
+requests==2.34.2
+setuptools==84.0.0
+typing-extensions==4.16.0
+urllib3==2.7.0
+yarl==1.24.5

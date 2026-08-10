@@ -6,6 +6,7 @@ import asyncio
 import inspect
 import logging
 import random
+from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
 from contextlib import suppress
 from datetime import UTC, datetime
@@ -53,6 +54,8 @@ _SYMBOL_BY_INSTRUMENT = {
     "crypto-spot:ETH-USDT:OKX": "ETH/USDT",
 }
 LOGGER = logging.getLogger(__name__)
+_PUBLIC_TRADE_MAX_AGE_MS = 120_000
+_PUBLIC_TRADE_DEDUP_WINDOW = 4_096
 
 
 def _field(payload: Mapping[str, Any], camel: str, snake: str | None = None) -> Any:
@@ -999,11 +1002,45 @@ class CCXTCryptoAdapter:
 
         async def iterator() -> AsyncIterator[TickByTickLast]:
             emitted = 0
+            seen: set[tuple[Any, ...]] = set()
+            seen_order: deque[tuple[Any, ...]] = deque()
             while number_of_ticks <= 0 or emitted < number_of_ticks:
-                for trade in await self._client.watch_trades(symbol):
+                trades = await self._client.watch_trades(symbol)
+                for trade in sorted(
+                    trades,
+                    key=lambda item: int(item.get("timestamp") or 0),
+                ):
+                    raw_timestamp = trade.get("timestamp")
+                    if raw_timestamp in (None, ""):
+                        continue
+                    trade_id = trade.get("id") or _field(
+                        trade.get("info") or {}, "tradeId"
+                    )
+                    key = (
+                        ("id", str(trade_id))
+                        if trade_id not in (None, "")
+                        else (
+                            "payload",
+                            str(raw_timestamp),
+                            str(trade.get("price")),
+                            str(trade.get("amount")),
+                            str(trade.get("side")),
+                        )
+                    )
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    seen_order.append(key)
+                    if len(seen_order) > _PUBLIC_TRADE_DEDUP_WINDOW:
+                        seen.discard(seen_order.popleft())
+
+                    trade_timestamp_ms = int(str(raw_timestamp))
+                    now_ms = int(datetime.now(UTC).timestamp() * 1000)
+                    if now_ms - trade_timestamp_ms > _PUBLIC_TRADE_MAX_AGE_MS:
+                        continue
                     self._mark_public_stream_ready("trade", symbol)
                     yield TickByTickLast(
-                        time=datetime.fromisoformat(timestamp(trade.get("timestamp"))),
+                        time=datetime.fromisoformat(timestamp(trade_timestamp_ms)),
                         price=float(trade.get("price") or 0),
                         size=float(trade.get("amount") or 0),
                         exchange="OKX",

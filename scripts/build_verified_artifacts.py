@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 IB_PACKAGE = ROOT / "packages" / "ibkr-paper"
 ALPACA_PACKAGE = ROOT / "packages" / "alpaca-paper"
 CCXT_CRYPTO_PACKAGE = ROOT / "packages" / "ccxt-crypto"
+CCXT_CRYPTO_LOCK = CCXT_CRYPTO_PACKAGE / "wheelhouse-requirements.lock"
 
 
 def _version(distribution: str, default: str) -> str:
@@ -58,6 +59,8 @@ def main() -> int:
             "pip",
             "download",
             "--only-binary=:all:",
+            "--constraint",
+            str(CCXT_CRYPTO_LOCK),
             "--dest",
             str(output),
             "ccxt==4.5.56",

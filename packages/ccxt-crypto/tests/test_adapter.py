@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from copy import deepcopy
+from datetime import UTC, datetime
 
 import pytest
 from algo_trader_broker_adapter_ccxt_crypto import CCXTCryptoAdapter
@@ -94,6 +95,49 @@ async def test_public_stream_methods_follow_runner_awaitable_contract(caplog) ->
     assert events.count("broker.crypto.public_stream_ready") == 3
     assert "broker.crypto.readiness_changed" in events
 
+    await adapter.close()
+
+
+@pytest.mark.asyncio
+async def test_trade_stream_discards_cached_stale_and_duplicate_rows() -> None:
+    class CachedTradeClient(FakeClient):
+        async def watch_trades(self, symbol):
+            self.calls.append(("watch_trades", symbol))
+            now_ms = int(datetime.now(UTC).timestamp() * 1000)
+            fresh = {
+                "id": "fresh-1",
+                "price": "10001",
+                "amount": "0.002",
+                "timestamp": now_ms,
+            }
+            return [
+                {
+                    "id": "stale-1",
+                    "price": "9999",
+                    "amount": "0.001",
+                    "timestamp": now_ms - 121_000,
+                },
+                fresh,
+                dict(fresh),
+                {
+                    "id": "fresh-2",
+                    "price": "10002",
+                    "amount": "0.003",
+                    "timestamp": now_ms + 1,
+                },
+            ]
+
+    adapter = CCXTCryptoAdapter(settings(), backend=CachedTradeClient())
+    await adapter.start()
+    stream = await adapter.stream_tick_by_tick_data(
+        {"symbol": "BTC/USDT"}, number_of_ticks=2
+    )
+
+    first = await anext(stream)
+    second = await anext(stream)
+
+    assert (first.price, first.size) == (10001.0, 0.002)
+    assert (second.price, second.size) == (10002.0, 0.003)
     await adapter.close()
 
 

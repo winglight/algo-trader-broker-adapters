@@ -61,11 +61,16 @@ def test_package_is_isolated_and_pins_ccxt() -> None:
 
 
 def test_verified_artifacts_download_the_complete_ccxt_wheelhouse() -> None:
-    script = (Path(__file__).parents[3] / "scripts" / "build_verified_artifacts.py").read_text()
+    package_root = Path(__file__).parents[1]
+    script = (package_root.parents[1] / "scripts" / "build_verified_artifacts.py").read_text()
+    wheelhouse_lock = (package_root / "wheelhouse-requirements.lock").read_text()
     ccxt_download = script.split('"pip",\n            "download",', 1)[1].split(
         "subprocess.run(", 1
     )[0]
 
     assert '"ccxt==4.5.56"' in ccxt_download
     assert '"--only-binary=:all:"' in ccxt_download
+    assert '"--constraint"' in ccxt_download
     assert '"--no-deps"' not in ccxt_download
+    assert "ccxt==4.5.56" in wheelhouse_lock
+    assert "aiohttp==3.14.3" in wheelhouse_lock
