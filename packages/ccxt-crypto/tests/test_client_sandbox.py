@@ -5,7 +5,7 @@ import asyncio
 import pytest
 from algo_trader_broker_adapter_ccxt_crypto.client import OKXDemoClient, _exchange_config
 from algo_trader_broker_adapter_ccxt_crypto.settings import CCXTCryptoSettings
-from algo_trader_broker_sdk import BrokerContractError
+from algo_trader_broker_sdk import BrokerConnectionError, BrokerContractError
 
 from .fakes import settings
 
@@ -74,6 +74,53 @@ class TransientTimeoutExchange(FakeExchange):
         return 1786320000000
 
 
+class MaintenanceExchange(FakeExchange):
+    def __init__(self) -> None:
+        super().__init__()
+        self.attempts = 0
+
+    async def fetch_time(self):
+        self.attempts += 1
+        if self.attempts < 3:
+            raise RuntimeError(
+                'okx {"msg":"Service temporarily unavailable. Please try again later.","code":"50001"}'
+            )
+        return 1786320000000
+
+
+class RecoveringWebsocketExchange(FakeExchange):
+    def __init__(self) -> None:
+        super().__init__()
+        self.attempts = 0
+        self.close_calls = 0
+
+    async def watch_ohlcv(self, _symbol, _timeframe):
+        self.attempts += 1
+        if self.attempts == 1:
+            raise TimeoutError("ping-pong keepalive missing on time")
+        return [[1786262400000, "1", "2", "0.5", "1.5", "10"]]
+
+    async def close(self):
+        self.close_calls += 1
+
+
+class ConcurrentTimeoutWebsocketExchange(RecoveringWebsocketExchange):
+    def __init__(self) -> None:
+        super().__init__()
+        self.arrived = 0
+        self.release = asyncio.Event()
+
+    async def watch_ohlcv(self, _symbol, _timeframe):
+        self.attempts += 1
+        if self.attempts <= 2:
+            self.arrived += 1
+            if self.arrived == 2:
+                self.release.set()
+            await self.release.wait()
+            raise TimeoutError("connection timeout")
+        return [[1786262400000, "1", "2", "0.5", "1.5", "10"]]
+
+
 def parsed_settings():
     return CCXTCryptoSettings.from_mapping(settings())
 
@@ -136,6 +183,78 @@ def test_transient_read_timeout_is_logged_and_retried(caplog) -> None:
     ]
     assert len(events) == 2
     assert exchange.attempts == 3
+
+
+def test_okx_50001_maintenance_read_is_logged_and_retried(caplog) -> None:
+    exchange = MaintenanceExchange()
+    client = OKXDemoClient(parsed_settings(), exchange=exchange)
+
+    assert asyncio.run(client.fetch_time()) == 1786320000000
+    events = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "broker.crypto.read_retry"
+    ]
+    assert len(events) == 2
+    assert exchange.attempts == 3
+
+
+@pytest.mark.asyncio
+async def test_transient_websocket_timeout_resets_connection_before_retry(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    rest_exchange = FakeExchange()
+    websocket_exchange = RecoveringWebsocketExchange()
+    client = OKXDemoClient(
+        parsed_settings(),
+        exchange=rest_exchange,
+        ws_exchange=websocket_exchange,
+    )
+
+    with pytest.raises(BrokerConnectionError) as error:
+        await client.watch_ohlcv("BTC/USDT", "1m")
+
+    assert error.value.details == {
+        "operation": "watch_ohlcv",
+        "error_type": "TimeoutError",
+        "websocketGeneration": 0,
+        "resetPerformed": True,
+        "nextWebsocketGeneration": 1,
+    }
+    assert websocket_exchange.close_calls == 1
+    assert await client.watch_ohlcv("BTC/USDT", "1m") == [
+        [1786262400000, "1", "2", "0.5", "1.5", "10"]
+    ]
+    reset_records = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "broker.crypto.websocket_reset"
+    ]
+    assert len(reset_records) == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_websocket_timeouts_reset_failed_generation_once() -> None:
+    websocket_exchange = ConcurrentTimeoutWebsocketExchange()
+    client = OKXDemoClient(
+        parsed_settings(),
+        exchange=FakeExchange(),
+        ws_exchange=websocket_exchange,
+    )
+
+    failures = await asyncio.gather(
+        client.watch_ohlcv("BTC/USDT", "1m"),
+        client.watch_ohlcv("ETH/USDT", "1m"),
+        return_exceptions=True,
+    )
+
+    assert all(isinstance(item, BrokerConnectionError) for item in failures)
+    assert sorted(
+        bool(item.details["resetPerformed"])  # type: ignore[union-attr]
+        for item in failures
+    ) == [False, True]
+    assert websocket_exchange.close_calls == 1
+    assert await client.watch_ohlcv("BTC/USDT", "1m")
 
 
 def test_client_resolves_ccxt_hostname_template_before_allowlist_check() -> None:

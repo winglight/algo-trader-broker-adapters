@@ -20,11 +20,11 @@ from zoneinfo import ZoneInfo
 from typing import Any, AsyncIterator, Awaitable, Callable, Iterable, Mapping, TypeVar, Generic
 
 from concurrent.futures import ThreadPoolExecutor
-from ib_async import IB, Order
+from ib_async import IB
 from ib_async.objects import ExecutionFilter
 
 from .settings import IBGatewaySettings
-from .exceptions import IBConnectionError, IBMarketDataError, IBOrderError
+from .exceptions import IBConnectionError, IBMarketDataError, IBOrderError, IBScreenerError
 from .market_data import (
     DOMLevel,
     DOMSnapshot,
@@ -37,7 +37,16 @@ from .market_data import (
     TickByTickMidPoint,
 )
 from .orders import FutureOrderRequest, OptionOrderRequest, OrderResult, StockOrderRequest
-from algo_trader_broker_sdk import TradeUpdate
+from algo_trader_broker_sdk import (
+    BrokerFundamentalReport,
+    BrokerHistoricalNewsItem,
+    BrokerHistoricalNewsRequest,
+    BrokerNewsProvider,
+    ScreenerDiscoveryRequest,
+    ScreenerSnapshot,
+    ScreenerSymbolRow,
+    TradeUpdate,
+)
 
 try:  # pragma: no cover - optional IB scanner types
     from ib_async import ScannerSubscription
@@ -169,6 +178,9 @@ _COMPETING_LIVE_SESSION_ERROR_CODE = 10197
 _DISCONNECTED_LIVE_UPDATES_ERROR_CODE = 10182
 _HISTORICAL_PACING_ERROR_CODE = 162
 _INVALID_HISTORICAL_DATETIME_ERROR_CODE = 10314
+_SCREENER_SECONDARY_ERROR_CODE = 365
+_SCREENER_SUBSCRIPTION_LIMIT_ERROR_CODE = 322
+_SCREENER_PERMISSION_ERROR_CODE = 10360
 
 
 def _is_historical_pacing_error(code: int | None, message: Any) -> bool:
@@ -797,88 +809,200 @@ class IBAsyncClient:
         tag_filters: Iterable[Mapping[str, Any]] | None = None,
         stream_seconds: float | None = None,
     ) -> list[dict[str, Any]]:
-        """Execute an IB scanner request and normalize the results."""
+        """Return the first complete snapshot using the streaming lifecycle."""
 
-        subscription, tags = _build_scanner_subscription(payload, tag_filters)
+        request = _scanner_request_from_legacy(payload, tag_filters)
+        iterator = self.stream_scanner_data(request)
+        timeout = max(0.1, float(stream_seconds) if stream_seconds is not None else 5.0)
         try:
-            LOGGER.info(
-                "IB scanner request prepared | subscription=%s tags=%s",
-                subscription,
-                len(tags),
+            snapshot = await asyncio.wait_for(anext(iterator), timeout=timeout)
+            return [_screener_row_to_legacy_payload(row) for row in snapshot.rows]
+        except asyncio.TimeoutError:
+            return []
+        finally:
+            await iterator.aclose()
+
+    async def stream_scanner_data(
+        self,
+        request: ScreenerDiscoveryRequest,
+    ) -> AsyncIterator[ScreenerSnapshot]:
+        """Yield latest-only complete snapshots from one native subscription."""
+
+        subscription, tags = _build_scanner_subscription(
+            {
+                "scanCode": request.source_key,
+                "instrument": request.instrument,
+                "locationCode": request.location_code,
+                "numberOfRows": request.max_rows,
+                "filters": [
+                    {"tag": key, "value": value}
+                    for key, value in request.parameters.items()
+                ],
+            }
+        )
+        ib = await self.ensure_connected()
+        req_stream = getattr(ib, "reqScannerSubscription", None)
+        if not callable(req_stream):
+            raise IBScreenerError(
+                "IB client does not support scanner subscriptions",
+                code="screener_not_supported",
             )
-        except Exception:
-            LOGGER.debug("Failed to log IB scanner request payload", exc_info=True)
+        kwargs: dict[str, Any] = {}
+        try:
+            parameters = inspect.signature(req_stream).parameters
+        except (TypeError, ValueError):
+            parameters = {}
+        if "scannerSubscriptionFilterOptions" in parameters:
+            kwargs["scannerSubscriptionFilterOptions"] = tags
+        elif "filterOptions" in parameters:
+            kwargs["filterOptions"] = tags
+        scan_data = req_stream(subscription, **kwargs)
+        req_id = _optional_int(getattr(scan_data, "reqId", None))
+        queue: asyncio.Queue[ScreenerSnapshot] = asyncio.Queue(maxsize=1)
+        error_future: asyncio.Future[IBScreenerError] = asyncio.get_running_loop().create_future()
+        loop = asyncio.get_running_loop()
+        closing = False
+        cancelled = False
 
-        async def fetch(ib: IB) -> list[dict[str, Any]]:
-            req_stream = getattr(ib, "reqScannerSubscription", None)
-            method = getattr(ib, "reqScannerDataAsync", None)
-            if method is None and not callable(req_stream):
-                raise IBMarketDataError("IB client does not support scanner data requests")
-            if callable(req_stream):
-                try:
-                    sig = inspect.signature(req_stream)
-                except (TypeError, ValueError):
-                    sig = None
-                kwargs: dict[str, Any] = {}
-                if sig is not None:
-                    params = sig.parameters
-                    if "scannerSubscriptionFilterOptions" in params:
-                        kwargs["scannerSubscriptionFilterOptions"] = tags
-                    elif "filterOptions" in params:
-                        kwargs["filterOptions"] = tags
-                scan_data = req_stream(subscription, **kwargs)  # type: ignore[misc]
+        def publish_snapshot(*_args: Any) -> None:
+            snapshot = _scanner_snapshot(request.source_key, scan_data, req_id=req_id)
+
+            def enqueue() -> None:
+                if closing:
+                    return
+                if queue.full():
+                    with suppress(asyncio.QueueEmpty):
+                        queue.get_nowait()
+                queue.put_nowait(snapshot)
+
+            loop.call_soon_threadsafe(enqueue)
+
+        def on_error(*args: Any) -> None:
+            if len(args) < 3:
+                return
+            native_req_id = _optional_int(args[0])
+            code = _optional_int(args[1])
+            message = str(args[2] or "")
+            if req_id is not None and native_req_id not in {None, -1, req_id}:
+                return
+            mapped = _map_scanner_error(code, message, closing=closing)
+            if mapped is None or error_future.done():
+                return
+
+            def resolve_error() -> None:
+                if not error_future.done():
+                    error_future.set_result(mapped)
+
+            loop.call_soon_threadsafe(resolve_error)
+
+        update_event = getattr(scan_data, "updateEvent", None)
+        error_event = getattr(ib, "errorEvent", None)
+        _event_add(update_event, publish_snapshot)
+        _event_add(error_event, on_error)
+        if list(scan_data):
+            publish_snapshot()
+        snapshot_task: asyncio.Task[ScreenerSnapshot] | None = None
+        try:
+            while True:
+                snapshot_task = asyncio.create_task(queue.get())
+                done, pending = await asyncio.wait(
+                    {snapshot_task, error_future},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for task in pending:
+                    if task is not error_future:
+                        task.cancel()
+                if error_future in done:
+                    snapshot_task.cancel()
+                    raise error_future.result()
+                yield snapshot_task.result()
+        finally:
+            if snapshot_task is not None and not snapshot_task.done():
+                snapshot_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await snapshot_task
+            if not error_future.done():
+                error_future.cancel()
+            closing = True
+            _event_remove(update_event, publish_snapshot)
+            _event_remove(error_event, on_error)
+            if not cancelled:
+                cancelled = True
                 cancel = getattr(ib, "cancelScannerSubscription", None)
-                try:
-                    wait_for = float(stream_seconds) if stream_seconds is not None else 5.0
-                    if wait_for > 0:
-                        await asyncio.sleep(wait_for)
-                    data = list(scan_data)
-                    if data:
-                        try:
-                            sample = data[0]
-                            details = getattr(sample, "contractDetails", None)
-                            contract = getattr(details, "contract", None) if details is not None else None
-                            LOGGER.warning(
-                                "IB scanner raw sample | entry=%s contractDetails=%s contract=%s",
-                                sample,
-                                details,
-                                contract,
-                            )
-                        except Exception:
-                            LOGGER.debug("Failed to log IB scanner raw sample", exc_info=True)
-                    return [_scanner_data_to_dict(entry) for entry in data]
-                finally:
-                    if callable(cancel):
-                        with suppress(Exception):
-                            cancel(scan_data)
-                return []
-            try:
-                data = None
-                try:
-                    sig = inspect.signature(method)
-                except (TypeError, ValueError):
-                    sig = None
-                if sig is not None:
-                    parameters = sig.parameters
-                    kwargs: dict[str, Any] = {}
-                    if "scannerSubscriptionFilterOptions" in parameters:
-                        kwargs["scannerSubscriptionFilterOptions"] = tags
-                    elif "filterOptions" in parameters:
-                        kwargs["filterOptions"] = tags
-                    elif "scannerSubscriptionOptions" in parameters:
-                        # IB uses misc options for manual-only; avoid sending filters there.
-                        kwargs = {}
-                    if kwargs:
-                        data = await method(subscription, **kwargs)  # type: ignore[misc]
-                    else:
-                        data = await method(subscription)  # type: ignore[misc]
-                else:
-                    data = await method(subscription, tags)  # type: ignore[misc]
-            except TypeError:
-                data = await method(subscription)  # type: ignore[misc]
-            return [_scanner_data_to_dict(entry) for entry in (data or [])]
+                if callable(cancel):
+                    with suppress(Exception):
+                        cancel(scan_data)
 
-        return await self._run_with_ib_async(fetch)
+    async def request_news_providers(self) -> list[BrokerNewsProvider]:
+        ib = await self.ensure_connected()
+        try:
+            providers = await ib.reqNewsProvidersAsync()
+        except Exception as exc:
+            raise _project_ib_content_error(exc, operation="news_providers") from exc
+        return [
+            BrokerNewsProvider(
+                code=str(getattr(item, "code", "") or "").strip().upper(),
+                name=str(getattr(item, "name", "") or "").strip(),
+            )
+            for item in providers or ()
+            if str(getattr(item, "code", "") or "").strip()
+        ]
+
+    async def request_historical_news(
+        self,
+        request: BrokerHistoricalNewsRequest,
+    ) -> list[BrokerHistoricalNewsItem]:
+        ib = await self.ensure_connected()
+        try:
+            items = await ib.reqHistoricalNewsAsync(
+                request.contract_id,
+                "+".join(request.provider_codes),
+                _format_ib_content_datetime(request.start_at),
+                _format_ib_content_datetime(request.end_at),
+                request.limit,
+            )
+        except Exception as exc:
+            raise _project_ib_content_error(exc, operation="historical_news") from exc
+        return [
+            BrokerHistoricalNewsItem(
+                article_id=str(getattr(item, "articleId", "") or "").strip(),
+                provider_code=str(getattr(item, "providerCode", "") or "").strip().upper(),
+                published_at=_parse_ib_content_datetime(getattr(item, "time", None)),
+                headline=str(getattr(item, "headline", "") or "").strip() or None,
+            )
+            for item in items or ()
+            if str(getattr(item, "articleId", "") or "").strip()
+            and str(getattr(item, "providerCode", "") or "").strip()
+        ]
+
+    async def request_fundamental_report(
+        self,
+        contract: Any,
+        *,
+        report_type: str,
+    ) -> BrokerFundamentalReport:
+        ib = await self.ensure_connected()
+        normalized_type = str(report_type or "").strip()
+        if normalized_type not in {"ReportSnapshot", "ReportsFinSummary", "ReportsOwnership"}:
+            raise IBScreenerError(
+                f"Unsupported IB fundamental report type `{normalized_type}`",
+                code="screener_fundamental_report_type_invalid",
+            )
+        try:
+            content = await ib.reqFundamentalDataAsync(contract, normalized_type)
+        except Exception as exc:
+            raise _project_ib_content_error(exc, operation="fundamental_report") from exc
+        if not str(content or "").strip():
+            raise IBScreenerError(
+                "IB returned no fundamental report content",
+                code="screener_fundamental_unavailable",
+                details={"reportType": normalized_type},
+            )
+        return BrokerFundamentalReport(
+            report_type=normalized_type,
+            content=str(content),
+            received_at=datetime.now(timezone.utc),
+        )
 
     async def request_contract_details(self, contract: Any) -> list[dict[str, Any]]:
         """Fetch contract details and normalize them for downstream services."""
@@ -943,7 +1067,7 @@ class IBAsyncClient:
         except Exception as exc:
             raise IBMarketDataError("Failed to qualify contract for market snapshot") from exc
 
-        async def fetch(ib: IB) -> dict[str, Any]:
+        async def fetch_snapshot(ib: IB) -> dict[str, Any]:
             timeout = float(snapshot_timeout or getattr(self._settings, "historical_timeout", 15.0) or 15.0)
             ticker: Any | None = None
             req_tickers = getattr(ib, "reqTickersAsync", None)
@@ -964,7 +1088,7 @@ class IBAsyncClient:
                 error_handler: Callable[..., None] | None = None
                 failure_future: asyncio.Future[tuple[int | None, str]] | None = None
                 target_req_id = getattr(ticker, "reqId", None)
-                loop = self._loop or asyncio.get_running_loop()
+                loop = getattr(self, "_loop", None) or asyncio.get_running_loop()
                 if error_event is not None:
                     future: asyncio.Future[tuple[int | None, str]] = loop.create_future()
 
@@ -1014,6 +1138,37 @@ class IBAsyncClient:
                         _cancel_market_data(ib, ticker, contract)
 
             return _ticker_to_snapshot(ticker, contract=contract)
+
+        async def fetch(ib: IB) -> dict[str, Any]:
+            error_event = getattr(ib, "errorEvent", None)
+            loop = asyncio.get_running_loop()
+            competing_error: asyncio.Future[tuple[int | None, str]] = loop.create_future()
+
+            def on_error(_req_id: Any, code: Any, message: Any, _misc: Any) -> None:
+                code_int = _optional_int(code)
+                if self._is_competing_live_session_error(code_int, message) and not competing_error.done():
+                    competing_error.set_result((code_int, str(message)))
+
+            _event_add(error_event, on_error)
+            request_task = asyncio.create_task(fetch_snapshot(ib))
+            try:
+                done, _pending = await asyncio.wait(
+                    {request_task, competing_error},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if competing_error in done:
+                    request_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await request_task
+                    code, message = competing_error.result()
+                    raise IBScreenerError(
+                        message,
+                        code="screener_market_data_competing_session",
+                        details={"nativeCode": code, "operation": "market_snapshot"},
+                    )
+                return request_task.result()
+            finally:
+                _event_remove(error_event, on_error)
 
         return await self._run_with_ib_async(fetch)
 
@@ -2391,7 +2546,9 @@ class IBAsyncClient:
                     if failure_future is not None and failure_future in done:
                         code, message = failure_future.result()
                         raise IBMarketDataError(
-                            f"Real-time market data request rejected by IB (code {code}): {message}"
+                            f"Real-time market data request rejected by IB (code {code}): {message}",
+                            code="screener_market_data_competing_session",
+                            details={"nativeCode": code, "operation": "realtime_price"},
                         )
                     result = next(iter(done))
                     yield result.result()
@@ -4789,6 +4946,168 @@ def _build_historical_tick(
     return None
 
 
+_SCANNER_SUBSCRIPTION_KEYS = {
+    "numberOfRows", "instrument", "locationCode", "scanCode", "abovePrice",
+    "belowPrice", "aboveVolume", "marketCapAbove", "marketCapBelow",
+    "moodyRatingAbove", "moodyRatingBelow", "spRatingAbove", "spRatingBelow",
+    "maturityDateAbove", "maturityDateBelow", "couponRateAbove", "couponRateBelow",
+    "excludeConvertible", "averageOptionVolumeAbove", "scannerSettingPairs",
+    "stockTypeFilter",
+}
+
+
+def _format_ib_content_datetime(value: datetime) -> str:
+    normalized = value.astimezone(timezone.utc) if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    return normalized.strftime("%Y%m%d %H:%M:%S UTC")
+
+
+def _parse_ib_content_datetime(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc) if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    token = str(value or "").strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%Y%m%d  %H:%M:%S"):
+        try:
+            return datetime.strptime(token, fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    raise IBScreenerError(
+        "IB historical news returned an invalid timestamp",
+        code="screener_news_payload_invalid",
+    )
+
+
+def _project_ib_content_error(exc: Exception, *, operation: str) -> IBScreenerError:
+    code = _optional_int(
+        getattr(exc, "errorCode", None)
+        or getattr(exc, "code", None)
+        or getattr(exc, "error_code", None)
+    )
+    message = str(exc)
+    lowered = message.lower()
+    if code == 10358 or ("fundamental" in lowered and "not allowed" in lowered):
+        stable_code = "screener_fundamental_permission_denied"
+    elif "news" in lowered and ("not allowed" in lowered or "permission" in lowered):
+        stable_code = "screener_news_permission_denied"
+    else:
+        stable_code = f"screener_{operation}_failed"
+    return IBScreenerError(
+        message or f"IB {operation} failed",
+        code=stable_code,
+        details={"nativeCode": code, "operation": operation},
+    )
+
+
+def _event_add(event: Any, callback: Callable[..., None]) -> None:
+    if event is None:
+        return
+    try:
+        event += callback
+    except Exception as exc:
+        raise IBScreenerError(
+            "IB scanner event subscription failed",
+            code="screener_stream_event_binding_failed",
+        ) from exc
+
+
+def _event_remove(event: Any, callback: Callable[..., None]) -> None:
+    if event is None:
+        return
+    with suppress(Exception):
+        event -= callback
+
+
+def _map_scanner_error(code: int | None, message: str, *, closing: bool) -> IBScreenerError | None:
+    lowered = message.lower()
+    if code in {2104, 2106, 2107, 2108, 2158} or any(
+        marker in lowered
+        for marker in (
+            "connection is ok",
+            "farm is connecting",
+            "inactive but should be available",
+        )
+    ):
+        return None
+    if code == _SCREENER_SECONDARY_ERROR_CODE:
+        return None
+    if code == 162 and (closing or "subscription cancelled" in lowered):
+        return None
+    stable_code = "screener_scanner_request_failed"
+    if code == _SCREENER_SUBSCRIPTION_LIMIT_ERROR_CODE:
+        stable_code = "screener_scanner_subscription_limit"
+    elif code == 162:
+        stable_code = "screener_scanner_code_disabled"
+    elif code == _SCREENER_PERMISSION_ERROR_CODE:
+        stable_code = "screener_scanner_filter_not_allowed"
+    elif code == _COMPETING_LIVE_SESSION_ERROR_CODE:
+        stable_code = "screener_market_data_competing_session"
+    return IBScreenerError(
+        message or "IB scanner request failed",
+        code=stable_code,
+        details={"nativeCode": code, "operation": "scanner_subscription"},
+    )
+
+
+def _scanner_request_from_legacy(
+    payload: Mapping[str, Any],
+    tag_filters: Iterable[Mapping[str, Any]] | None,
+) -> ScreenerDiscoveryRequest:
+    filters = payload.get("filters") or payload.get("tag_filters") or payload.get("tagFilters")
+    if filters is None:
+        filters = tag_filters
+    parameters: dict[str, Any] = {}
+    for entry in filters or ():
+        if not isinstance(entry, Mapping):
+            continue
+        key = str(entry.get("tag") or entry.get("name") or "").strip()
+        if not key:
+            continue
+        parameters[key] = entry.get("value") if "value" in entry else entry.get("tagValue")
+    return ScreenerDiscoveryRequest(
+        source_key=str(payload.get("scanCode") or payload.get("scan_code") or ""),
+        instrument=str(payload.get("instrument") or ""),
+        location_code=str(payload.get("locationCode") or payload.get("location_code") or ""),
+        max_rows=int(payload.get("numberOfRows") or payload.get("number_of_rows") or 50),
+        parameters=parameters,
+    )
+
+
+def _scanner_snapshot(source_key: str, entries: Iterable[Any], *, req_id: int | None) -> ScreenerSnapshot:
+    rows: list[ScreenerSymbolRow] = []
+    for entry in entries:
+        payload = _scanner_data_to_dict(entry)
+        symbol = str(payload.get("symbol") or "").strip()
+        if not symbol:
+            continue
+        rows.append(
+            ScreenerSymbolRow(
+                rank=int(payload.get("rank") or 0),
+                symbol=symbol,
+                contract_id=_optional_int(payload.get("conId")),
+                sec_type=payload.get("secType"),
+                exchange=payload.get("exchange"),
+                primary_exchange=payload.get("primaryExchange"),
+                currency=payload.get("currency"),
+                local_symbol=payload.get("localSymbol"),
+                trading_class=payload.get("tradingClass"),
+            )
+        )
+    return ScreenerSnapshot(
+        source_key=source_key,
+        rows=tuple(rows),
+        received_at=datetime.now(timezone.utc),
+        native_request_id=req_id,
+    )
+
+
+def _screener_row_to_legacy_payload(row: ScreenerSymbolRow) -> dict[str, Any]:
+    return {
+        "rank": row.rank, "symbol": row.symbol, "conId": row.contract_id,
+        "secType": row.sec_type, "exchange": row.exchange,
+        "primaryExchange": row.primary_exchange, "currency": row.currency,
+        "localSymbol": row.local_symbol, "tradingClass": row.trading_class,
+    }
+
+
 def _build_scanner_subscription(
     payload: Mapping[str, Any],
     tag_filters: Iterable[Mapping[str, Any]] | None = None,
@@ -4812,6 +5131,13 @@ def _build_scanner_subscription(
         if raw_key in {"filters", "tag_filters", "tagFilters"}:
             continue
         key = key_map.get(raw_key, raw_key)
+        if key not in _SCANNER_SUBSCRIPTION_KEYS:
+            raise IBScreenerError(
+                f"Unknown IB scanner subscription field `{raw_key}`",
+                code="screener_scanner_parameter_invalid",
+                details={"field": str(raw_key)},
+            )
+        value = _validated_scanner_subscription_value(key, value)
         if isinstance(subscription, dict):
             subscription[key] = value
             continue
@@ -4832,6 +5158,18 @@ def _build_scanner_subscription(
             value = entry.get("value") if "value" in entry else entry.get("tagValue")
             if tag is None or value is None:
                 continue
+            if not isinstance(tag, str) or not tag.strip():
+                raise IBScreenerError(
+                    "IB scanner filter tag must be a non-empty string",
+                    code="screener_scanner_parameter_invalid",
+                    details={"field": "filters.tag"},
+                )
+            if isinstance(value, (Mapping, list, tuple, set)):
+                raise IBScreenerError(
+                    f"IB scanner filter `{tag}` requires a scalar value",
+                    code="screener_scanner_parameter_invalid",
+                    details={"field": str(tag)},
+                )
             if TagValue is not None:
                 try:
                     tags.append(TagValue(str(tag), str(value)))
@@ -4841,6 +5179,39 @@ def _build_scanner_subscription(
             tags.append({"tag": str(tag), "value": str(value)})
 
     return subscription, tags
+
+
+def _validated_scanner_subscription_value(key: str, value: Any) -> Any:
+    if key == "numberOfRows":
+        if isinstance(value, bool):
+            valid = False
+        else:
+            try:
+                value = int(value)
+            except (TypeError, ValueError):
+                valid = False
+            else:
+                valid = 1 <= value <= 50
+        if not valid:
+            raise IBScreenerError(
+                "IB scanner numberOfRows must be an integer between 1 and 50",
+                code="screener_scanner_parameter_invalid",
+                details={"field": key},
+            )
+        return value
+    if key in {"scanCode", "instrument", "locationCode"}:
+        if not isinstance(value, str) or not value.strip():
+            raise IBScreenerError(
+                f"IB scanner {key} must be a non-empty string",
+                code="screener_scanner_parameter_invalid",
+                details={"field": key},
+            )
+        return value.strip()
+    raise IBScreenerError(
+        f"Unknown IB scanner subscription field `{key}`",
+        code="screener_scanner_parameter_invalid",
+        details={"field": key},
+    )
 
 
 def _scanner_data_to_dict(entry: Any) -> dict[str, Any]:
@@ -4863,6 +5234,7 @@ def _scanner_data_to_dict(entry: Any) -> dict[str, Any]:
         payload["currency"] = getattr(base_contract, "currency", None)
         payload["secType"] = getattr(base_contract, "secType", None)
         payload["conId"] = getattr(base_contract, "conId", None)
+        payload["tradingClass"] = getattr(base_contract, "tradingClass", None)
         if not payload.get("symbol"):
             try:
                 LOGGER.warning(

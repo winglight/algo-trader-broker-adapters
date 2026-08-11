@@ -14,6 +14,10 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Iterable, Mapping
 
 from algo_trader_broker_sdk import (
     AccountSummaryItem,
+    BrokerFundamentalReport,
+    BrokerHistoricalNewsItem,
+    BrokerHistoricalNewsRequest,
+    BrokerNewsProvider,
     BrokerAdapterManifest,
     BrokerCapabilities,
     BrokerCapabilityError,
@@ -29,6 +33,8 @@ from algo_trader_broker_sdk import (
     OrderResult,
     PositionItem,
     RealTimePrice,
+    ScreenerDiscoveryRequest,
+    ScreenerSnapshot,
     StockOrderRequest,
     TickByTickBidAsk,
     TickByTickLast,
@@ -273,8 +279,8 @@ class IBKRPaperAdapter:
         return BrokerAdapterManifest(
             adapter_id=self.adapter_id,
             display_name="IBKR Paper Adapter",
-            adapter_version="0.1.0",
-            protocol_version="1.0",
+            adapter_version="0.2.0",
+            protocol_version="1.1",
             environment="PAPER",
             entrypoint="algo_trader_broker_adapter_ibkr_paper:create_adapter",
             capabilities=self.capabilities(),
@@ -294,12 +300,30 @@ class IBKRPaperAdapter:
             supports_replace=False,
             supports_partial_fills=True,
             supports_scanner=True,
+            supports_screener=True,
             supports_options=False,
             supports_futures=True,
             default_asset_class="FUT",
             symbol_examples={
                 "FUT": ["MNQ", "MES", "M2K"],
                 "STK": ["AAPL", "TSLA", "NVDA"],
+            },
+            native={
+                "scanner": {
+                    "supported": True,
+                    "streaming": True,
+                    "snapshotSemantics": "FULL_REPLACE",
+                    "maxConcurrentSubscriptions": 10,
+                    "maxRowsPerSnapshot": 50,
+                    "verifiedAt": "2026-08-11T01:27:00Z",
+                },
+                "screener": {
+                    "provider": "ib",
+                    "logicalDefinitionVersion": "screener.definition.v1",
+                    "discoveryCombination": "ALL",
+                    "newsMetadata": True,
+                    "fundamentalReports": True,
+                },
             },
         )
 
@@ -512,6 +536,34 @@ class IBKRPaperAdapter:
     ) -> list[dict[str, Any]]:
         return await self._client.request_scanner_data(
             payload, tag_filters=tag_filters, stream_seconds=stream_seconds
+        )
+
+    async def stream_scanner_data(
+        self,
+        request: ScreenerDiscoveryRequest,
+    ) -> AsyncIterator[ScreenerSnapshot]:
+        async for snapshot in self._client.stream_scanner_data(request):
+            yield snapshot
+
+    async def request_news_providers(self) -> list[BrokerNewsProvider]:
+        return await self._client.request_news_providers()
+
+    async def request_historical_news(
+        self,
+        request: BrokerHistoricalNewsRequest,
+    ) -> list[BrokerHistoricalNewsItem]:
+        return await self._client.request_historical_news(request)
+
+    async def request_fundamental_report(
+        self,
+        contract: Mapping[str, Any],
+        *,
+        report_type: str,
+    ) -> BrokerFundamentalReport:
+        qualified = await self._qualify_contract_object(contract)
+        return await self._client.request_fundamental_report(
+            qualified,
+            report_type=report_type,
         )
 
     async def request_market_snapshot(

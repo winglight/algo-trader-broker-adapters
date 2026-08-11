@@ -67,6 +67,8 @@ class OKXDemoClient:
     ) -> None:
         self.settings = settings
         self._semaphore = asyncio.Semaphore(settings.rest_max_concurrency)
+        self._websocket_reset_lock = asyncio.Lock()
+        self._websocket_generation = 0
         if exchange is None:
             try:
                 import ccxt.async_support as ccxtasync
@@ -186,9 +188,25 @@ class OKXDemoClient:
     @classmethod
     def _is_transient_read_failure(cls, exc: Exception) -> bool:
         error_type = cls._error_type(exc).lower()
+        current: BaseException | None = exc
+        chain: list[str] = []
+        visited: set[int] = set()
+        while current is not None and id(current) not in visited:
+            visited.add(id(current))
+            chain.append(f"{type(current).__name__} {current}".lower())
+            current = current.__cause__ or current.__context__
+        evidence = " ".join((error_type, *chain))
         return any(
-            token in error_type
-            for token in ("timeout", "network", "unavailable", "disconnect")
+            token in evidence
+            for token in (
+                "timeout",
+                "network",
+                "unavailable",
+                "disconnect",
+                "onmaintenance",
+                "temporarily unavailable",
+                '"code":"50001"',
+            )
         )
 
     @staticmethod
@@ -287,22 +305,106 @@ class OKXDemoClient:
         return list(await self._read("fetch_my_trades", symbol, None, 100))
 
     async def watch_ticker(self, symbol: str) -> Mapping[str, Any]:
-        return await self.ws_exchange.watch_ticker(symbol)
+        return await self._watch("watch_ticker", symbol)
 
     async def watch_trades(self, symbol: str) -> list[Mapping[str, Any]]:
-        return list(await self.ws_exchange.watch_trades(symbol))
+        return list(await self._watch("watch_trades", symbol))
 
     async def watch_ohlcv(self, symbol: str, timeframe: str) -> list[list[Any]]:
-        return list(await self.ws_exchange.watch_ohlcv(symbol, timeframe))
+        return list(await self._watch("watch_ohlcv", symbol, timeframe))
 
     async def watch_orders(self) -> list[Mapping[str, Any]]:
-        return list(await self.ws_exchange.watch_orders())
+        return list(await self._watch("watch_orders"))
 
     async def watch_my_trades(self) -> list[Mapping[str, Any]]:
-        return list(await self.ws_exchange.watch_my_trades())
+        return list(await self._watch("watch_my_trades"))
 
     async def watch_balance(self) -> Mapping[str, Any]:
-        return await self.ws_exchange.watch_balance({"type": "spot"})
+        return await self._watch("watch_balance", {"type": "spot"})
+
+    async def _watch(self, method: str, *args: Any) -> Any:
+        generation = self._websocket_generation
+        try:
+            return await getattr(self.ws_exchange, method)(*args)
+        except BrokerError:
+            raise
+        except Exception as exc:
+            if not self._is_transient_websocket_failure(exc):
+                raise BrokerConnectionError(
+                    f"OKX Demo {method} websocket request failed",
+                    details={
+                        "operation": method,
+                        "error_type": type(exc).__name__,
+                        "websocketGeneration": generation,
+                    },
+                ) from exc
+            reset = await self._reset_websocket(
+                failed_generation=generation,
+                operation=method,
+                error=exc,
+            )
+            raise BrokerConnectionError(
+                f"OKX Demo {method} websocket connection was reset after a transient failure",
+                details={
+                    "operation": method,
+                    "error_type": type(exc).__name__,
+                    "websocketGeneration": generation,
+                    "resetPerformed": reset,
+                    "nextWebsocketGeneration": self._websocket_generation,
+                },
+            ) from exc
+
+    async def _reset_websocket(
+        self,
+        *,
+        failed_generation: int,
+        operation: str,
+        error: Exception,
+    ) -> bool:
+        async with self._websocket_reset_lock:
+            if failed_generation != self._websocket_generation:
+                return False
+            try:
+                await self.ws_exchange.close()
+            except Exception as close_error:
+                raise BrokerConnectionError(
+                    "OKX Demo websocket reset failed",
+                    details={
+                        "operation": operation,
+                        "error_type": type(error).__name__,
+                        "close_error_type": type(close_error).__name__,
+                        "websocketGeneration": failed_generation,
+                    },
+                ) from close_error
+            self._websocket_generation += 1
+            LOGGER.warning(
+                "OKX Demo websocket connection reset after transient failure",
+                extra={
+                    "event": "broker.crypto.websocket_reset",
+                    "broker.adapter_id": "ccxt_crypto",
+                    "broker.operation": operation,
+                    "broker.error_type": type(error).__name__,
+                    "broker.websocket_generation": self._websocket_generation,
+                },
+            )
+            return True
+
+    @staticmethod
+    def _is_transient_websocket_failure(exc: Exception) -> bool:
+        value = f"{type(exc).__name__} {exc}".lower()
+        return any(
+            token in value
+            for token in (
+                "timeout",
+                "ping-pong",
+                "keepalive",
+                "network",
+                "connectionclosed",
+                "connection closed",
+                "disconnect",
+                "temporarily unavailable",
+            )
+        )
 
     async def close(self) -> None:
         await self.exchange.close()
