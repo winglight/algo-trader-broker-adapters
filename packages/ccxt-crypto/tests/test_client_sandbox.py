@@ -140,21 +140,50 @@ def test_client_enables_and_verifies_okx_demo_before_io(caplog) -> None:
 def test_client_isolates_rest_and_websocket_boundaries() -> None:
     rest_exchange = FakeExchange()
     websocket_exchange = FakeExchange()
+    bar_websocket_exchange = FakeExchange()
+    private_websocket_exchange = FakeExchange()
     client = OKXDemoClient(
         parsed_settings(),
         exchange=rest_exchange,
         ws_exchange=websocket_exchange,
+        bar_ws_exchange=bar_websocket_exchange,
+        private_ws_exchange=private_websocket_exchange,
     )
 
     assert client.exchange is rest_exchange
     assert client.ws_exchange is websocket_exchange
     assert rest_exchange.sandbox_calls == 1
     assert websocket_exchange.sandbox_calls == 1
+    assert bar_websocket_exchange.sandbox_calls == 1
+    assert private_websocket_exchange.sandbox_calls == 1
 
     asyncio.run(client.close())
 
     assert rest_exchange.closed is True
     assert websocket_exchange.closed is True
+    assert bar_websocket_exchange.closed is True
+    assert private_websocket_exchange.closed is True
+
+
+@pytest.mark.asyncio
+async def test_websocket_resets_are_isolated_by_protocol_boundary() -> None:
+    public_exchange = RecoveringWebsocketExchange()
+    bar_exchange = RecoveringWebsocketExchange()
+    private_exchange = RecoveringWebsocketExchange()
+    client = OKXDemoClient(
+        parsed_settings(),
+        exchange=FakeExchange(),
+        ws_exchange=public_exchange,
+        bar_ws_exchange=bar_exchange,
+        private_ws_exchange=private_exchange,
+    )
+
+    with pytest.raises(BrokerConnectionError):
+        await client.watch_ohlcv("BTC/USDT", "1m")
+
+    assert bar_exchange.close_calls == 1
+    assert public_exchange.close_calls == 0
+    assert private_exchange.close_calls == 0
 
 
 def test_read_rate_limit_is_logged_and_retried(caplog) -> None:
@@ -216,6 +245,7 @@ async def test_transient_websocket_timeout_resets_connection_before_retry(
 
     assert error.value.details == {
         "operation": "watch_ohlcv",
+        "websocketBoundary": "bar",
         "error_type": "TimeoutError",
         "websocketGeneration": 0,
         "resetPerformed": True,

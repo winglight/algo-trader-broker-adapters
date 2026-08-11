@@ -64,11 +64,11 @@ class OKXDemoClient:
         *,
         exchange: Any | None = None,
         ws_exchange: Any | None = None,
+        bar_ws_exchange: Any | None = None,
+        private_ws_exchange: Any | None = None,
     ) -> None:
         self.settings = settings
         self._semaphore = asyncio.Semaphore(settings.rest_max_concurrency)
-        self._websocket_reset_lock = asyncio.Lock()
-        self._websocket_generation = 0
         if exchange is None:
             try:
                 import ccxt.async_support as ccxtasync
@@ -77,15 +77,28 @@ class OKXDemoClient:
                 raise BrokerConnectionError("ccxt async/pro is not installed") from exc
             exchange = ccxtasync.okx(_exchange_config(settings))
             ws_exchange = ccxtpro.okx(_exchange_config(settings))
+            bar_ws_exchange = ccxtpro.okx(_exchange_config(settings))
+            private_ws_exchange = ccxtpro.okx(_exchange_config(settings))
         elif ws_exchange is None:
             # Preserve the narrow fake-injection contract used by unit tests and
             # downstream adapters. Production always constructs isolated clients.
             ws_exchange = exchange
+        bar_ws_exchange = bar_ws_exchange or ws_exchange
+        private_ws_exchange = private_ws_exchange or ws_exchange
         self.exchange = exchange
         self.ws_exchange = ws_exchange
+        self.bar_ws_exchange = bar_ws_exchange
+        self.private_ws_exchange = private_ws_exchange
+        self._websocket_reset_locks = {
+            boundary: asyncio.Lock() for boundary in ("public", "bar", "private")
+        }
+        self._websocket_generations = {
+            boundary: 0 for boundary in ("public", "bar", "private")
+        }
         self.exchange.set_sandbox_mode(True)
-        if self.ws_exchange is not self.exchange:
-            self.ws_exchange.set_sandbox_mode(True)
+        for websocket in self._unique_websocket_exchanges():
+            if websocket is not self.exchange:
+                websocket.set_sandbox_mode(True)
         self._verify_sandbox()
         LOGGER.warning(
             "OKX Demo sandbox host and simulated-trading boundary verified",
@@ -98,7 +111,11 @@ class OKXDemoClient:
         )
 
     def _verify_sandbox(self) -> None:
-        for boundary, exchange in (("REST", self.exchange), ("WebSocket", self.ws_exchange)):
+        boundaries = [("REST", self.exchange)] + [
+            (f"WebSocket {name}", exchange)
+            for name, exchange in self._websocket_exchanges().items()
+        ]
+        for boundary, exchange in boundaries:
             options = getattr(exchange, "options", {}) or {}
             if options.get("sandboxMode") is not True:
                 raise BrokerContractError(f"CCXT OKX {boundary} sandboxMode was not enabled")
@@ -125,14 +142,31 @@ class OKXDemoClient:
                 "CCXT OKX REST host is outside the approved allowlist",
                 details={"approved": sorted(_REST_HOSTS)},
             )
-        ws_urls = getattr(self.ws_exchange, "urls", {}) or {}
-        ws_hostname = str(getattr(self.ws_exchange, "hostname", "") or "").strip().lower()
-        test_hosts = _hosts(
-            ws_urls.get("test") if isinstance(ws_urls, Mapping) else {},
-            hostname=ws_hostname,
-        )
-        if _DEMO_WS_HOST not in test_hosts or _PRODUCTION_WS_HOST in test_hosts:
-            raise BrokerContractError("OKX Demo WebSocket host must be wspap.okx.com")
+        for boundary, websocket in self._websocket_exchanges().items():
+            ws_urls = getattr(websocket, "urls", {}) or {}
+            ws_hostname = str(getattr(websocket, "hostname", "") or "").strip().lower()
+            test_hosts = _hosts(
+                ws_urls.get("test") if isinstance(ws_urls, Mapping) else {},
+                hostname=ws_hostname,
+            )
+            if _DEMO_WS_HOST not in test_hosts or _PRODUCTION_WS_HOST in test_hosts:
+                raise BrokerContractError(
+                    f"OKX Demo {boundary} WebSocket host must be wspap.okx.com"
+                )
+
+    def _websocket_exchanges(self) -> dict[str, Any]:
+        return {
+            "public": self.ws_exchange,
+            "bar": self.bar_ws_exchange,
+            "private": self.private_ws_exchange,
+        }
+
+    def _unique_websocket_exchanges(self) -> tuple[Any, ...]:
+        unique: list[Any] = []
+        for exchange in self._websocket_exchanges().values():
+            if all(exchange is not item for item in unique):
+                unique.append(exchange)
+        return tuple(unique)
 
     async def _call(self, method: str, *args: Any, **kwargs: Any) -> Any:
         async with self._semaphore:
@@ -240,8 +274,9 @@ class OKXDemoClient:
             or str(market.get("id") or "") in requested_ids
         ]
         result = self.exchange.set_markets(selected)
-        if self.ws_exchange is not self.exchange:
-            self.ws_exchange.set_markets(selected)
+        for websocket in self._unique_websocket_exchanges():
+            if websocket is not self.exchange:
+                websocket.set_markets(selected)
         return result
 
     async def fetch_time(self) -> int:
@@ -323,9 +358,11 @@ class OKXDemoClient:
         return await self._watch("watch_balance", {"type": "spot"})
 
     async def _watch(self, method: str, *args: Any) -> Any:
-        generation = self._websocket_generation
+        boundary = self._websocket_boundary(method)
+        websocket = self._websocket_exchanges()[boundary]
+        generation = self._websocket_generations[boundary]
         try:
-            return await getattr(self.ws_exchange, method)(*args)
+            return await getattr(websocket, method)(*args)
         except BrokerError:
             raise
         except Exception as exc:
@@ -334,12 +371,14 @@ class OKXDemoClient:
                     f"OKX Demo {method} websocket request failed",
                     details={
                         "operation": method,
+                        "websocketBoundary": boundary,
                         "error_type": type(exc).__name__,
                         "websocketGeneration": generation,
                     },
                 ) from exc
             reset = await self._reset_websocket(
                 failed_generation=generation,
+                boundary=boundary,
                 operation=method,
                 error=exc,
             )
@@ -347,44 +386,56 @@ class OKXDemoClient:
                 f"OKX Demo {method} websocket connection was reset after a transient failure",
                 details={
                     "operation": method,
+                    "websocketBoundary": boundary,
                     "error_type": type(exc).__name__,
                     "websocketGeneration": generation,
                     "resetPerformed": reset,
-                    "nextWebsocketGeneration": self._websocket_generation,
+                    "nextWebsocketGeneration": self._websocket_generations[boundary],
                 },
             ) from exc
+
+    @staticmethod
+    def _websocket_boundary(method: str) -> str:
+        if method == "watch_ohlcv":
+            return "bar"
+        if method in {"watch_orders", "watch_my_trades", "watch_balance"}:
+            return "private"
+        return "public"
 
     async def _reset_websocket(
         self,
         *,
         failed_generation: int,
+        boundary: str,
         operation: str,
         error: Exception,
     ) -> bool:
-        async with self._websocket_reset_lock:
-            if failed_generation != self._websocket_generation:
+        async with self._websocket_reset_locks[boundary]:
+            if failed_generation != self._websocket_generations[boundary]:
                 return False
             try:
-                await self.ws_exchange.close()
+                await self._websocket_exchanges()[boundary].close()
             except Exception as close_error:
                 raise BrokerConnectionError(
                     "OKX Demo websocket reset failed",
                     details={
                         "operation": operation,
+                        "websocketBoundary": boundary,
                         "error_type": type(error).__name__,
                         "close_error_type": type(close_error).__name__,
                         "websocketGeneration": failed_generation,
                     },
                 ) from close_error
-            self._websocket_generation += 1
+            self._websocket_generations[boundary] += 1
             LOGGER.warning(
                 "OKX Demo websocket connection reset after transient failure",
                 extra={
                     "event": "broker.crypto.websocket_reset",
                     "broker.adapter_id": "ccxt_crypto",
                     "broker.operation": operation,
+                    "broker.websocket_boundary": boundary,
                     "broker.error_type": type(error).__name__,
-                    "broker.websocket_generation": self._websocket_generation,
+                    "broker.websocket_generation": self._websocket_generations[boundary],
                 },
             )
             return True
@@ -408,8 +459,9 @@ class OKXDemoClient:
 
     async def close(self) -> None:
         await self.exchange.close()
-        if self.ws_exchange is not self.exchange:
-            await self.ws_exchange.close()
+        for websocket in self._unique_websocket_exchanges():
+            if websocket is not self.exchange:
+                await websocket.close()
 
     def sandbox_evidence(self) -> dict[str, Any]:
         urls = getattr(self.exchange, "urls", {}) or {}
