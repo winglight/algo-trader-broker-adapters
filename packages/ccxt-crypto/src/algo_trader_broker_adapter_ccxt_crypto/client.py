@@ -145,27 +145,51 @@ class OKXDemoClient:
                 ) from exc
 
     async def _read(self, method: str, *args: Any, **kwargs: Any) -> Any:
-        """Bounded retry for OKX rate limiting; never used by mutations."""
+        """Bounded retry for transient OKX read failures; never used by mutations."""
 
         for attempt in range(3):
             try:
                 return await self._call(method, *args, **kwargs)
             except Exception as exc:
-                if not self._is_rate_limited(exc):
+                rate_limited = self._is_rate_limited(exc)
+                transient = self._is_transient_read_failure(exc)
+                if not rate_limited and not transient:
                     raise
                 LOGGER.warning(
-                    "OKX Demo read request was rate limited",
+                    "OKX Demo read request will be retried",
                     extra={
-                        "event": "broker.crypto.rate_limited",
+                        "event": (
+                            "broker.crypto.rate_limited"
+                            if rate_limited
+                            else "broker.crypto.read_retry"
+                        ),
                         "broker.adapter_id": "ccxt_crypto",
                         "broker.operation": method,
                         "broker.retry_attempt": attempt + 1,
+                        "broker.error_type": self._error_type(exc),
                     },
                 )
                 if attempt == 2:
                     raise
-                await asyncio.sleep(0.25 * (2**attempt))
+                await asyncio.sleep((0.25 if rate_limited else 1.0) * (2**attempt))
         raise AssertionError("unreachable")
+
+    @staticmethod
+    def _error_type(exc: Exception) -> str:
+        details = getattr(exc, "details", None)
+        if isinstance(details, Mapping):
+            value = str(details.get("error_type") or "").strip()
+            if value:
+                return value
+        return type(exc).__name__
+
+    @classmethod
+    def _is_transient_read_failure(cls, exc: Exception) -> bool:
+        error_type = cls._error_type(exc).lower()
+        return any(
+            token in error_type
+            for token in ("timeout", "network", "unavailable", "disconnect")
+        )
 
     @staticmethod
     def _is_rate_limited(exc: Exception) -> bool:
@@ -186,19 +210,20 @@ class OKXDemoClient:
 
     async def load_markets(self, symbols: tuple[str, ...]) -> Mapping[str, Any]:
         requested = tuple(dict.fromkeys(symbols))
-        batches = await asyncio.gather(
-            *(
-                self._read(
-                    "fetch_markets",
-                    {"instId": symbol.replace("/", "-")},
-                )
-                for symbol in requested
-            )
+        markets = await self._read(
+            "fetch_markets",
+            {"instType": "SPOT"},
         )
-        markets = [market for batch in batches for market in batch]
-        result = self.exchange.set_markets(markets)
+        requested_ids = {symbol.replace("/", "-") for symbol in requested}
+        selected = [
+            market
+            for market in markets
+            if str(market.get("symbol") or "") in requested
+            or str(market.get("id") or "") in requested_ids
+        ]
+        result = self.exchange.set_markets(selected)
         if self.ws_exchange is not self.exchange:
-            self.ws_exchange.set_markets(markets)
+            self.ws_exchange.set_markets(selected)
         return result
 
     async def fetch_time(self) -> int:

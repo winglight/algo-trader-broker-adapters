@@ -63,7 +63,6 @@ class _LiabilityClient(FakeClient):
 def _private_read_settings() -> CCXTCryptoSettings:
     return CCXTCryptoSettings.from_mapping(
         settings(
-            private_read_enabled=True,
             api_key="key",
             secret="secret",
             passphrase="passphrase",

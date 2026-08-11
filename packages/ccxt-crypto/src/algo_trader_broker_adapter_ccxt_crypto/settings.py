@@ -71,10 +71,6 @@ class CCXTCryptoSettings:
     allowed_symbols: tuple[str, ...]
     execution_target_id: str
     market_data_target_id: str
-    public_data_enabled: bool
-    private_read_enabled: bool
-    trading_enabled: bool
-    market_order_enabled: bool
     rest_max_concurrency: int
     request_timeout_ms: int
     reconcile_interval_seconds: int
@@ -106,21 +102,12 @@ class CCXTCryptoSettings:
                 details={"setting": "allowed_symbols"},
             )
 
-        public_enabled = _bool(settings, "public_data_enabled", False)
-        private_enabled = _bool(settings, "private_read_enabled", False)
-        trading_enabled = _bool(settings, "trading_enabled", False)
-        market_enabled = _bool(settings, "market_order_enabled", False)
-        if trading_enabled and not private_enabled:
-            raise BrokerContractError("trading_enabled requires private_read_enabled")
-        if market_enabled and not trading_enabled:
-            raise BrokerContractError("market_order_enabled requires trading_enabled")
-
         api_key = _secret(settings, "api_key")
         secret = _secret(settings, "secret")
         passphrase = _secret(settings, "passphrase")
-        if private_enabled and not all((api_key, secret, passphrase)):
+        if not all((api_key, secret, passphrase)):
             raise BrokerContractError(
-                "OKX Demo private access requires api_key, secret, and passphrase",
+                "OKX Demo requires api_key, secret, and passphrase",
                 details={"configured": False},
             )
 
@@ -142,10 +129,6 @@ class CCXTCryptoSettings:
             allowed_symbols=symbols,
             execution_target_id=execution_target_id,
             market_data_target_id=market_data_target_id,
-            public_data_enabled=public_enabled,
-            private_read_enabled=private_enabled,
-            trading_enabled=trading_enabled,
-            market_order_enabled=market_enabled,
             rest_max_concurrency=_int(settings, "rest_max_concurrency", 4, 1, 4),
             request_timeout_ms=_int(
                 settings, "request_timeout_ms", 30000, 5000, 60000
@@ -176,10 +159,6 @@ class CCXTCryptoSettings:
             "allowed_symbols": list(self.allowed_symbols),
             "execution_target_id": self.execution_target_id,
             "market_data_target_id": self.market_data_target_id,
-            "public_data_enabled": self.public_data_enabled,
-            "private_read_enabled": self.private_read_enabled,
-            "trading_enabled": self.trading_enabled,
-            "market_order_enabled": self.market_order_enabled,
             "rest_max_concurrency": self.rest_max_concurrency,
             "request_timeout_ms": self.request_timeout_ms,
             "reconcile_interval_seconds": self.reconcile_interval_seconds,

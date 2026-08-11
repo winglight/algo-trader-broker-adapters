@@ -198,10 +198,9 @@ def settings(**overrides: Any) -> dict[str, Any]:
         "allowed_symbols": "BTC/USDT,ETH/USDT",
         "execution_target_id": "okx-spot-demo-paper-1",
         "market_data_target_id": "okx-spot-demo-market-1",
-        "public_data_enabled": True,
-        "private_read_enabled": False,
-        "trading_enabled": False,
-        "market_order_enabled": False,
+        "api_key": "key",
+        "secret": "secret",
+        "passphrase": "passphrase",
     }
     result.update(overrides)
     return result

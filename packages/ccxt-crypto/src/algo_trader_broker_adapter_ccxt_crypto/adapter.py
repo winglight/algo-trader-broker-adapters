@@ -80,6 +80,7 @@ class CCXTCryptoAdapter:
         self._rules: dict[str, MarketRules] = {}
         self._order_symbols: dict[str, str] = {}
         self._balance: Mapping[str, Any] = {}
+        self._prices_in_usdt: dict[str, Decimal] = {"USDT": Decimal(1)}
         self._trade_update_handler: Callable[[TradeUpdate], Awaitable[None]] | None = None
         self._position_update_handler: Callable[[list[PositionItem]], Awaitable[None]] | None = None
         self._account_update_handler: Callable[[list[AccountSummaryItem]], Awaitable[None]] | None = None
@@ -137,10 +138,6 @@ class CCXTCryptoAdapter:
                 "executionTargetId": self._settings.execution_target_id,
                 "marketDataTargetId": self._settings.market_data_target_id,
                 "allowedSymbols": list(self._settings.allowed_symbols),
-                "publicDataEnabled": self._settings.public_data_enabled,
-                "privateReadEnabled": self._settings.private_read_enabled,
-                "tradingEnabled": self._settings.trading_enabled,
-                "marketOrderEnabled": self._settings.market_order_enabled,
             },
         )
 
@@ -152,45 +149,36 @@ class CCXTCryptoAdapter:
             if self._connected:
                 return
             self._closing = False
-            if self._settings.public_data_enabled or self._settings.private_read_enabled:
-                await self._load_and_validate_markets()
-                skew = clock_skew_ms(await self._client.fetch_time())
-                if skew > self._settings.clock_skew_block_ms:
-                    raise BrokerConnectionError(
-                        "OKX clock skew exceeds the configured block threshold",
-                        details={"clock_skew_ms": skew},
-                    )
-            if self._settings.private_read_enabled:
-                fee_payloads = await asyncio.gather(
-                    *(
-                        self._client.fetch_trading_fee(symbol)
-                        for symbol in self._settings.allowed_symbols
-                    )
+            await self._load_and_validate_markets()
+            skew = clock_skew_ms(await self._client.fetch_time())
+            if skew > self._settings.clock_skew_block_ms:
+                raise BrokerConnectionError(
+                    "OKX clock skew exceeds the configured block threshold",
+                    details={"clock_skew_ms": skew},
                 )
-                self._reported_fee_tiers = {
-                    symbol: reported_fee_tier(payload)
-                    for symbol, payload in zip(
-                        self._settings.allowed_symbols,
-                        fee_payloads,
-                        strict=True,
-                    )
-                }
-                snapshot = await self._capture_reconciliation(
-                    generation=self._generation + 1
+            fee_payloads = await asyncio.gather(
+                *(
+                    self._client.fetch_trading_fee(symbol)
+                    for symbol in self._settings.allowed_symbols
                 )
-                self._balance = await self._client.fetch_balance()
-                if snapshot.get("orderUpdates") is None:
-                    raise BrokerConnectionError("OKX initial reconciliation did not complete")
-                self._start_private_streams()
-                next_state = (
-                    "reconciled"
-                    if not self._settings.trading_enabled
-                    else "trading_ready"
+            )
+            self._reported_fee_tiers = {
+                symbol: reported_fee_tier(payload)
+                for symbol, payload in zip(
+                    self._settings.allowed_symbols,
+                    fee_payloads,
+                    strict=True,
                 )
-            elif self._settings.public_data_enabled:
-                next_state = "public_ready"
-            else:
-                next_state = "installed"
+            }
+            snapshot = await self._capture_reconciliation(
+                generation=self._generation + 1
+            )
+            self._balance = await self._client.fetch_balance()
+            await self._refresh_valuation_prices()
+            if snapshot.get("orderUpdates") is None:
+                raise BrokerConnectionError("OKX initial reconciliation did not complete")
+            self._start_private_streams()
+            next_state = "trading_ready"
             self._generation += 1
             self._connected = True
             self._connected_since = datetime.now(UTC)
@@ -244,22 +232,13 @@ class CCXTCryptoAdapter:
     async def reconnect(self, *, reason: str | None = None) -> None:
         await self.disconnect(reason=reason)
         await self.connect()
-        if self._settings.private_read_enabled:
-            await self._capture_reconciliation()
+        await self._capture_reconciliation()
         for factory in tuple(self._resub_tasks):
             await factory()
 
     async def ensure_connected(self) -> None:
         if not self._connected:
             raise BrokerConnectionError("OKX Demo adapter is not connected")
-
-    def _require_public_data(self) -> None:
-        if not self._settings.public_data_enabled:
-            raise BrokerConnectionError("public_data_enabled is required")
-
-    def _require_private_read(self) -> None:
-        if not self._settings.private_read_enabled:
-            raise BrokerConnectionError("private_read_enabled is required")
 
     def connection_state_snapshot(self) -> BrokerConnectionState:
         return BrokerConnectionState(
@@ -323,7 +302,6 @@ class CCXTCryptoAdapter:
 
     async def market_metadata_v2(self) -> list[dict[str, Any]]:
         await self.ensure_connected()
-        self._require_public_data()
         if not self._rules:
             await self._load_and_validate_markets()
         return [
@@ -346,11 +324,10 @@ class CCXTCryptoAdapter:
 
     async def place_order_v2(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         await self.ensure_connected()
-        if not self._settings.trading_enabled or self._state != "trading_ready":
+        if self._state != "trading_ready":
             raise order_error(
-                "OKX Demo trading is disabled",
-                code="trading_disabled",
-                details={"trading_enabled": self._settings.trading_enabled},
+                "OKX Demo is not trading ready",
+                code="trading_not_ready",
             )
         target = str(_field(payload, "executionTargetId", "execution_target_id") or "")
         if target != self._settings.execution_target_id:
@@ -368,8 +345,6 @@ class CCXTCryptoAdapter:
             raise order_error("only Market and Limit are supported", code="unsupported_order_type")
         if str(_field(payload, "timeInForce", "time_in_force") or "").upper() != "GTC":
             raise order_error("OKX Demo Phase 4 requires GTC", code="unsupported_time_in_force")
-        if order_type == "MARKET" and not self._settings.market_order_enabled:
-            raise order_error("Market orders are disabled", code="market_orders_disabled")
         if not self._rules:
             await self._load_and_validate_markets()
         rule = self._rules[symbol]
@@ -446,7 +421,6 @@ class CCXTCryptoAdapter:
 
     async def cancel_order_v2(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         await self.ensure_connected()
-        self._require_private_read()
         target = str(_field(payload, "executionTargetId", "execution_target_id") or "")
         if target != self._settings.execution_target_id:
             raise order_error("execution target mismatch", code="execution_target_mismatch")
@@ -499,8 +473,6 @@ class CCXTCryptoAdapter:
 
     async def reconcile_v2(self) -> dict[str, Any]:
         await self.ensure_connected()
-        if not self._settings.private_read_enabled:
-            raise BrokerConnectionError("private_read_enabled is required for reconciliation")
         return await self._capture_reconciliation()
 
     def set_reconciliation_handler(
@@ -767,7 +739,7 @@ class CCXTCryptoAdapter:
                 self._generation += 1
                 self._start_private_streams()
                 self._set_state(
-                    "trading_ready" if self._settings.trading_enabled else "reconciled",
+                    "trading_ready",
                     reason="private_stream_recovered",
                 )
                 await self._notify_connection(
@@ -786,30 +758,37 @@ class CCXTCryptoAdapter:
                 self._reconnect_reason = f"reconciliation_failed:{type(exc).__name__}"
 
     async def _account_summary_items(self, *, account_id: str) -> list[AccountSummaryItem]:
-        symbols = ("BTC/USDT", "ETH/USDT")
-        tickers = await asyncio.gather(
-            *(self._client.fetch_ticker(symbol) for symbol in symbols)
-        )
-        prices_in_usdt: dict[str, Decimal] = {"USDT": Decimal(1)}
-        for symbol, ticker in zip(symbols, tickers, strict=True):
-            raw_price = ticker.get("last") or ticker.get("close")
-            price = Decimal(str(raw_price or "0"))
-            if price <= 0:
-                raise BrokerConnectionError(
-                    f"OKX Demo returned no valuation price for {symbol}",
-                    details={"symbol": symbol},
-                )
-            prices_in_usdt[symbol.split("/", 1)[0]] = price
+        if any(
+            symbol.split("/", 1)[0] not in self._prices_in_usdt
+            for symbol in self._settings.allowed_symbols
+        ):
+            await self._refresh_valuation_prices()
         return account_summary(
             self._balance,
             account_id=account_id,
-            prices_in_usdt=prices_in_usdt,
+            prices_in_usdt=self._prices_in_usdt,
         )
+
+    async def _refresh_valuation_prices(self) -> None:
+        symbols = self._settings.allowed_symbols
+        tickers = await asyncio.gather(
+            *(self._client.fetch_ticker(symbol) for symbol in symbols)
+        )
+        for symbol, ticker in zip(symbols, tickers, strict=True):
+            self._update_valuation_price(symbol, ticker)
+
+    def _update_valuation_price(self, symbol: str, ticker: Mapping[str, Any]) -> None:
+        raw_price = ticker.get("last") or ticker.get("close")
+        price = Decimal(str(raw_price or "0"))
+        if price <= 0:
+            raise BrokerConnectionError(
+                f"OKX Demo returned no valuation price for {symbol}",
+                details={"symbol": symbol},
+            )
+        self._prices_in_usdt[symbol.split("/", 1)[0]] = price
 
     async def get_account_summary(self, account: str | None = None) -> list[AccountSummaryItem]:
         await self.ensure_connected()
-        self._require_private_read()
-        self._balance = await self._client.fetch_balance()
         return await self._account_summary_items(account_id=account or "okx-demo")
 
     async def get_account_pnl(
@@ -823,8 +802,6 @@ class CCXTCryptoAdapter:
 
     async def get_positions(self) -> list[PositionItem]:
         await self.ensure_connected()
-        self._require_private_read()
-        self._balance = await self._client.fetch_balance()
         return legacy_positions(self._balance, account_id="okx-demo")
 
     async def place_stock_order(self, request: StockOrderRequest) -> OrderResult:
@@ -838,7 +815,6 @@ class CCXTCryptoAdapter:
 
     async def cancel_order(self, order_id: int | str) -> None:
         await self.ensure_connected()
-        self._require_private_read()
         order_key = str(order_id)
         symbol = self._order_symbols.get(order_key)
         if not symbol:
@@ -850,7 +826,6 @@ class CCXTCryptoAdapter:
 
     async def request_open_orders(self) -> list[TradeUpdate]:
         await self.ensure_connected()
-        self._require_private_read()
         result: list[TradeUpdate] = []
         for symbol in self._settings.allowed_symbols:
             result.extend(legacy_trade_update(item) for item in await self._client.fetch_open_orders(symbol))
@@ -861,7 +836,6 @@ class CCXTCryptoAdapter:
 
     async def request_completed_orders(self) -> list[TradeUpdate]:
         await self.ensure_connected()
-        self._require_private_read()
         result: list[TradeUpdate] = []
         for symbol in self._settings.allowed_symbols:
             result.extend(legacy_trade_update(item) for item in await self._client.fetch_closed_orders(symbol))
@@ -869,7 +843,6 @@ class CCXTCryptoAdapter:
 
     async def qualify_contract(self, contract: Mapping[str, Any]) -> dict[str, Any]:
         await self.ensure_connected()
-        self._require_public_data()
         symbol = str(contract.get("symbol") or "").upper()
         if symbol not in self._settings.allowed_symbols:
             raise unsupported("non-allowlisted instruments")
@@ -896,11 +869,11 @@ class CCXTCryptoAdapter:
         snapshot_timeout: float | None = None,
     ) -> dict[str, Any]:
         await self.ensure_connected()
-        self._require_public_data()
         symbol = str(contract.get("symbol") or "").upper()
         if symbol not in self._settings.allowed_symbols:
             raise unsupported("non-allowlisted instruments")
         ticker = await self._client.fetch_ticker(symbol)
+        self._update_valuation_price(symbol, ticker)
         return {
             "symbol": symbol,
             "bid": ticker.get("bid"),
@@ -920,7 +893,6 @@ class CCXTCryptoAdapter:
         use_rth: bool = True,
     ) -> list[HistoricalBar]:
         await self.ensure_connected()
-        self._require_public_data()
         symbol = str(contract.get("symbol") or "").upper()
         if symbol not in self._settings.allowed_symbols:
             raise unsupported("non-allowlisted instruments")
@@ -943,7 +915,6 @@ class CCXTCryptoAdapter:
         emit_history: bool = False,
     ) -> AsyncIterator[HistoricalBar]:
         await self.ensure_connected()
-        self._require_public_data()
         symbol = str(contract.get("symbol") or "").upper()
         timeframe = {"1 min": "1m", "5 mins": "5m", "1 hour": "1h", "1 day": "1d"}.get(bar_size)
         if symbol not in self._settings.allowed_symbols or timeframe is None:
@@ -962,7 +933,6 @@ class CCXTCryptoAdapter:
         self, contract: Mapping[str, Any], *, snapshot: bool = False
     ) -> AsyncIterator[RealTimePrice]:
         await self.ensure_connected()
-        self._require_public_data()
         symbol = str(contract.get("symbol") or "").upper()
         if symbol not in self._settings.allowed_symbols:
             raise unsupported("non-allowlisted instruments")
@@ -991,6 +961,7 @@ class CCXTCryptoAdapter:
                 if key == last_key:
                     continue
                 last_key = key
+                self._update_valuation_price(symbol, ticker)
                 self._mark_public_stream_ready("ticker", symbol)
                 yield RealTimePrice(
                     symbol=symbol,
@@ -1015,7 +986,6 @@ class CCXTCryptoAdapter:
         ignore_size: bool = False,
     ) -> AsyncIterator[TickByTickLast]:
         await self.ensure_connected()
-        self._require_public_data()
         if tick_type.lower() not in {"last", "alllast"}:
             raise unsupported("non-trade tick streams")
         symbol = str(contract.get("symbol") or "").upper()

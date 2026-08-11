@@ -35,29 +35,15 @@ def order_payload(**overrides):
 
 
 @pytest.mark.asyncio
-async def test_inactive_install_performs_no_exchange_io() -> None:
+async def test_deployed_profile_starts_with_market_account_and_order_access() -> None:
     backend = FakeClient()
-    adapter = CCXTCryptoAdapter(settings(public_data_enabled=False), backend=backend)
-    await adapter.start()
-    assert adapter.connection_state_snapshot().state == "installed"
-    assert backend.calls == []
-    await adapter.close()
-
-
-@pytest.mark.asyncio
-async def test_inactive_profile_endpoints_cannot_bypass_network_gates() -> None:
-    backend = FakeClient()
-    adapter = CCXTCryptoAdapter(settings(public_data_enabled=False), backend=backend)
+    adapter = CCXTCryptoAdapter(settings(), backend=backend)
     await adapter.start()
 
-    with pytest.raises(BrokerConnectionError):
-        await adapter.market_metadata_v2()
-    with pytest.raises(BrokerConnectionError):
-        await adapter.request_market_snapshot({"symbol": "BTC/USDT"})
-    with pytest.raises(BrokerConnectionError):
-        await adapter.request_open_orders()
-
-    assert backend.calls == []
+    assert adapter.connection_state_snapshot().state == "trading_ready"
+    assert await adapter.market_metadata_v2()
+    assert await adapter.request_market_snapshot({"symbol": "BTC/USDT"})
+    assert await adapter.request_open_orders()
     await adapter.close()
 
 
@@ -209,7 +195,6 @@ async def test_account_summary_aggregates_assets_into_stable_valuation_units() -
     backend = ValuedBalanceClient()
     adapter = CCXTCryptoAdapter(
         settings(
-            private_read_enabled=True,
             api_key="key",
             secret="secret",
             passphrase="passphrase",
@@ -242,9 +227,6 @@ async def test_market_order_uses_base_quantity_cash_and_client_identity() -> Non
     backend = FakeClient()
     adapter = CCXTCryptoAdapter(
         settings(
-            private_read_enabled=True,
-            trading_enabled=True,
-            market_order_enabled=True,
             api_key="key",
             secret="secret",
             passphrase="passphrase",
@@ -266,8 +248,6 @@ async def test_limit_order_quantizes_and_rejects_native_parameters() -> None:
     backend = FakeClient()
     adapter = CCXTCryptoAdapter(
         settings(
-            private_read_enabled=True,
-            trading_enabled=True,
             api_key="key",
             secret="secret",
             passphrase="passphrase",
@@ -291,9 +271,6 @@ async def test_timeout_reconciles_once_and_never_resubmits() -> None:
     backend.reconciled_order = ORDER
     adapter = CCXTCryptoAdapter(
         settings(
-            private_read_enabled=True,
-            trading_enabled=True,
-            market_order_enabled=True,
             api_key="key",
             secret="secret",
             passphrase="passphrase",
@@ -313,9 +290,6 @@ async def test_unresolved_timeout_is_unknown_and_suppresses_retry(caplog) -> Non
     backend.create_timeout = True
     adapter = CCXTCryptoAdapter(
         settings(
-            private_read_enabled=True,
-            trading_enabled=True,
-            market_order_enabled=True,
             api_key="key",
             secret="secret",
             passphrase="passphrase",
@@ -342,8 +316,6 @@ async def test_unresolved_cancel_timeout_is_unknown_and_never_retried() -> None:
     backend.fetch_order_fails = True
     adapter = CCXTCryptoAdapter(
         settings(
-            private_read_enabled=True,
-            trading_enabled=True,
             api_key="key",
             secret="secret",
             passphrase="passphrase",
@@ -370,7 +342,6 @@ async def test_reconciliation_has_target_scoped_decimal_payloads() -> None:
     backend = FakeClient()
     adapter = CCXTCryptoAdapter(
         settings(
-            private_read_enabled=True,
             api_key="key",
             secret="secret",
             passphrase="passphrase",
@@ -392,7 +363,6 @@ async def test_reconciliation_handler_receives_snapshot_and_generation(caplog) -
     backend = FakeClient()
     adapter = CCXTCryptoAdapter(
         settings(
-            private_read_enabled=True,
             api_key="key",
             secret="secret",
             passphrase="passphrase",
@@ -449,7 +419,6 @@ async def test_private_stream_first_events_are_logged(caplog) -> None:
     backend = FirstEventClient()
     adapter = CCXTCryptoAdapter(
         settings(
-            private_read_enabled=True,
             api_key="key",
             secret="secret",
             passphrase="passphrase",

@@ -44,8 +44,7 @@ class NarrowMarketsExchange(FakeExchange):
 
     async def fetch_markets(self, params):
         self.market_requests.append(dict(params))
-        symbol = params["instId"].replace("-", "/")
-        return [{"symbol": symbol}]
+        return [{"id": "BTC-USDT", "symbol": "BTC/USDT"}, {"id": "ETH-USDT", "symbol": "ETH/USDT"}]
 
     def set_markets(self, markets):
         return {market["symbol"]: market for market in markets}
@@ -63,8 +62,20 @@ class RateLimitedExchange(FakeExchange):
         return 1786320000000
 
 
+class TransientTimeoutExchange(FakeExchange):
+    def __init__(self) -> None:
+        super().__init__()
+        self.attempts = 0
+
+    async def fetch_time(self):
+        self.attempts += 1
+        if self.attempts < 3:
+            raise TimeoutError
+        return 1786320000000
+
+
 def parsed_settings():
-    return CCXTCryptoSettings.from_mapping(settings(public_data_enabled=False))
+    return CCXTCryptoSettings.from_mapping(settings())
 
 
 def test_client_enables_and_verifies_okx_demo_before_io(caplog) -> None:
@@ -113,6 +124,20 @@ def test_read_rate_limit_is_logged_and_retried(caplog) -> None:
     assert exchange.attempts == 3
 
 
+def test_transient_read_timeout_is_logged_and_retried(caplog) -> None:
+    exchange = TransientTimeoutExchange()
+    client = OKXDemoClient(parsed_settings(), exchange=exchange)
+
+    assert asyncio.run(client.fetch_time()) == 1786320000000
+    events = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "broker.crypto.read_retry"
+    ]
+    assert len(events) == 2
+    assert exchange.attempts == 3
+
+
 def test_client_resolves_ccxt_hostname_template_before_allowlist_check() -> None:
     client = OKXDemoClient(
         parsed_settings(),
@@ -133,16 +158,13 @@ def test_ccxt_market_discovery_is_restricted_to_spot() -> None:
     assert config["timeout"] == 30000
 
 
-def test_market_discovery_requests_only_allowlisted_instrument_ids() -> None:
+def test_market_discovery_loads_spot_once_and_keeps_only_allowlisted_instruments() -> None:
     exchange = NarrowMarketsExchange()
     client = OKXDemoClient(parsed_settings(), exchange=exchange)
 
     markets = asyncio.run(client.load_markets(("BTC/USDT", "ETH/USDT")))
 
-    assert exchange.market_requests == [
-        {"instId": "BTC-USDT"},
-        {"instId": "ETH-USDT"},
-    ]
+    assert exchange.market_requests == [{"instType": "SPOT"}]
     assert set(markets) == {"BTC/USDT", "ETH/USDT"}
 
 

@@ -10,8 +10,8 @@ from algo_trader_broker_sdk import BrokerContractError, assert_manifest_compatib
 from .fakes import FakeClient, settings
 
 
-def test_manifest_is_paper_crypto_spot_and_fail_closed() -> None:
-    adapter = CCXTCryptoAdapter(settings(public_data_enabled=False), backend=FakeClient())
+def test_manifest_is_paper_crypto_spot() -> None:
+    adapter = CCXTCryptoAdapter(settings(), backend=FakeClient())
     manifest = adapter.manifest()
     assert_manifest_compatible(manifest)
     assert manifest.adapter_id == "ccxt_crypto"
@@ -29,7 +29,6 @@ def test_manifest_is_paper_crypto_spot_and_fail_closed() -> None:
         ({"sandbox": False}, "sandbox must remain true"),
         ({"live": True}, "live must remain false"),
         ({"allowed_symbols": "SOL/USDT"}, "allowed_symbols"),
-        ({"trading_enabled": True}, "requires private_read_enabled"),
     ],
 )
 def test_settings_reject_unsafe_configuration(override, message) -> None:
@@ -37,12 +36,10 @@ def test_settings_reject_unsafe_configuration(override, message) -> None:
         CCXTCryptoSettings.from_mapping(settings(**override))
 
 
-def test_private_flags_require_all_three_credentials() -> None:
+def test_profile_requires_all_three_credentials() -> None:
     with pytest.raises(BrokerContractError, match="api_key, secret, and passphrase"):
-        CCXTCryptoSettings.from_mapping(settings(private_read_enabled=True))
-    parsed = CCXTCryptoSettings.from_mapping(
-        settings(private_read_enabled=True, api_key="key", secret="secret", passphrase="pass")
-    )
+        CCXTCryptoSettings.from_mapping(settings(secret=""))
+    parsed = CCXTCryptoSettings.from_mapping(settings())
     redacted = parsed.redacted()
     assert redacted["credentials_configured"] is True
     assert "key" not in repr(redacted)

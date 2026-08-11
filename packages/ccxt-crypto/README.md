@@ -38,14 +38,10 @@ store and must never appear in a tracked file.
 | --- | --- | --- |
 | `exchange_id` | `okx` | Other values rejected |
 | `sandbox` / `live` | `true` / `false` | Immutable safety boundary |
-| `api_key`, `secret`, `passphrase` | empty | All required when private read is enabled |
+| `api_key`, `secret`, `passphrase` | empty | All required for an installed OKX Demo profile |
 | `allowed_symbols` | BTC/USDT, ETH/USDT | Non-empty subset only |
 | `execution_target_id` | `okx-spot-demo-paper-1` | Immutable Phase 4 identity |
 | `market_data_target_id` | `okx-spot-demo-market-1` | Immutable Phase 4 identity |
-| `public_data_enabled` | `false` | Explicit gate |
-| `private_read_enabled` | `false` | Requires all credentials |
-| `trading_enabled` | `false` | Requires private read |
-| `market_order_enabled` | `false` | Requires trading |
 
 ## Offline verification
 
@@ -58,12 +54,11 @@ ruff check packages/ccxt-crypto
 python -m build packages/ccxt-crypto
 ```
 
-An implementation build does not authorize credentials, a Demo connection,
-deployment, or orders. Follow the main repository Phase 4 runbook and its
-separate human gates.
+The installed profile uses its configured OKX Demo credentials and exposes the
+real market, account, and order contracts without test-only feature gates.
 
 ## Rollback
 
-Disable `trading_enabled`, cancel and reconcile open orders, detach deployment
-bindings, disable private/public gates, revoke the Demo key, then stop the
-dedicated Crypto Runner. Never reuse or redirect this package to Production.
+Cancel and reconcile open orders, detach deployment bindings, revoke the Demo
+key, then stop the original Broker Runner service. Never reuse or redirect this
+package to Production.
