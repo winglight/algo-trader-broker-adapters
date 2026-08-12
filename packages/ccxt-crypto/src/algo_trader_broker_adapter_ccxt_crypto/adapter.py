@@ -417,6 +417,7 @@ class CCXTCryptoAdapter:
                 client_order_id=full_client_id,
             )
         self._order_symbols[broker_id] = symbol
+        self._reconciler.record_order(order)
         return result
 
     async def cancel_order_v2(self, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -451,6 +452,7 @@ class CCXTCryptoAdapter:
                     operation="cancel_order", client_order_id=order_id
                 ) from None
         self._order_symbols[order_id] = symbol
+        self._reconciler.record_order(order)
         return order_update(
             order,
             execution_target_id=self._settings.execution_target_id,
@@ -655,8 +657,9 @@ class CCXTCryptoAdapter:
             try:
                 orders = await self._client.watch_orders()
                 self._mark_private_stream_ready("orders")
-                if self._trade_update_handler is not None:
-                    for order in orders:
+                for order in orders:
+                    self._reconciler.record_order(order)
+                    if self._trade_update_handler is not None:
                         await self._trade_update_handler(legacy_trade_update(order))
             except asyncio.CancelledError:
                 raise
@@ -688,8 +691,9 @@ class CCXTCryptoAdapter:
             try:
                 trades = await self._client.watch_my_trades()
                 self._mark_private_stream_ready("trades")
-                if self._trade_update_handler is not None:
-                    for trade in trades:
+                for trade in trades:
+                    self._reconciler.record_trade(trade)
+                    if self._trade_update_handler is not None:
                         await self._trade_update_handler(legacy_fill_update(trade))
             except asyncio.CancelledError:
                 raise
@@ -826,20 +830,28 @@ class CCXTCryptoAdapter:
 
     async def request_open_orders(self) -> list[TradeUpdate]:
         await self.ensure_connected()
-        result: list[TradeUpdate] = []
-        for symbol in self._settings.allowed_symbols:
-            result.extend(legacy_trade_update(item) for item in await self._client.fetch_open_orders(symbol))
-        return result
+        open_orders, _, _ = self._reconciler.legacy_snapshot()
+        return [legacy_trade_update(item) for item in open_orders]
 
     async def request_executions(self, since: datetime | str | None = None) -> list[TradeUpdate]:
-        return await self.request_completed_orders()
+        await self.ensure_connected()
+        _, _, trades = self._reconciler.legacy_snapshot()
+        updates = [legacy_fill_update(item) for item in trades]
+        if since is None:
+            return updates
+        since_at = since if isinstance(since, datetime) else datetime.fromisoformat(since)
+        if since_at.tzinfo is None:
+            since_at = since_at.replace(tzinfo=UTC)
+        return [
+            update
+            for update in updates
+            if update.event_time is not None and update.event_time >= since_at
+        ]
 
     async def request_completed_orders(self) -> list[TradeUpdate]:
         await self.ensure_connected()
-        result: list[TradeUpdate] = []
-        for symbol in self._settings.allowed_symbols:
-            result.extend(legacy_trade_update(item) for item in await self._client.fetch_closed_orders(symbol))
-        return result
+        _, completed_orders, _ = self._reconciler.legacy_snapshot()
+        return [legacy_trade_update(item) for item in completed_orders]
 
     async def qualify_contract(self, contract: Mapping[str, Any]) -> dict[str, Any]:
         await self.ensure_connected()

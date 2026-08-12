@@ -5,13 +5,21 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Mapping
+from copy import deepcopy
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from algo_trader_broker_sdk import BrokerConnectionError
 
-from .mapping import balance_payloads, fill, instrument_id, order_update, positions
+from .mapping import (
+    balance_payloads,
+    fill,
+    instrument_id,
+    order_status,
+    order_update,
+    positions,
+)
 from .quantizer import canonical
 from .settings import CCXTCryptoSettings
 
@@ -24,6 +32,77 @@ class Reconciler:
         self.settings = settings
         self._lock = asyncio.Lock()
         self._external_asset_baselines: dict[str, Decimal] = {}
+        self._legacy_snapshot: tuple[
+            tuple[Mapping[str, Any], ...],
+            tuple[Mapping[str, Any], ...],
+            tuple[Mapping[str, Any], ...],
+        ] | None = None
+
+    def legacy_snapshot(
+        self,
+    ) -> tuple[
+        list[Mapping[str, Any]],
+        list[Mapping[str, Any]],
+        list[Mapping[str, Any]],
+    ]:
+        """Return the last fully reconciled open, completed, and fill rows.
+
+        Legacy read endpoints must not launch another set of remote OKX reads.
+        Reconciliation already collects the authoritative private state and
+        publishes it atomically; reusing that snapshot avoids request storms
+        and keeps all three endpoints on the same generation.
+        """
+
+        if self._legacy_snapshot is None:
+            raise BrokerConnectionError("OKX reconciliation snapshot is unavailable")
+        open_orders, completed_orders, trades = self._legacy_snapshot
+        return (
+            deepcopy(list(open_orders)),
+            deepcopy(list(completed_orders)),
+            deepcopy(list(trades)),
+        )
+
+    def record_order(self, order: Mapping[str, Any]) -> None:
+        """Fold a mutation acknowledgement or private stream update into the cache."""
+
+        if self._legacy_snapshot is None:
+            return
+        open_orders, completed_orders, trades = self._legacy_snapshot
+        order_id = str(order.get("id") or "").strip()
+        if not order_id:
+            return
+        next_open = [row for row in open_orders if str(row.get("id") or "").strip() != order_id]
+        next_completed = [
+            row for row in completed_orders if str(row.get("id") or "").strip() != order_id
+        ]
+        if order_status(order) in {"SUBMITTED", "PARTIALLY_FILLED"}:
+            next_open.append(order)
+        else:
+            next_completed.append(order)
+        self._legacy_snapshot = (tuple(next_open), tuple(next_completed), trades)
+
+    def record_trade(self, trade: Mapping[str, Any]) -> None:
+        """Fold a private fill stream row into the cached execution snapshot."""
+
+        if self._legacy_snapshot is None:
+            return
+        info = trade.get("info") if isinstance(trade.get("info"), Mapping) else {}
+        trade_id = str(
+            trade.get("id") or info.get("tradeId") or info.get("fillId") or ""
+        ).strip()
+        if not trade_id:
+            return
+        open_orders, completed_orders, trades = self._legacy_snapshot
+        next_trades: list[Mapping[str, Any]] = []
+        for row in trades:
+            row_info = row.get("info") if isinstance(row.get("info"), Mapping) else {}
+            row_id = str(
+                row.get("id") or row_info.get("tradeId") or row_info.get("fillId") or ""
+            ).strip()
+            if row_id != trade_id:
+                next_trades.append(row)
+        next_trades.append(trade)
+        self._legacy_snapshot = (open_orders, completed_orders, tuple(next_trades))
 
     async def snapshot(self) -> dict[str, Any]:
         async with self._lock:
@@ -31,6 +110,8 @@ class Reconciler:
             self._validate_balance_boundary(balance)
             orders: list[Mapping[str, Any]] = []
             trades: list[Mapping[str, Any]] = []
+            open_order_rows: list[Mapping[str, Any]] = []
+            completed_order_rows: list[Mapping[str, Any]] = []
             symbol_snapshots = await asyncio.gather(
                 *(
                     asyncio.gather(
@@ -42,6 +123,8 @@ class Reconciler:
                 )
             )
             for open_orders, closed_orders, symbol_trades in symbol_snapshots:
+                open_order_rows.extend(open_orders)
+                completed_order_rows.extend(closed_orders)
                 by_id: dict[str, Mapping[str, Any]] = {}
                 for order in [*open_orders, *closed_orders]:
                     order_id = str(order.get("id") or "").strip()
@@ -106,7 +189,7 @@ class Reconciler:
                     item["markPriceDecimal"] = canonical(average)
                 item["averagePriceDecimal"] = canonical(average)
 
-            return {
+            snapshot = {
                 "schemaVersion": "broker-reconciliation.v1",
                 "executionTargetId": self.settings.execution_target_id,
                 "orderUpdates": [
@@ -124,6 +207,26 @@ class Reconciler:
                     execution_target_id=self.settings.execution_target_id,
                 ),
             }
+            self._legacy_snapshot = (
+                tuple(self._deduplicate_orders(open_order_rows)),
+                tuple(self._deduplicate_orders(completed_order_rows)),
+                tuple(trades),
+            )
+            return snapshot
+
+    @staticmethod
+    def _deduplicate_orders(
+        rows: list[Mapping[str, Any]],
+    ) -> list[Mapping[str, Any]]:
+        by_id: dict[str, Mapping[str, Any]] = {}
+        anonymous: list[Mapping[str, Any]] = []
+        for row in rows:
+            order_id = str(row.get("id") or "").strip()
+            if order_id:
+                by_id[order_id] = row
+            else:
+                anonymous.append(row)
+        return [*by_id.values(), *anonymous]
 
     @staticmethod
     def _validate_balance_boundary(balance: Mapping[str, Any]) -> None:

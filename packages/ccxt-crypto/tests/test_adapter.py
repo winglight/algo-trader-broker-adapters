@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 
 import pytest
 from algo_trader_broker_adapter_ccxt_crypto import CCXTCryptoAdapter
-from algo_trader_broker_sdk import BrokerConnectionError, BrokerOrderError
+from algo_trader_broker_sdk import BrokerOrderError
 
 from .fakes import BALANCE, ORDER, FakeClient, settings
 
@@ -44,6 +44,46 @@ async def test_deployed_profile_starts_with_market_account_and_order_access() ->
     assert await adapter.market_metadata_v2()
     assert await adapter.request_market_snapshot({"symbol": "BTC/USDT"})
     assert await adapter.request_open_orders()
+    await adapter.close()
+
+
+@pytest.mark.asyncio
+async def test_legacy_order_reads_reuse_atomic_reconciliation_snapshot() -> None:
+    class ReconciledHistoryClient(FakeClient):
+        async def fetch_closed_orders(self, symbol):
+            if symbol != "BTC/USDT":
+                return []
+            return [{**ORDER, "status": "closed", "filled": "0.001"}]
+
+        async def fetch_my_trades(self, symbol):
+            if symbol != "BTC/USDT":
+                return []
+            return [
+                {
+                    "id": "fill-1",
+                    "order": ORDER["id"],
+                    "symbol": symbol,
+                    "side": "buy",
+                    "price": "10000",
+                    "amount": "0.001",
+                    "timestamp": ORDER["timestamp"],
+                    "fee": {"cost": "0.01", "currency": "USDT"},
+                }
+            ]
+
+    backend = ReconciledHistoryClient()
+    adapter = CCXTCryptoAdapter(settings(), backend=backend)
+    await adapter.start()
+    calls_after_start = list(backend.calls)
+
+    assert await adapter.request_open_orders()
+    assert len(await adapter.request_completed_orders()) == 1
+    executions = await adapter.request_executions()
+    assert len(executions) == 1
+    assert executions[0].adapter_execution_id == "fill-1"
+    assert await adapter.request_executions("2100-01-01T00:00:00+00:00") == []
+
+    assert backend.calls == calls_after_start
     await adapter.close()
 
 
