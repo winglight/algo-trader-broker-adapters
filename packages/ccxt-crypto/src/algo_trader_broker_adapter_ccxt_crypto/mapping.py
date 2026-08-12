@@ -50,6 +50,16 @@ def timestamp(value: Any = None) -> str:
     return parsed.isoformat().replace("+00:00", "Z")
 
 
+def available_timestamp(event_ms: Any = None) -> str:
+    """Return observation time without preceding a provider event timestamp."""
+
+    observed = datetime.now(UTC)
+    if event_ms not in (None, ""):
+        event_time = datetime.fromtimestamp(int(str(event_ms)) / 1000, tz=UTC)
+        observed = max(observed, event_time)
+    return observed.isoformat().replace("+00:00", "Z")
+
+
 def instrument_id(symbol: str) -> str:
     base, quote = symbol.upper().split("/", 1)
     return f"crypto-spot:{base}-{quote}:OKX"
@@ -83,7 +93,7 @@ def order_update(
     remaining = max(Decimal(0), amount - filled)
     average = order.get("average") or info.get("avgPx") or None
     event_ms = info.get("uTime") or order.get("lastTradeTimestamp") or order.get("timestamp")
-    now = timestamp()
+    now = available_timestamp(event_ms)
     status = order_status(order)
     if status == "FILLED":
         remaining = Decimal(0)
