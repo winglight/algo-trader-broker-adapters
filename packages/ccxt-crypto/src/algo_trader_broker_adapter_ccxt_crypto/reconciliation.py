@@ -32,6 +32,7 @@ class Reconciler:
         self.settings = settings
         self._lock = asyncio.Lock()
         self._external_asset_baselines: dict[str, Decimal] = {}
+        self._external_asset_baseline_quantities: dict[str, Decimal] = {}
         self._legacy_snapshot: tuple[
             tuple[Mapping[str, Any], ...],
             tuple[Mapping[str, Any], ...],
@@ -163,30 +164,59 @@ class Reconciler:
                 quantity = Decimal(item["quantityDecimal"])
                 if quantity == 0:
                     continue
-                average = average_by_instrument.get(item["instrumentId"])
-                uses_external_baseline = average is None
-                if average is None:
-                    average = self._external_asset_baselines.get(item["instrumentId"])
-                if average is None:
+                instrument = item["instrumentId"]
+                if instrument not in self._external_asset_baseline_quantities:
+                    self._external_asset_baseline_quantities[instrument] = quantity
+                baseline_quantity = self._external_asset_baseline_quantities[instrument]
+                baseline_average = self._external_asset_baselines.get(instrument)
+                if baseline_quantity > 0 and baseline_average is None:
                     symbol = next(
                         (
                             candidate
                             for candidate in self.settings.allowed_symbols
-                            if instrument_id(candidate) == item["instrumentId"]
+                            if instrument_id(candidate) == instrument
                         ),
                         None,
                     )
                     if symbol is None:
                         raise BrokerConnectionError(
                             "OKX asset balance has no supported instrument mapping",
-                            details={"instrument_id": item["instrumentId"]},
+                            details={"instrument_id": instrument},
+                        )
+                    ticker = await self.client.fetch_ticker(symbol)
+                    baseline_average = self._baseline_price(ticker)
+                    self._external_asset_baselines[instrument] = baseline_average
+
+                incremental_quantity = max(Decimal(0), quantity - baseline_quantity)
+                trade_average = average_by_instrument.get(instrument)
+                if baseline_quantity > 0 and incremental_quantity == 0:
+                    average = baseline_average
+                    item["positionGroupId"] = "external-asset-baseline"
+                    item["markPriceDecimal"] = canonical(baseline_average)
+                elif baseline_quantity > 0 and baseline_average is not None:
+                    incremental_average = trade_average or baseline_average
+                    average = (
+                        baseline_quantity * baseline_average
+                        + incremental_quantity * incremental_average
+                    ) / quantity
+                elif trade_average is not None:
+                    average = trade_average
+                else:
+                    symbol = next(
+                        (
+                            candidate
+                            for candidate in self.settings.allowed_symbols
+                            if instrument_id(candidate) == instrument
+                        ),
+                        None,
+                    )
+                    if symbol is None:
+                        raise BrokerConnectionError(
+                            "OKX asset balance has no supported instrument mapping",
+                            details={"instrument_id": instrument},
                         )
                     ticker = await self.client.fetch_ticker(symbol)
                     average = self._baseline_price(ticker)
-                    self._external_asset_baselines[item["instrumentId"]] = average
-                if uses_external_baseline:
-                    item["positionGroupId"] = "external-asset-baseline"
-                    item["markPriceDecimal"] = canonical(average)
                 item["averagePriceDecimal"] = canonical(average)
 
             snapshot = {
@@ -268,7 +298,17 @@ class Reconciler:
             price = Decimal(str(trade.get("price") or "0"))
             side = str(trade.get("side") or "").lower()
             if side == "buy":
-                quantities[key] = quantities.get(key, Decimal(0)) + quantity
+                fee = trade.get("fee") if isinstance(trade.get("fee"), Mapping) else {}
+                base_currency = symbol.partition("/")[0].upper()
+                fee_currency = str(fee.get("currency") or "").upper()
+                base_fee = (
+                    Decimal(str(fee.get("cost") or "0"))
+                    if fee_currency == base_currency
+                    else Decimal(0)
+                )
+                quantities[key] = quantities.get(key, Decimal(0)) + max(
+                    Decimal(0), quantity - base_fee
+                )
                 costs[key] = costs.get(key, Decimal(0)) + quantity * price
             elif side == "sell":
                 previous = quantities.get(key, Decimal(0))
