@@ -50,13 +50,11 @@ def timestamp(value: Any = None) -> str:
     return parsed.isoformat().replace("+00:00", "Z")
 
 
-def available_timestamp(event_ms: Any = None) -> str:
-    """Return observation time without preceding a provider event timestamp."""
+def available_timestamp(event_time: str) -> str:
+    """Return observation time without preceding the exact emitted event time."""
 
-    observed = datetime.now(UTC)
-    if event_ms not in (None, ""):
-        event_time = datetime.fromtimestamp(int(str(event_ms)) / 1000, tz=UTC)
-        observed = max(observed, event_time)
+    emitted = datetime.fromisoformat(event_time.replace("Z", "+00:00"))
+    observed = max(datetime.now(UTC), emitted)
     return observed.isoformat().replace("+00:00", "Z")
 
 
@@ -93,7 +91,8 @@ def order_update(
     remaining = max(Decimal(0), amount - filled)
     average = order.get("average") or info.get("avgPx") or None
     event_ms = info.get("uTime") or order.get("lastTradeTimestamp") or order.get("timestamp")
-    now = available_timestamp(event_ms)
+    event_time = timestamp(event_ms)
+    now = available_timestamp(event_time)
     status = order_status(order)
     if status == "FILLED":
         remaining = Decimal(0)
@@ -111,7 +110,7 @@ def order_update(
         "cumulativeFilledDecimal": canonical(filled),
         "remainingDecimal": canonical(remaining),
         "averageFillPriceDecimal": canonical(decimal(average)) if average not in (None, "", "0") else None,
-        "eventTime": timestamp(event_ms),
+        "eventTime": event_time,
         "availableAt": now,
     }
 

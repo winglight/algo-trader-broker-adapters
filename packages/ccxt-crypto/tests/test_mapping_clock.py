@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+from ati_shared_sdk.common.schemas import BrokerOrderUpdateV2
 from algo_trader_broker_adapter_ccxt_crypto.mapping import order_update
 
 
@@ -21,4 +22,5 @@ def test_order_update_available_at_never_precedes_future_provider_event() -> Non
         command_id="command-1",
     )
 
-    assert payload["availableAt"] >= payload["eventTime"]
+    parsed = BrokerOrderUpdateV2.model_validate(payload)
+    assert parsed.available_at >= parsed.event_time
