@@ -81,9 +81,52 @@ async def test_legacy_order_reads_reuse_atomic_reconciliation_snapshot() -> None
     executions = await adapter.request_executions()
     assert len(executions) == 1
     assert executions[0].adapter_execution_id == "fill-1"
+    assert executions[0].commission == pytest.approx(0.01)
+    accounting = executions[0].adapter_metadata["extensions"]["accounting"]
+    assert accounting["realizedPnl"] == {
+        "model": "matched_fill_ledger_v1",
+        "currency": "USDT",
+        "priceMultiplier": 1.0,
+        "includeCommission": True,
+    }
     assert await adapter.request_executions("2100-01-01T00:00:00+00:00") == []
 
     assert backend.calls == calls_after_start
+    await adapter.close()
+
+
+@pytest.mark.asyncio
+async def test_legacy_execution_converts_base_asset_fee_to_quote_currency() -> None:
+    class BaseFeeClient(FakeClient):
+        async def fetch_my_trades(self, symbol):
+            if symbol != "BTC/USDT":
+                return []
+            return [
+                {
+                    "id": "fill-base-fee",
+                    "order": ORDER["id"],
+                    "symbol": symbol,
+                    "side": "buy",
+                    "price": "63607.9",
+                    "amount": "0.0001",
+                    "timestamp": ORDER["timestamp"],
+                    "fee": {"cost": "0.0000001", "currency": "BTC"},
+                }
+            ]
+
+    adapter = CCXTCryptoAdapter(settings(), backend=BaseFeeClient())
+    await adapter.start()
+
+    execution = (await adapter.request_executions())[0]
+
+    assert execution.commission == pytest.approx(0.00636079)
+    report = execution.message["commissionReport"]
+    assert report["commission"] == pytest.approx(0.00636079)
+    assert report["currency"] == "USDT"
+    assert execution.adapter_metadata["native"]["fee"] == {
+        "amount": "0.0000001",
+        "currency": "BTC",
+    }
     await adapter.close()
 
 

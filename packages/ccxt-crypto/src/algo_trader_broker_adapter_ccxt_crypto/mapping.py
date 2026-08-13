@@ -355,30 +355,67 @@ def legacy_fill_update(trade: Mapping[str, Any]) -> TradeUpdate:
     info = trade.get("info") if isinstance(trade.get("info"), Mapping) else {}
     fee = trade.get("fee") if isinstance(trade.get("fee"), Mapping) else {}
     execution_id = str(trade.get("id") or info.get("tradeId") or "").strip() or None
+    symbol = str(trade.get("symbol") or info.get("instId") or "").replace("-", "/").upper()
+    base_currency, _, quote_currency = symbol.partition("/")
+    fill_price = decimal(trade.get("price") or info.get("fillPx"))
+    native_fee = abs(decimal(fee.get("cost") if fee else info.get("fee")))
+    native_fee_currency = str(
+        fee.get("currency") if fee else info.get("feeCcy") or quote_currency or "USDT"
+    ).upper()
+    # OKX Spot charges buys in the acquired base asset and sells in the quote
+    # asset.  Orders reports a single commission number, so normalise the base
+    # fee to the quote currency at the authoritative fill price.  Retain the
+    # native amount in metadata for audit/reconciliation.
+    if native_fee_currency == base_currency and fill_price > 0:
+        commission = native_fee * fill_price
+        commission_currency = quote_currency
+    else:
+        commission = native_fee
+        commission_currency = native_fee_currency
     return TradeUpdate(
         adapter_id="ccxt_crypto",
         adapter_order_id=str(trade.get("order") or info.get("ordId") or "").strip() or None,
         adapter_execution_id=execution_id,
         status=None,
-        last_fill_price=float(decimal(trade.get("price") or info.get("fillPx"))),
+        last_fill_price=float(fill_price),
         last_fill_quantity=float(decimal(trade.get("amount") or info.get("fillSz"))),
-        commission=float(abs(decimal(fee.get("cost") if fee else info.get("fee")))),
+        commission=float(commission),
         event_time=datetime.fromisoformat(
             timestamp(trade.get("timestamp") or info.get("fillTime"))
         ),
         message={
-            "symbol": str(trade.get("symbol") or info.get("instId") or ""),
+            "symbol": symbol,
             "source": "okx_private_trades",
             "commissionReport": {
                 "execId": execution_id,
-                "commission": float(abs(decimal(fee.get("cost") if fee else info.get("fee")))),
-                "currency": str(fee.get("currency") if fee else info.get("feeCcy") or "USDT"),
+                "commission": float(commission),
+                "currency": commission_currency,
             },
         },
         adapter_metadata={
             "schemaVersion": 1,
-            "native": {"venue": "OKX", "liquidity": str(trade.get("takerOrMaker") or "")},
+            "native": {
+                "venue": "OKX",
+                "liquidity": str(trade.get("takerOrMaker") or ""),
+                "fee": {
+                    "amount": canonical(native_fee),
+                    "currency": native_fee_currency,
+                },
+            },
             "diagnostics": {},
-            "extensions": {},
+            "extensions": {
+                "accounting": {
+                    "commission": {
+                        "currency": commission_currency,
+                        "source": "broker_fill",
+                    },
+                    "realizedPnl": {
+                        "model": "matched_fill_ledger_v1",
+                        "currency": quote_currency or commission_currency,
+                        "priceMultiplier": 1.0,
+                        "includeCommission": True,
+                    },
+                }
+            },
         },
     )
