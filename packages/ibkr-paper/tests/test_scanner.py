@@ -43,6 +43,7 @@ class _IB:
         self.errorEvent = _Event()
         self.scan_data = _ScanData()
         self.cancel_count = 0
+        self.scanner_filter_options: list[Any] = []
 
     def reqScannerSubscription(
         self,
@@ -50,6 +51,7 @@ class _IB:
         scannerSubscriptionOptions: list[Any] | None = None,
         scannerSubscriptionFilterOptions: list[Any] | None = None,
     ) -> _ScanData:
+        self.scanner_filter_options = list(scannerSubscriptionFilterOptions or [])
         return self.scan_data
 
     def cancelScannerSubscription(self, scan_data: _ScanData) -> None:
@@ -77,7 +79,7 @@ def _request() -> ScreenerDiscoveryRequest:
         instrument="STK",
         location_code="STK.US.MAJOR",
         max_rows=50,
-        parameters={"priceAbove": 2},
+        parameters={"priceAbove": 2, "priceBelow": 20},
     )
 
 
@@ -107,6 +109,10 @@ async def test_external_adapter_stream_emits_full_snapshot_and_cancels_once(
         (1, "TSLA", 2),
     ]
     assert snapshot.replace is True
+    assert [(item.tag, item.value) for item in ib.scanner_filter_options] == [
+        ("priceAbove", "2"),
+        ("priceBelow", "20"),
+    ]
     assert ib.cancel_count == 1
     assert ib.scan_data.updateEvent.handlers == []
     assert ib.errorEvent.handlers == []
