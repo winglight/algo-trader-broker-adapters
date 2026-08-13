@@ -38,6 +38,14 @@ class Reconciler:
             tuple[Mapping[str, Any], ...],
             tuple[Mapping[str, Any], ...],
         ] | None = None
+        self._snapshot: dict[str, Any] | None = None
+
+    def cached_snapshot(self) -> dict[str, Any]:
+        """Return the last complete private-state snapshot without remote reads."""
+
+        if self._snapshot is None:
+            raise BrokerConnectionError("OKX reconciliation snapshot is unavailable")
+        return deepcopy(self._snapshot)
 
     def legacy_snapshot(
         self,
@@ -242,6 +250,7 @@ class Reconciler:
                 tuple(self._deduplicate_orders(completed_order_rows)),
                 tuple(trades),
             )
+            self._snapshot = deepcopy(snapshot)
             return snapshot
 
     @staticmethod

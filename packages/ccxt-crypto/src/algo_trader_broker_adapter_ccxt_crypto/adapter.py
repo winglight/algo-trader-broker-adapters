@@ -475,7 +475,11 @@ class CCXTCryptoAdapter:
 
     async def reconcile_v2(self) -> dict[str, Any]:
         await self.ensure_connected()
-        return await self._capture_reconciliation()
+        # Private streams and the periodic reconciler continuously refresh the
+        # authoritative snapshot. Read endpoints must not start another fan-out
+        # of OKX REST calls: concurrent probes otherwise amplify a transient
+        # provider slowdown into request timeouts and readiness churn.
+        return self._reconciler.cached_snapshot()
 
     def set_reconciliation_handler(
         self,
@@ -664,6 +668,9 @@ class CCXTCryptoAdapter:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - supervisor must fail closed
+                if self._private_websocket_was_reset(exc):
+                    await asyncio.sleep(0)
+                    continue
                 await self._stream_failed("orders", exc)
                 return
 
@@ -683,6 +690,9 @@ class CCXTCryptoAdapter:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - supervisor must fail closed
+                if self._private_websocket_was_reset(exc):
+                    await asyncio.sleep(0)
+                    continue
                 await self._stream_failed("balance", exc)
                 return
 
@@ -698,8 +708,22 @@ class CCXTCryptoAdapter:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - supervisor must fail closed
+                if self._private_websocket_was_reset(exc):
+                    await asyncio.sleep(0)
+                    continue
                 await self._stream_failed("trades", exc)
                 return
+
+    @staticmethod
+    def _private_websocket_was_reset(exc: Exception) -> bool:
+        """Recognize the client's completed, recoverable private WS reset."""
+
+        details = getattr(exc, "details", None)
+        return bool(
+            isinstance(details, Mapping)
+            and details.get("websocketBoundary") == "private"
+            and details.get("nextWebsocketGeneration") is not None
+        )
 
     async def _stream_failed(self, stream: str, exc: Exception) -> None:
         self._set_state("blocked", reason=f"private_{stream}_stream_failed")

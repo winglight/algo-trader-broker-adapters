@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 
 import pytest
 from algo_trader_broker_adapter_ccxt_crypto import CCXTCryptoAdapter
-from algo_trader_broker_sdk import BrokerOrderError
+from algo_trader_broker_sdk import BrokerConnectionError, BrokerOrderError
 
 from .fakes import BALANCE, ORDER, FakeClient, settings
 
@@ -432,11 +432,13 @@ async def test_reconciliation_has_target_scoped_decimal_payloads() -> None:
         backend=backend,
     )
     await adapter.start()
+    calls_after_start = list(backend.calls)
     result = await adapter.reconcile_v2()
     assert result["executionTargetId"] == "okx-spot-demo-paper-1"
     assert result["orderUpdates"][0]["instrumentId"] == "crypto-spot:BTC-USDT:OKX"
     assert {item["currency"] for item in result["balances"]} == {"BTC", "ETH", "USDT"}
     assert all(item["quantityDecimal"] == "0" for item in result["positions"])
+    assert backend.calls == calls_after_start
     await adapter.close()
 
 
@@ -463,14 +465,32 @@ async def test_reconciliation_handler_receives_snapshot_and_generation(caplog) -
 
     assert evidence == [
         ("okx-spot-demo-paper-1", 1),
-        ("okx-spot-demo-paper-1", 1),
     ]
     assert sum(
         getattr(record, "event", None)
         == "broker.crypto.reconciliation_completed"
         for record in caplog.records
-    ) == 2
+    ) == 1
     await adapter.close()
+
+
+@pytest.mark.asyncio
+async def test_completed_private_websocket_reset_does_not_drop_readiness() -> None:
+    adapter = CCXTCryptoAdapter(settings(), backend=FakeClient())
+    adapter._connected = True
+    adapter._state = "trading_ready"
+    reset = BrokerConnectionError(
+        "private websocket reset",
+        details={
+            "websocketBoundary": "private",
+            "websocketGeneration": 1,
+            "nextWebsocketGeneration": 2,
+            "resetPerformed": True,
+        },
+    )
+
+    assert adapter._private_websocket_was_reset(reset) is True
+    assert adapter._state == "trading_ready"
 
 
 @pytest.mark.asyncio
