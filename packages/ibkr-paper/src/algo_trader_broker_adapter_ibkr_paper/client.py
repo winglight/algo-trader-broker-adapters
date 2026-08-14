@@ -5089,6 +5089,7 @@ def _scanner_snapshot(source_key: str, entries: Iterable[Any], *, req_id: int | 
                 currency=payload.get("currency"),
                 local_symbol=payload.get("localSymbol"),
                 trading_class=payload.get("tradingClass"),
+                native_fields=dict(payload.get("nativeFields") or {}),
             )
         )
     return ScreenerSnapshot(
@@ -5105,6 +5106,7 @@ def _screener_row_to_legacy_payload(row: ScreenerSymbolRow) -> dict[str, Any]:
         "secType": row.sec_type, "exchange": row.exchange,
         "primaryExchange": row.primary_exchange, "currency": row.currency,
         "localSymbol": row.local_symbol, "tradingClass": row.trading_class,
+        "nativeFields": row.native_fields,
     }
 
 
@@ -5216,7 +5218,16 @@ def _validated_scanner_subscription_value(key: str, value: Any) -> Any:
 
 def _scanner_data_to_dict(entry: Any) -> dict[str, Any]:
     if isinstance(entry, Mapping):
-        return dict(entry)
+        payload = dict(entry)
+        payload["nativeFields"] = {
+            **dict(payload.get("nativeFields") or {}),
+            **{
+                key: payload[key]
+                for key in ("distance", "benchmark", "projection", "legsStr")
+                if payload.get(key) not in (None, "")
+            },
+        }
+        return payload
     payload: dict[str, Any] = {}
     rank = getattr(entry, "rank", None)
     if rank is not None:
@@ -5246,6 +5257,11 @@ def _scanner_data_to_dict(entry: Any) -> dict[str, Any]:
                 LOGGER.debug("Failed to log scanner contractDetails snapshot", exc_info=True)
     else:
         payload["symbol"] = getattr(entry, "symbol", None)
+    payload["nativeFields"] = {
+        key: value
+        for key in ("distance", "benchmark", "projection", "legsStr")
+        if (value := getattr(entry, key, None)) not in (None, "")
+    }
     if hasattr(entry, "details") and not contract:
         payload["details"] = getattr(entry, "details", None)
     return payload

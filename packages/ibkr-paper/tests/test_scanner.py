@@ -70,7 +70,14 @@ def _entry(rank: int, symbol: str, con_id: int) -> Any:
         conId=con_id,
         tradingClass="NMS",
     )
-    return SimpleNamespace(rank=rank, contractDetails=SimpleNamespace(contract=contract))
+    return SimpleNamespace(
+        rank=rank,
+        contractDetails=SimpleNamespace(contract=contract),
+        distance="1.25",
+        benchmark="SPY",
+        projection="2.50",
+        legsStr="",
+    )
 
 
 def _request() -> ScreenerDiscoveryRequest:
@@ -109,6 +116,11 @@ async def test_external_adapter_stream_emits_full_snapshot_and_cancels_once(
         (1, "TSLA", 2),
     ]
     assert snapshot.replace is True
+    assert snapshot.rows[0].native_fields == {
+        "distance": "1.25",
+        "benchmark": "SPY",
+        "projection": "2.50",
+    }
     assert [(item.tag, item.value) for item in ib.scanner_filter_options] == [
         ("priceAbove", "2"),
         ("priceBelow", "20"),
