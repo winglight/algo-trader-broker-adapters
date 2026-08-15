@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import random
+import time
 from contextlib import suppress
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
@@ -29,6 +31,7 @@ from .mapping import (
     balance_payloads,
     fill,
     funding_entry,
+    market_data_object,
     market_data_objects,
     order_update,
     position_payload,
@@ -64,9 +67,18 @@ class PerpetualContext:
         self._position_risk: list[dict[str, Any]] = []
         self._funding_ledger: list[dict[str, Any]] = []
         self._sequence = 0
+        self._reconciliation_generation = 0
+        self._reconciliation_lock = asyncio.Lock()
         self._stream_tasks: list[asyncio.Task[None]] = []
+        self._recovery_task: asyncio.Task[None] | None = None
         self._closing = False
         self._market_data_cache: dict[str, list[dict[str, Any]]] = {}
+        self._market_metadata_hashes: dict[str, str] = {}
+        self._policy_readback: dict[str, Any] = {}
+        self._last_runtime_validation_monotonic: float | None = None
+        self._market_data_update_handler: (
+            Callable[[list[dict[str, Any]]], Awaitable[None]] | None
+        ) = None
         self._trade_update_handler: Callable[[TradeUpdate], Awaitable[None]] | None = None
         self._position_update_handler: Callable[[list[PositionItem]], Awaitable[None]] | None = None
         self._account_update_handler: (
@@ -87,35 +99,13 @@ class PerpetualContext:
     async def connect(self) -> None:
         if self._connected:
             return
-        markets = await self._client.load_markets()
-        for symbol in self._settings.allowed_symbols:
-            market = markets.get(symbol)
-            if not isinstance(market, Mapping):
-                raise BrokerConnectionError("Allowlisted perpetual market is unavailable")
-            rule = PerpetualMarketRules.from_ccxt(symbol, market)
-            if not rule.active:
-                raise BrokerConnectionError("Allowlisted perpetual market is inactive")
-            self._rules[symbol] = rule
-        remote_time = int(await self._client.fetch_time())
-        skew = abs(int(datetime.now(UTC).timestamp() * 1000) - remote_time)
-        if skew > self._settings.clock_skew_block_ms:
-            raise BrokerConnectionError(
-                "OKX clock skew exceeds Phase 5 threshold",
-                details={"clock_skew_ms": skew},
-            )
-        for symbol in self._settings.allowed_symbols:
-            mode = await self._client.fetch_position_mode(symbol)
-            if bool(mode.get("hedged")):
-                raise BrokerConnectionError("OKX position mode must be one-way/net")
-            leverage = await self._client.fetch_leverage(symbol)
-            margin_mode = str(leverage.get("marginMode") or "").lower()
-            values = {
-                str(leverage.get("longLeverage") or leverage.get("leverage") or ""),
-                str(leverage.get("shortLeverage") or leverage.get("leverage") or ""),
-            }
-            if margin_mode != "isolated" or values != {"2"}:
-                raise BrokerConnectionError("OKX margin mode/leverage does not match policy")
-        await self.reconcile_v2()
+        self._closing = False
+        try:
+            await self.reconcile_v2()
+        except Exception as exc:
+            self._state = "blocked"
+            self._reconnect_reason = f"startup_validation_failed:{type(exc).__name__}"
+            raise
         self._connected = True
         self._generation += 1
         self._connected_since = datetime.now(UTC)
@@ -131,6 +121,7 @@ class PerpetualContext:
 
     async def close(self) -> None:
         self._closing = True
+        await self._cancel_recovery()
         await self._stop_streams()
         await self._client.close()
         self._connected = False
@@ -145,6 +136,7 @@ class PerpetualContext:
                 await task
 
     async def disconnect(self, reason: str | None = None) -> None:
+        await self._cancel_recovery()
         await self._stop_streams()
         self._reconnect_reason = reason
         self._connected = False
@@ -185,9 +177,89 @@ class PerpetualContext:
             "adapter_id": self.adapter_id,
             "state": self._state,
             "generation": self._generation,
+            "reconciliationGeneration": self._reconciliation_generation,
             "reconciliationReady": self._snapshot is not None,
+            "metadataHashes": dict(self._market_metadata_hashes),
+            "policyReadback": dict(self._policy_readback),
             **self._settings.redacted(),
         }
+
+    async def _cancel_recovery(self) -> None:
+        recovery, self._recovery_task = self._recovery_task, None
+        if recovery is not None and recovery is not asyncio.current_task():
+            recovery.cancel()
+            with suppress(asyncio.CancelledError):
+                await recovery
+
+    async def _validate_runtime_contract(self, *, force: bool) -> None:
+        if (
+            not force
+            and self._last_runtime_validation_monotonic is not None
+            and time.monotonic() - self._last_runtime_validation_monotonic
+            < self._settings.reconcile_interval_seconds
+        ):
+            return
+        markets = await self._client.load_markets()
+        rules: dict[str, PerpetualMarketRules] = {}
+        hashes: dict[str, str] = {}
+        for symbol in self._settings.allowed_symbols:
+            market = markets.get(symbol)
+            if not isinstance(market, Mapping):
+                raise BrokerConnectionError("Allowlisted perpetual market is unavailable")
+            rule = PerpetualMarketRules.from_ccxt(symbol, market)
+            if not rule.active:
+                raise BrokerConnectionError("Allowlisted perpetual market is inactive")
+            rules[symbol] = rule
+            hashes[symbol] = rule.metadata_hash
+        if self._market_metadata_hashes and hashes != self._market_metadata_hashes:
+            raise BrokerConnectionError(
+                "Perpetual market metadata changed and requires approval",
+                details={"metadata_approval_required": True},
+            )
+        self._rules = rules
+        self._market_metadata_hashes = hashes
+
+        remote_time = int(await self._client.fetch_time())
+        skew = abs(int(datetime.now(UTC).timestamp() * 1000) - remote_time)
+        if skew > self._settings.clock_skew_block_ms:
+            raise BrokerConnectionError(
+                "OKX clock skew exceeds Phase 5 threshold",
+                details={"clock_skew_ms": skew},
+            )
+
+        checked_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        symbols: dict[str, dict[str, Any]] = {}
+        matches = True
+        for symbol in self._settings.allowed_symbols:
+            mode = await self._client.fetch_position_mode(symbol)
+            leverage = await self._client.fetch_leverage(symbol)
+            margin_mode = str(leverage.get("marginMode") or "").lower()
+            values = sorted(
+                {
+                    str(leverage.get("longLeverage") or leverage.get("leverage") or ""),
+                    str(leverage.get("shortLeverage") or leverage.get("leverage") or ""),
+                }
+            )
+            symbol_matches = (
+                not bool(mode.get("hedged"))
+                and margin_mode == "isolated"
+                and values == ["2"]
+            )
+            matches = matches and symbol_matches
+            symbols[symbol] = {
+                "positionMode": "HEDGE" if bool(mode.get("hedged")) else "ONE_WAY",
+                "marginMode": margin_mode.upper() or "UNKNOWN",
+                "leverage": values,
+                "matches": symbol_matches,
+            }
+        self._policy_readback = {
+            "checkedAt": checked_at,
+            "matches": matches,
+            "symbols": symbols,
+        }
+        if not matches:
+            raise BrokerConnectionError("OKX mode or leverage drifted from Phase 5 policy")
+        self._last_runtime_validation_monotonic = time.monotonic()
 
     async def market_metadata_v2(self) -> list[dict[str, Any]]:
         await self.ensure_connected()
@@ -243,6 +315,7 @@ class PerpetualContext:
             rate,
             symbol=symbol,
             market_data_target_id=self._settings.market_data_target_id,
+            metadata_hash=self._rules[symbol].metadata_hash,
             first_sequence=self._sequence + 1,
         )
         self._sequence += 3
@@ -251,6 +324,7 @@ class PerpetualContext:
 
     async def place_order_v2(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         await self.ensure_connected()
+        await self.reconcile_v2()
         if self._state != "trading_ready":
             raise BrokerOrderError("Perpetual adapter is not trading ready")
         target = str(_field(payload, "executionTargetId", "execution_target_id") or "")
@@ -348,7 +422,22 @@ class PerpetualContext:
             command_id=str(_field(payload, "commandId", "command_id") or ""),
         )
 
-    async def reconcile_v2(self) -> dict[str, Any]:
+    async def reconcile_v2(
+        self, *, force_runtime_validation: bool = True
+    ) -> dict[str, Any]:
+        async with self._reconciliation_lock:
+            return await self._reconcile_v2_unlocked(
+                force_runtime_validation=force_runtime_validation
+            )
+
+    async def _reconcile_v2_unlocked(
+        self, *, force_runtime_validation: bool
+    ) -> dict[str, Any]:
+        try:
+            await self._validate_runtime_contract(force=force_runtime_validation)
+        except Exception:
+            self._state = "blocked"
+            raise
         balance = await self._client.fetch_balance()
         positions = await self._client.fetch_positions(list(self._settings.allowed_symbols))
         mapped_positions: list[dict[str, Any]] = []
@@ -415,8 +504,11 @@ class PerpetualContext:
             ),
         }
         self._snapshot = snapshot
+        self._reconciliation_generation += 1
         if self._reconciliation_handler is not None:
-            maybe = self._reconciliation_handler(snapshot, self._generation + 1)
+            maybe = self._reconciliation_handler(
+                snapshot, self._reconciliation_generation
+            )
             if inspect.isawaitable(maybe):
                 await maybe
         return snapshot
@@ -437,11 +529,19 @@ class PerpetualContext:
             asyncio.create_task(self._watch_trades(), name="ccxt-perpetual.trades"),
             asyncio.create_task(self._watch_positions(), name="ccxt-perpetual.positions"),
             asyncio.create_task(self._watch_balance(), name="ccxt-perpetual.balance"),
-            asyncio.create_task(self._watch_market_data(), name="ccxt-perpetual.market-data"),
             asyncio.create_task(
                 self._periodic_reconciliation(), name="ccxt-perpetual.reconciliation"
             ),
         ]
+        for symbol in self._settings.allowed_symbols:
+            task_symbol = symbol.replace("/", "-").replace(":", "-").lower()
+            for object_type in ("mark", "index", "funding"):
+                self._stream_tasks.append(
+                    asyncio.create_task(
+                        self._watch_market_data(symbol, object_type),
+                        name=f"ccxt-perpetual.{task_symbol}.{object_type}",
+                    )
+                )
 
     async def _periodic_reconciliation(self) -> None:
         while True:
@@ -508,7 +608,7 @@ class PerpetualContext:
         while True:
             try:
                 await self._client.watch_positions(list(self._settings.allowed_symbols))
-                await self.reconcile_v2()
+                await self.reconcile_v2(force_runtime_validation=False)
                 if self._position_update_handler is not None:
                     await self._position_update_handler(await self.get_positions())
             except asyncio.CancelledError:
@@ -521,7 +621,7 @@ class PerpetualContext:
         while True:
             try:
                 await self._client.watch_balance()
-                await self.reconcile_v2()
+                await self.reconcile_v2(force_runtime_validation=False)
                 if self._account_update_handler is not None:
                     await self._account_update_handler(await self.get_account_summary())
             except asyncio.CancelledError:
@@ -530,23 +630,45 @@ class PerpetualContext:
                 await self._stream_failed("balance", exc)
                 return
 
-    async def _watch_market_data(self) -> None:
+    def _cache_market_object(self, symbol: str, item: dict[str, Any]) -> None:
+        by_type = {
+            str(row["objectType"]): row
+            for row in self._market_data_cache.get(symbol, [])
+        }
+        by_type[str(item["objectType"])] = item
+        self._market_data_cache[symbol] = [
+            by_type[object_type]
+            for object_type in ("mark", "index", "funding")
+            if object_type in by_type
+        ]
+
+    async def _watch_market_data(self, symbol: str, object_type: str) -> None:
         while True:
             try:
-                for symbol in self._settings.allowed_symbols:
-                    rate = await self._client.watch_funding_rate(symbol)
-                    objects = market_data_objects(
-                        rate,
-                        symbol=symbol,
-                        market_data_target_id=self._settings.market_data_target_id,
-                        first_sequence=self._sequence + 1,
-                    )
-                    self._sequence += 3
-                    self._market_data_cache[symbol] = objects
+                if object_type == "mark":
+                    row = await self._client.watch_mark_price(symbol)
+                elif object_type == "index":
+                    row = await self._client.watch_index_price(symbol)
+                elif object_type == "funding":
+                    row = await self._client.watch_funding_rate(symbol)
+                else:
+                    raise ValueError("Unsupported perpetual market-data stream")
+                self._sequence += 1
+                item = market_data_object(
+                    row,
+                    object_type=object_type,
+                    symbol=symbol,
+                    market_data_target_id=self._settings.market_data_target_id,
+                    metadata_hash=self._rules[symbol].metadata_hash,
+                    sequence=self._sequence,
+                )
+                self._cache_market_object(symbol, item)
+                if self._market_data_update_handler is not None:
+                    await self._market_data_update_handler([item])
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - fail closed on stream loss
-                await self._stream_failed("market_data", exc)
+                await self._stream_failed(f"{object_type}_market_data", exc)
                 return
 
     async def _stream_failed(self, stream: str, exc: Exception) -> None:
@@ -563,6 +685,50 @@ class PerpetualContext:
                 "marketDataTargetId": self._settings.market_data_target_id,
             },
         )
+        if not self._closing and (
+            self._recovery_task is None or self._recovery_task.done()
+        ):
+            self._recovery_task = asyncio.create_task(
+                self._recover_streams(), name="ccxt-perpetual.recovery"
+            )
+
+    async def _recover_streams(self) -> None:
+        attempt = 0
+        while self._connected and not self._closing:
+            attempt += 1
+            delay = min(30.0, float(2 ** (attempt - 1)))
+            await asyncio.sleep(delay + random.uniform(0.0, delay * 0.25))
+            try:
+                await self.reconcile_v2()
+                current = asyncio.current_task()
+                stale, self._stream_tasks = self._stream_tasks, []
+                for task in stale:
+                    if task is not current and not task.done():
+                        task.cancel()
+                for task in stale:
+                    if task is not current:
+                        with suppress(asyncio.CancelledError):
+                            await task
+                self._generation += 1
+                self._start_streams()
+                self._state = "trading_ready"
+                self._reconnect_reason = "stream_recovered"
+                await self._notify_connection(
+                    "connected",
+                    {
+                        **self.connection_diagnostics(),
+                        "reconciled": True,
+                        "executionTargetId": self._settings.execution_target_id,
+                        "marketDataTargetId": self._settings.market_data_target_id,
+                    },
+                )
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._reconnect_reason = (
+                    f"reconciliation_failed:{type(exc).__name__}"
+                )
 
     def set_trade_update_handler(
         self, handler: Callable[[TradeUpdate], Awaitable[None]] | None
@@ -583,6 +749,12 @@ class PerpetualContext:
         self, handler: Callable[[Mapping[str, Any], int], Awaitable[None] | None] | None
     ) -> None:
         self._reconciliation_handler = handler
+
+    def set_market_data_update_handler(
+        self,
+        handler: Callable[[list[dict[str, Any]]], Awaitable[None]] | None,
+    ) -> None:
+        self._market_data_update_handler = handler
 
     def add_connection_listener(
         self, listener: Callable[[str, Mapping[str, Any]], Awaitable[None] | None]

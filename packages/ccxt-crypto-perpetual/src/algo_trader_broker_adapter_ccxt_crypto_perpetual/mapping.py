@@ -80,7 +80,9 @@ def order_update(
     status = order_status(order)
     if status == "FILLED":
         remaining = Decimal(0)
-    event_time = timestamp(info.get("uTime") or order.get("lastTradeTimestamp") or order.get("timestamp"))
+    event_time = timestamp(
+        info.get("uTime") or order.get("lastTradeTimestamp") or order.get("timestamp")
+    )
     return {
         "schemaVersion": "broker-order-update.v2",
         "identity": {
@@ -312,50 +314,81 @@ def market_data_objects(
     *,
     symbol: str,
     market_data_target_id: str,
+    metadata_hash: str,
     first_sequence: int,
 ) -> list[dict[str, Any]]:
-    info = _info(rate)
-    event_time = timestamp(rate.get("timestamp") or info.get("ts"))
+    return [
+        market_data_object(
+            rate,
+            object_type=object_type,
+            symbol=symbol,
+            market_data_target_id=market_data_target_id,
+            metadata_hash=metadata_hash,
+            sequence=first_sequence + offset,
+        )
+        for offset, object_type in enumerate(("mark", "index", "funding"))
+    ]
+
+
+def market_data_object(
+    row: Mapping[str, Any],
+    *,
+    object_type: str,
+    symbol: str,
+    market_data_target_id: str,
+    metadata_hash: str,
+    sequence: int,
+) -> dict[str, Any]:
+    info = _info(row)
+    event_time = timestamp(row.get("timestamp") or info.get("ts"))
     available = timestamp()
     observed = timestamp()
-    mark = rate.get("markPrice") or info.get("markPx")
-    index = rate.get("indexPrice") or info.get("indexPx")
-    funding_rate = rate.get("fundingRate") or info.get("fundingRate")
-    next_time = rate.get("fundingTimestamp") or info.get("fundingTime")
-    if any(value in (None, "") for value in (mark, index, funding_rate, next_time)):
-        raise ValueError("Funding snapshot lacks mark/index/rate/next funding time")
-    common = {
+    common: dict[str, Any] = {
         "schemaVersion": "market-data-object-envelope.v1",
         "instrumentId": instrument_id(symbol),
         "relatedInstrumentId": None,
         "marketDataTargetId": market_data_target_id,
+        "source": "OKX",
+        "metadataHash": metadata_hash,
         "eventTime": event_time,
         "availableAt": available,
         "observedAt": observed,
     }
-    return [
-        {
+    if object_type == "mark":
+        value = row.get("markPrice") or row.get("last") or info.get("markPx")
+        if value in (None, ""):
+            raise ValueError("Mark-price update lacks a mark price")
+        return {
             **common,
-            "objectType": "mark",
+            "objectType": object_type,
             "objectSchemaVersion": "market-data.mark.v1",
-            "sequence": first_sequence,
-            "payload": {"markPriceDecimal": canonical(decimal(mark))},
-        },
-        {
+            "sequence": sequence,
+            "payload": {"markPriceDecimal": canonical(decimal(value))},
+        }
+    if object_type == "index":
+        value = row.get("indexPrice") or row.get("last") or info.get("idxPx")
+        if value in (None, ""):
+            raise ValueError("Index-price update lacks an index price")
+        return {
             **common,
-            "objectType": "index",
+            "objectType": object_type,
             "objectSchemaVersion": "market-data.index.v1",
-            "sequence": first_sequence + 1,
-            "payload": {"indexPriceDecimal": canonical(decimal(index))},
-        },
-        {
+            "sequence": sequence,
+            "payload": {"indexPriceDecimal": canonical(decimal(value))},
+        }
+    if object_type == "funding":
+        rate = row.get("fundingRate") or info.get("fundingRate")
+        next_time = row.get("fundingTimestamp") or info.get("fundingTime")
+        if rate in (None, "") or next_time in (None, ""):
+            raise ValueError("Funding update lacks rate or next funding time")
+        return {
             **common,
-            "objectType": "funding",
+            "objectType": object_type,
             "objectSchemaVersion": "market-data.funding.v1",
-            "sequence": first_sequence + 2,
+            "sequence": sequence,
             "payload": {
-                "fundingRateDecimal": canonical(decimal(funding_rate)),
+                "fundingRateDecimal": canonical(decimal(rate)),
                 "nextFundingTime": timestamp(next_time),
             },
-        },
-    ]
+        }
+    raise ValueError(f"Unsupported perpetual market-data object type: {object_type}")

@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock
+
 import pytest
 from ati_shared_sdk.common.schemas.crypto_perpetual import (
     FundingLedgerEntryV1,
@@ -159,6 +163,77 @@ async def test_connect_blocks_hedged_cross_or_non_2x_state() -> None:
         adapter = PerpetualContext(_settings(), backend=backend)
         with pytest.raises(BrokerConnectionError):
             await adapter.connect()
+        assert adapter.connection_state_snapshot().state == "blocked"
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_blocks_runtime_policy_or_metadata_drift() -> None:
+    backend = FakeBackend()
+    adapter = PerpetualContext(_settings(), backend=backend)
+    await adapter.connect()
+
+    backend.leverage = "3"
+    with pytest.raises(BrokerConnectionError, match="drifted"):
+        await adapter.reconcile_v2()
+    diagnostics = adapter.connection_diagnostics()
+    assert diagnostics["state"] == "blocked"
+    assert diagnostics["policyReadback"]["matches"] is False
+
+    backend.leverage = "2"
+    backend.tick_size = "0.2"
+    with pytest.raises(BrokerConnectionError, match="metadata changed"):
+        await adapter.reconcile_v2()
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_generation_is_monotonic_and_stream_failure_recovers(
+    monkeypatch,
+) -> None:
+    backend = FakeBackend()
+    adapter = PerpetualContext(_settings(), backend=backend)
+    generations: list[int] = []
+    lifecycle: list[tuple[str, int]] = []
+    connection_states: list[tuple[str, dict[str, object]]] = []
+
+    adapter.set_reconciliation_handler(
+        lambda _snapshot, generation: (
+            generations.append(generation),
+            lifecycle.append(("reconcile", generation)),
+        )
+    )
+    adapter.add_connection_listener(
+        lambda state, payload: connection_states.append((state, dict(payload)))
+    )
+    await adapter.connect()
+    await adapter.reconcile_v2()
+
+    assert generations == [1, 2]
+    assert adapter.connection_diagnostics()["reconciliationGeneration"] == 2
+
+    async def immediate_sleep(_delay: float) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "algo_trader_broker_adapter_ccxt_crypto_perpetual.adapter.asyncio.sleep",
+        immediate_sleep,
+    )
+    adapter._start_streams = lambda: lifecycle.append(
+        ("streams", adapter.connection_diagnostics()["reconciliationGeneration"])
+    )
+    await adapter._stream_failed("market_data", TimeoutError("test"))
+    assert adapter.connection_state_snapshot().state == "blocked"
+    assert adapter._recovery_task is not None
+    await adapter._recovery_task
+
+    assert generations == [1, 2, 3]
+    assert lifecycle[-2:] == [("reconcile", 3), ("streams", 3)]
+    assert adapter.connection_state_snapshot().state == "trading_ready"
+    assert connection_states[-1][0] == "connected"
+    assert connection_states[-1][1]["executionTargetId"] == (
+        "okx-perpetual-demo-paper-1"
+    )
+    await adapter.close()
+    assert adapter._recovery_task is None
 
 
 @pytest.mark.asyncio
@@ -231,8 +306,58 @@ async def test_market_objects_have_target_sequence_and_distinct_types() -> None:
     assert {
         item["marketDataTargetId"] for item in objects
     } == {"okx-perpetual-demo-market-1"}
+    assert {item["source"] for item in objects} == {"OKX"}
+    assert all(len(item["metadataHash"]) == 64 for item in objects)
     for item in objects:
         MarketDataObjectEnvelopeV1.model_validate(item)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("object_type", "method_name", "payload", "payload_key"),
+    [
+        ("mark", "watch_mark_price", {"last": "60001"}, "markPriceDecimal"),
+        ("index", "watch_index_price", {"last": "59991"}, "indexPriceDecimal"),
+        (
+            "funding",
+            "watch_funding_rate",
+            {
+                "fundingRate": "0.0001",
+                "fundingTimestamp": int(
+                    (datetime.now(UTC) + timedelta(hours=8)).timestamp() * 1000
+                ),
+            },
+            "fundingRateDecimal",
+        ),
+    ],
+)
+async def test_dedicated_market_stream_emits_one_target_scoped_object(
+    object_type: str,
+    method_name: str,
+    payload: dict[str, object],
+    payload_key: str,
+) -> None:
+    backend = FakeBackend()
+    stream = AsyncMock(return_value=payload)
+    setattr(backend, method_name, stream)
+    adapter = PerpetualContext(_settings(), backend=backend)
+    await adapter.connect()
+    captured: list[dict[str, object]] = []
+
+    async def handler(rows: list[dict[str, object]]) -> None:
+        captured.extend(rows)
+        raise asyncio.CancelledError
+
+    adapter.set_market_data_update_handler(handler)
+    with pytest.raises(asyncio.CancelledError):
+        await adapter._watch_market_data("BTC/USDT:USDT", object_type)
+
+    stream.assert_awaited_once_with("BTC/USDT:USDT")
+    assert len(captured) == 1
+    assert captured[0]["objectType"] == object_type
+    assert captured[0]["marketDataTargetId"] == "okx-perpetual-demo-market-1"
+    assert payload_key in captured[0]["payload"]
+    MarketDataObjectEnvelopeV1.model_validate(captured[0])
 
 
 @pytest.mark.asyncio

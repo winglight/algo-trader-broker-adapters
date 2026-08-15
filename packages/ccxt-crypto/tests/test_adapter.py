@@ -6,7 +6,7 @@ from copy import deepcopy
 from datetime import UTC, datetime
 
 import pytest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from algo_trader_broker_adapter_ccxt_crypto import CCXTCryptoAdapter
 from algo_trader_broker_sdk import BrokerConnectionError, BrokerOrderError
 
@@ -47,6 +47,10 @@ async def test_unified_adapter_exposes_and_routes_both_target_isolated_domains()
     assert result == {"status": "SUBMITTED"}
     adapter._perpetual.place_order_v2.assert_awaited_once()
 
+    connection_events = []
+    adapter.add_connection_listener(
+        lambda state, payload: connection_events.append((state, dict(payload)))
+    )
     adapter._perpetual.disconnect = AsyncMock()
     await adapter.disconnect(reason="test_unified_disconnect")
 
@@ -54,6 +58,15 @@ async def test_unified_adapter_exposes_and_routes_both_target_isolated_domains()
         "test_unified_disconnect"
     )
     assert adapter.connection_state_snapshot().state == "disconnected"
+    assert connection_events[-1][1]["executionTargetId"] == "okx-spot-demo-paper-1"
+    assert connection_events[-1][1]["marketDataTargetId"] == "okx-spot-demo-market-1"
+
+    market_handler = AsyncMock()
+    adapter._perpetual.set_market_data_update_handler = Mock()
+    adapter.set_market_data_update_handler(market_handler)
+    adapter._perpetual.set_market_data_update_handler.assert_called_once_with(
+        market_handler
+    )
 
 
 def order_payload(**overrides):

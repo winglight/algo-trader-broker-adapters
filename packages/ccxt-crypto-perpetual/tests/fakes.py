@@ -33,6 +33,7 @@ class FakeBackend:
         self.hedged = False
         self.margin_mode = "isolated"
         self.leverage = "2"
+        self.tick_size = "0.1"
         self.created: list[dict[str, Any]] = []
         self.cancelled: list[tuple[str, str]] = []
         self.closed = False
@@ -41,10 +42,12 @@ class FakeBackend:
         self.closed = True
 
     async def load_markets(self) -> dict[str, Any]:
-        return {
+        result = {
             symbol: market(symbol)
             for symbol in ("BTC/USDT:USDT", "ETH/USDT:USDT")
         }
+        result["BTC/USDT:USDT"]["info"]["tickSz"] = self.tick_size
+        return result
 
     async def fetch_time(self) -> int:
         return int(datetime.now(UTC).timestamp() * 1000)

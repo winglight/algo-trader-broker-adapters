@@ -28,6 +28,20 @@ class OKXDemoPerpetualClient:
             }
         )
         self._exchange.set_sandbox_mode(True)
+        required_streams = (
+            "watchMarkPrice",
+            "watchFundingRate",
+            "watchOrders",
+            "watchMyTrades",
+            "watchPositions",
+            "watchBalance",
+        )
+        missing = [name for name in required_streams if self._exchange.has.get(name) is not True]
+        if missing:
+            raise RuntimeError(
+                "ccxt==4.5.56 lacks required OKX Pro capabilities: "
+                + ", ".join(sorted(missing))
+            )
 
     async def close(self) -> None:
         await self._exchange.close()
@@ -80,6 +94,17 @@ class OKXDemoPerpetualClient:
     async def watch_funding_rate(self, symbol: str) -> dict[str, Any]:
         return dict(await self._exchange.watch_funding_rate(symbol))
 
+    async def watch_mark_price(self, symbol: str) -> dict[str, Any]:
+        return dict(await self._exchange.watch_mark_price(symbol))
+
+    async def watch_index_price(self, symbol: str) -> dict[str, Any]:
+        return dict(
+            await self._exchange.watch_mark_price(
+                symbol,
+                {"channel": "index-tickers"},
+            )
+        )
+
     async def create_order(
         self,
         symbol: str,
@@ -89,7 +114,16 @@ class OKXDemoPerpetualClient:
         price: str | None,
         params: dict[str, Any],
     ) -> dict[str, Any]:
-        return dict(await self._exchange.create_order(symbol, order_type, side, amount, price, params))
+        return dict(
+            await self._exchange.create_order(
+                symbol,
+                order_type,
+                side,
+                amount,
+                price,
+                params,
+            )
+        )
 
     async def cancel_order(self, order_id: str, symbol: str) -> dict[str, Any]:
         return dict(await self._exchange.cancel_order(order_id, symbol))

@@ -292,6 +292,7 @@ class CCXTCryptoAdapter:
                     "state": self._state,
                     "generation": self._generation,
                     "sandbox": True,
+                    **self._spot_target_identity(),
                 },
             )
 
@@ -314,7 +315,10 @@ class CCXTCryptoAdapter:
                 await self._perpetual.close()
             self._connected = False
             self._set_state("disconnected", reason="closed")
-            await self._notify_connection("disconnected", {"reason": "closed"})
+            await self._notify_connection(
+                "disconnected",
+                {"reason": "closed", **self._spot_target_identity()},
+            )
 
     async def disconnect(self, reason: str | None = None) -> None:
         self._reconnect_reason = reason
@@ -337,8 +341,7 @@ class CCXTCryptoAdapter:
             "disconnected",
             {
                 "reason": reason,
-                "executionTargetId": self._settings.execution_target_id,
-                "marketDataTargetId": self._settings.market_data_target_id,
+                **self._spot_target_identity(),
             },
         )
 
@@ -399,7 +402,12 @@ class CCXTCryptoAdapter:
                             "marketDataTargetId": self._settings.perpetual_market_data_target_id,
                             "state": perpetual.get("state"),
                             "generation": perpetual.get("generation"),
+                            "reconciliationGeneration": perpetual.get(
+                                "reconciliationGeneration"
+                            ),
                             "reconciliationReady": perpetual.get("reconciliationReady"),
+                            "policyReadback": perpetual.get("policyReadback"),
+                            "metadataHashes": perpetual.get("metadataHashes"),
                         }
                     }
                     if isinstance(perpetual, Mapping)
@@ -687,6 +695,13 @@ class CCXTCryptoAdapter:
         if self._perpetual is not None:
             self._perpetual.set_reconciliation_handler(handler)
 
+    def set_market_data_update_handler(
+        self,
+        handler: Callable[[list[dict[str, Any]]], Awaitable[None]] | None,
+    ) -> None:
+        if self._perpetual is not None:
+            self._perpetual.set_market_data_update_handler(handler)
+
     async def _capture_reconciliation(
         self, *, generation: int | None = None
     ) -> dict[str, Any]:
@@ -827,6 +842,12 @@ class CCXTCryptoAdapter:
             if inspect.isawaitable(result):
                 await result
 
+    def _spot_target_identity(self) -> dict[str, str]:
+        return {
+            "executionTargetId": self._settings.execution_target_id,
+            "marketDataTargetId": self._settings.market_data_target_id,
+        }
+
     def _start_private_streams(self) -> None:
         if self._stream_tasks:
             return
@@ -945,6 +966,7 @@ class CCXTCryptoAdapter:
                 "reason": f"private_{stream}_stream_failed",
                 "error_type": type(exc).__name__,
                 "reconciliation_required": True,
+                **self._spot_target_identity(),
             },
         )
         if not self._closing and not self._metadata_approval_required and (
@@ -989,6 +1011,7 @@ class CCXTCryptoAdapter:
                         "state": self._state,
                         "generation": self._generation,
                         "reconciled": True,
+                        **self._spot_target_identity(),
                     },
                 )
                 return
