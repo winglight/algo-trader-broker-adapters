@@ -13,6 +13,8 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
+from algo_trader_broker_adapter_ccxt_crypto_perpetual import PerpetualContext
+
 from algo_trader_broker_sdk import (
     AccountSummaryItem,
     BrokerAdapterManifest,
@@ -68,9 +70,38 @@ def _field(payload: Mapping[str, Any], camel: str, snake: str | None = None) -> 
 class CCXTCryptoAdapter:
     adapter_id = "ccxt_crypto"
 
-    def __init__(self, settings: Mapping[str, Any], *, backend: Any | None = None) -> None:
+    def __init__(
+        self,
+        settings: Mapping[str, Any],
+        *,
+        backend: Any | None = None,
+        perpetual_backend: Any | None = None,
+    ) -> None:
         self._settings = CCXTCryptoSettings.from_mapping(settings)
         self._client = backend or OKXDemoClient(self._settings)
+        self._perpetual: PerpetualContext | None = None
+        if self._settings.perpetual_enabled:
+            self._perpetual = PerpetualContext(
+                {
+                    "exchange_id": "okx",
+                    "sandbox": True,
+                    "live": False,
+                    "api_key": self._settings.api_key,
+                    "secret": self._settings.secret,
+                    "passphrase": self._settings.passphrase,
+                    "allowed_symbols": self._settings.perpetual_allowed_symbols,
+                    "execution_target_id": self._settings.perpetual_execution_target_id,
+                    "market_data_target_id": self._settings.perpetual_market_data_target_id,
+                    "account_id": self._settings.perpetual_account_id,
+                    "position_mode": "ONE_WAY",
+                    "margin_mode": "ISOLATED",
+                    "fixed_leverage": self._settings.perpetual_fixed_leverage,
+                    "request_timeout_ms": self._settings.request_timeout_ms,
+                    "reconcile_interval_seconds": self._settings.reconcile_interval_seconds,
+                    "clock_skew_block_ms": self._settings.clock_skew_block_ms,
+                },
+                backend=perpetual_backend,
+            )
         self._reconciler = Reconciler(self._client, self._settings)
         self._connected = False
         self._state = "installed"
@@ -104,7 +135,7 @@ class CCXTCryptoAdapter:
     def manifest(self) -> BrokerAdapterManifest:
         return BrokerAdapterManifest(
             adapter_id=self.adapter_id,
-            display_name="OKX Demo Spot (CCXT)",
+            display_name="OKX Demo Spot + USDT Perpetual (CCXT)",
             adapter_version="0.1.0",
             protocol_version="1.0",
             environment="PAPER",
@@ -116,20 +147,46 @@ class CCXTCryptoAdapter:
         return BrokerCapabilities(
             adapter_name=self.adapter_id,
             environment="PAPER",
-            asset_classes={"CRYPTO_SPOT"},
+            asset_classes=(
+                {"CRYPTO_SPOT", "CRYPTO_PERPETUAL"}
+                if self._perpetual is not None
+                else {"CRYPTO_SPOT"}
+            ),
             order_types={"MKT", "LMT"},
-            time_in_force={"GTC"},
-            market_data_streams={"historical_bars", "realtime_price", "tick_by_tick"},
-            account_features={"summary", "positions", "position_updates", "reconciliation_v2"},
+            time_in_force={"GTC", "IOC"} if self._perpetual is not None else {"GTC"},
+            market_data_streams=(
+                {"historical_bars", "realtime_price", "tick_by_tick", "mark", "index", "funding"}
+                if self._perpetual is not None
+                else {"historical_bars", "realtime_price", "tick_by_tick"}
+            ),
+            account_features=(
+                {
+                    "summary",
+                    "positions",
+                    "position_updates",
+                    "reconciliation_v2",
+                    "position_risk_v1",
+                    "funding_ledger_v1",
+                }
+                if self._perpetual is not None
+                else {"summary", "positions", "position_updates", "reconciliation_v2"}
+            ),
             supports_fractional=True,
-            supports_shorting=False,
+            supports_shorting=self._perpetual is not None,
             supports_replace=False,
             supports_partial_fills=True,
             supports_scanner=False,
             supports_options=False,
-            supports_futures=False,
+            supports_futures=self._perpetual is not None,
             default_asset_class="CRYPTO_SPOT",
-            symbol_examples={"CRYPTO_SPOT": list(self._settings.allowed_symbols)},
+            symbol_examples={
+                "CRYPTO_SPOT": list(self._settings.allowed_symbols),
+                **(
+                    {"CRYPTO_PERPETUAL": list(self._settings.perpetual_allowed_symbols)}
+                    if self._perpetual is not None
+                    else {}
+                ),
+            },
             native={
                 "exchangeId": "okx",
                 "paperOnly": True,
@@ -137,6 +194,49 @@ class CCXTCryptoAdapter:
                 "simulatedTradingHeaderRequired": True,
                 "executionTargetId": self._settings.execution_target_id,
                 "marketDataTargetId": self._settings.market_data_target_id,
+                "executionTargets": {
+                    "CRYPTO_SPOT": self._settings.execution_target_id,
+                    **(
+                        {
+                            "CRYPTO_PERPETUAL": self._settings.perpetual_execution_target_id
+                        }
+                        if self._perpetual is not None
+                        else {}
+                    ),
+                },
+                "marketDataTargets": {
+                    "CRYPTO_SPOT": self._settings.market_data_target_id,
+                    **(
+                        {
+                            "CRYPTO_PERPETUAL": self._settings.perpetual_market_data_target_id
+                        }
+                        if self._perpetual is not None
+                        else {}
+                    ),
+                },
+                "targetCapabilities": {
+                    "CRYPTO_SPOT": {
+                        "supportsFractional": True,
+                        "supportsShorting": False,
+                        "timeInForce": ["GTC"],
+                    },
+                    **(
+                        {
+                            "CRYPTO_PERPETUAL": {
+                                "supportsFractional": False,
+                                "supportsShorting": True,
+                                "timeInForce": ["GTC", "IOC"],
+                            }
+                        }
+                        if self._perpetual is not None
+                        else {}
+                    ),
+                },
+                "perpetualPolicy": {
+                    "positionMode": "ONE_WAY",
+                    "marginMode": "ISOLATED",
+                    "fixedLeverage": "2",
+                } if self._perpetual is not None else None,
                 "allowedSymbols": list(self._settings.allowed_symbols),
             },
         )
@@ -177,6 +277,8 @@ class CCXTCryptoAdapter:
             await self._refresh_valuation_prices()
             if snapshot.get("orderUpdates") is None:
                 raise BrokerConnectionError("OKX initial reconciliation did not complete")
+            if self._perpetual is not None:
+                await self._perpetual.start()
             self._start_private_streams()
             next_state = "trading_ready"
             self._generation += 1
@@ -208,6 +310,8 @@ class CCXTCryptoAdapter:
                 with suppress(asyncio.CancelledError):
                     await task
             await self._client.close()
+            if self._perpetual is not None:
+                await self._perpetual.close()
             self._connected = False
             self._set_state("disconnected", reason="closed")
             await self._notify_connection("disconnected", {"reason": "closed"})
@@ -300,8 +404,16 @@ class CCXTCryptoAdapter:
             },
         )
 
-    async def market_metadata_v2(self) -> list[dict[str, Any]]:
+    async def market_metadata_v2(
+        self, execution_target_id: str | None = None
+    ) -> list[dict[str, Any]]:
         await self.ensure_connected()
+        if execution_target_id == self._settings.perpetual_execution_target_id:
+            if self._perpetual is None:
+                raise BrokerConnectionError("Perpetual execution context is disabled")
+            return await self._perpetual.market_metadata_v2()
+        if execution_target_id not in {None, self._settings.execution_target_id}:
+            raise BrokerConnectionError("Unknown execution target")
         if not self._rules:
             await self._load_and_validate_markets()
         return [
@@ -324,12 +436,16 @@ class CCXTCryptoAdapter:
 
     async def place_order_v2(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         await self.ensure_connected()
+        target = str(_field(payload, "executionTargetId", "execution_target_id") or "")
+        if target == self._settings.perpetual_execution_target_id:
+            if self._perpetual is None:
+                raise order_error("Perpetual execution context is disabled", code="execution_target_disabled")
+            return await self._perpetual.place_order_v2(payload)
         if self._state != "trading_ready":
             raise order_error(
                 "OKX Demo is not trading ready",
                 code="trading_not_ready",
             )
-        target = str(_field(payload, "executionTargetId", "execution_target_id") or "")
         if target != self._settings.execution_target_id:
             raise order_error("execution target mismatch", code="execution_target_mismatch")
         instrument = str(_field(payload, "instrumentId", "instrument_id") or "")
@@ -423,6 +539,10 @@ class CCXTCryptoAdapter:
     async def cancel_order_v2(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         await self.ensure_connected()
         target = str(_field(payload, "executionTargetId", "execution_target_id") or "")
+        if target == self._settings.perpetual_execution_target_id:
+            if self._perpetual is None:
+                raise order_error("Perpetual execution context is disabled", code="execution_target_disabled")
+            return await self._perpetual.cancel_order_v2(payload)
         if target != self._settings.execution_target_id:
             raise order_error("execution target mismatch", code="execution_target_mismatch")
         instrument = str(_field(payload, "instrumentId", "instrument_id") or "")
@@ -473,19 +593,58 @@ class CCXTCryptoAdapter:
             or any(f"{status}" in message for status in range(500, 600))
         )
 
-    async def reconcile_v2(self) -> dict[str, Any]:
+    async def reconcile_v2(
+        self, execution_target_id: str | None = None
+    ) -> dict[str, Any]:
         await self.ensure_connected()
+        if execution_target_id == self._settings.perpetual_execution_target_id:
+            if self._perpetual is None:
+                raise BrokerConnectionError("Perpetual execution context is disabled")
+            return await self._perpetual.reconcile_v2()
+        if execution_target_id is None and self._perpetual is not None:
+            raise BrokerConnectionError("executionTargetId is required for multi-target reconciliation")
+        if execution_target_id not in {None, self._settings.execution_target_id}:
+            raise BrokerConnectionError("Unknown execution target")
         # Private streams and the periodic reconciler continuously refresh the
         # authoritative snapshot. Read endpoints must not start another fan-out
         # of OKX REST calls: concurrent probes otherwise amplify a transient
         # provider slowdown into request timeouts and readiness churn.
         return self._reconciler.cached_snapshot()
 
+    async def market_data_objects_v1(
+        self, market_data_target_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        if self._perpetual is None:
+            raise BrokerConnectionError("Perpetual market-data context is disabled")
+        if market_data_target_id != self._settings.perpetual_market_data_target_id:
+            raise BrokerConnectionError("marketDataTargetId is required for perpetual market data")
+        return await self._perpetual.market_data_objects_v1()
+
+    async def position_risk_v1(
+        self, execution_target_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        if self._perpetual is None:
+            raise BrokerConnectionError("Perpetual execution context is disabled")
+        if execution_target_id != self._settings.perpetual_execution_target_id:
+            raise BrokerConnectionError("executionTargetId is required for perpetual position risk")
+        return await self._perpetual.position_risk_v1()
+
+    async def funding_ledger_v1(
+        self, execution_target_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        if self._perpetual is None:
+            raise BrokerConnectionError("Perpetual execution context is disabled")
+        if execution_target_id != self._settings.perpetual_execution_target_id:
+            raise BrokerConnectionError("executionTargetId is required for perpetual funding ledger")
+        return await self._perpetual.funding_ledger_v1()
+
     def set_reconciliation_handler(
         self,
         handler: Callable[[Mapping[str, Any], int], Awaitable[None] | None] | None,
     ) -> None:
         self._reconciliation_handler = handler
+        if self._perpetual is not None:
+            self._perpetual.set_reconciliation_handler(handler)
 
     async def _capture_reconciliation(
         self, *, generation: int | None = None
@@ -583,31 +742,43 @@ class CCXTCryptoAdapter:
         self, handler: Callable[[TradeUpdate], Awaitable[None]] | None
     ) -> None:
         self._trade_update_handler = handler
+        if self._perpetual is not None:
+            self._perpetual.set_trade_update_handler(handler)
 
     def set_position_update_handler(
         self, handler: Callable[[list[PositionItem]], Awaitable[None]] | None
     ) -> None:
         self._position_update_handler = handler
+        if self._perpetual is not None:
+            self._perpetual.set_position_update_handler(handler)
 
     def set_account_update_handler(
         self, handler: Callable[[list[AccountSummaryItem]], Awaitable[None]] | None
     ) -> None:
         self._account_update_handler = handler
+        if self._perpetual is not None:
+            self._perpetual.set_account_update_handler(handler)
 
     def add_connection_listener(
         self, listener: Callable[[str, Mapping[str, Any]], Awaitable[None] | None]
     ) -> None:
         if listener not in self._connection_listeners:
             self._connection_listeners.append(listener)
+        if self._perpetual is not None:
+            self._perpetual.add_connection_listener(listener)
 
     def remove_connection_listener(
         self, listener: Callable[[str, Mapping[str, Any]], Awaitable[None] | None]
     ) -> None:
         with suppress(ValueError):
             self._connection_listeners.remove(listener)
+        if self._perpetual is not None:
+            self._perpetual.remove_connection_listener(listener)
 
     def add_resub_task(self, coro_factory: Callable[[], Awaitable[None]]) -> None:
         self._resub_tasks.append(coro_factory)
+        if self._perpetual is not None:
+            self._perpetual.add_resub_task(coro_factory)
 
     async def _notify_connection(self, state: str, payload: Mapping[str, Any]) -> None:
         for listener in tuple(self._connection_listeners):

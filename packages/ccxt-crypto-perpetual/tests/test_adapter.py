@@ -10,7 +10,7 @@ from ati_shared_sdk.common.schemas.multi_asset_market_data import (
 )
 
 from algo_trader_broker_sdk import BrokerConnectionError, BrokerContractError, BrokerOrderError
-from algo_trader_broker_adapter_ccxt_crypto_perpetual import CCXTCryptoPerpetualAdapter
+from algo_trader_broker_adapter_ccxt_crypto_perpetual import PerpetualContext
 from algo_trader_broker_adapter_ccxt_crypto_perpetual.quantizer import PerpetualMarketRules
 from algo_trader_broker_adapter_ccxt_crypto_perpetual.settings import (
     CCXTCryptoPerpetualSettings,
@@ -95,15 +95,15 @@ def test_market_metadata_requires_linear_usdt_swap_and_integer_contracts() -> No
 @pytest.mark.asyncio
 async def test_connect_reads_back_mode_leverage_and_reconciles() -> None:
     backend = FakeBackend()
-    adapter = CCXTCryptoPerpetualAdapter(_settings(), backend=backend)
+    adapter = PerpetualContext(_settings(), backend=backend)
 
     await adapter.connect()
 
     assert adapter.connection_state_snapshot().connected is True
     assert adapter.connection_state_snapshot().state == "trading_ready"
-    assert adapter.manifest().environment == "PAPER"
-    assert adapter.capabilities().asset_classes == {"CRYPTO_PERPETUAL"}
-    assert adapter.capabilities().native["live"] is False
+    assert adapter.adapter_id == "ccxt_crypto"
+    assert not hasattr(adapter, "manifest")
+    assert not hasattr(adapter, "capabilities")
     reconciliation = await adapter.reconcile_v2()
     assert reconciliation["executionTargetId"] == "okx-perpetual-demo-paper-1"
     assert reconciliation["positions"][0]["quantityDecimal"] == "10"
@@ -127,7 +127,7 @@ async def test_connect_blocks_hedged_cross_or_non_2x_state() -> None:
     ):
         backend = FakeBackend()
         setattr(backend, field, value)
-        adapter = CCXTCryptoPerpetualAdapter(_settings(), backend=backend)
+        adapter = PerpetualContext(_settings(), backend=backend)
         with pytest.raises(BrokerConnectionError):
             await adapter.connect()
 
@@ -135,7 +135,7 @@ async def test_connect_blocks_hedged_cross_or_non_2x_state() -> None:
 @pytest.mark.asyncio
 async def test_v2_order_compiles_only_reviewed_native_params() -> None:
     backend = FakeBackend()
-    adapter = CCXTCryptoPerpetualAdapter(_settings(), backend=backend)
+    adapter = PerpetualContext(_settings(), backend=backend)
     await adapter.connect()
 
     result = await adapter.place_order_v2(_order())
@@ -157,7 +157,7 @@ async def test_v2_order_compiles_only_reviewed_native_params() -> None:
 @pytest.mark.asyncio
 async def test_reduce_only_requires_close_and_integer_contract_step() -> None:
     backend = FakeBackend()
-    adapter = CCXTCryptoPerpetualAdapter(_settings(), backend=backend)
+    adapter = PerpetualContext(_settings(), backend=backend)
     await adapter.connect()
 
     with pytest.raises(BrokerOrderError, match="declared together"):
@@ -179,7 +179,7 @@ async def test_reduce_only_requires_close_and_integer_contract_step() -> None:
 
 @pytest.mark.asyncio
 async def test_market_objects_have_target_sequence_and_distinct_types() -> None:
-    adapter = CCXTCryptoPerpetualAdapter(_settings(), backend=FakeBackend())
+    adapter = PerpetualContext(_settings(), backend=FakeBackend())
     await adapter.connect()
 
     objects = await adapter.market_data_objects_v1()
@@ -197,7 +197,7 @@ async def test_market_objects_have_target_sequence_and_distinct_types() -> None:
 @pytest.mark.asyncio
 async def test_reduce_only_never_crosses_zero_or_closes_wrong_side() -> None:
     backend = FakeBackend()
-    adapter = CCXTCryptoPerpetualAdapter(_settings(), backend=backend)
+    adapter = PerpetualContext(_settings(), backend=backend)
     await adapter.connect()
 
     with pytest.raises(BrokerOrderError, match="cross zero"):
@@ -223,7 +223,7 @@ async def test_reduce_only_never_crosses_zero_or_closes_wrong_side() -> None:
 @pytest.mark.asyncio
 async def test_cancel_is_target_and_instrument_scoped() -> None:
     backend = FakeBackend()
-    adapter = CCXTCryptoPerpetualAdapter(_settings(), backend=backend)
+    adapter = PerpetualContext(_settings(), backend=backend)
     await adapter.connect()
 
     result = await adapter.cancel_order_v2(

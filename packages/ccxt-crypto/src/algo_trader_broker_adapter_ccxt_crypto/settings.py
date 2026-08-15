@@ -13,6 +13,7 @@ from algo_trader_broker_sdk import BrokerContractError
 _TRUE = {"1", "true", "yes", "on"}
 _FALSE = {"0", "false", "no", "off"}
 _DEFAULT_SYMBOLS = ("BTC/USDT", "ETH/USDT")
+_DEFAULT_PERPETUAL_SYMBOLS = ("BTC/USDT:USDT", "ETH/USDT:USDT")
 
 
 def _bool(settings: Mapping[str, Any], key: str, default: bool) -> bool:
@@ -77,6 +78,12 @@ class CCXTCryptoSettings:
     full_reconcile_interval_seconds: int
     clock_skew_block_ms: int
     minimum_notional: Decimal
+    perpetual_enabled: bool
+    perpetual_allowed_symbols: tuple[str, ...]
+    perpetual_execution_target_id: str
+    perpetual_market_data_target_id: str
+    perpetual_account_id: str
+    perpetual_fixed_leverage: int
 
     @classmethod
     def from_mapping(cls, settings: Mapping[str, Any]) -> CCXTCryptoSettings:
@@ -122,6 +129,67 @@ class CCXTCryptoSettings:
         if market_data_target_id != "okx-spot-demo-market-1":
             raise BrokerContractError("market_data_target_id does not match Phase 4 design")
 
+        perpetual_enabled = _bool(settings, "perpetual_enabled", False)
+        raw_perpetual_symbols = settings.get(
+            "perpetual_allowed_symbols", _DEFAULT_PERPETUAL_SYMBOLS
+        )
+        if isinstance(raw_perpetual_symbols, str):
+            perpetual_symbols = tuple(
+                item.strip().upper()
+                for item in raw_perpetual_symbols.split(",")
+                if item.strip()
+            )
+        else:
+            perpetual_symbols = tuple(
+                str(item).strip().upper()
+                for item in raw_perpetual_symbols
+                if str(item).strip()
+            )
+        if perpetual_enabled and (
+            not perpetual_symbols
+            or set(perpetual_symbols) - set(_DEFAULT_PERPETUAL_SYMBOLS)
+        ):
+            raise BrokerContractError(
+                "perpetual_allowed_symbols is outside the Phase 5 allowlist"
+            )
+        perpetual_execution_target_id = str(
+            settings.get("perpetual_execution_target_id")
+            or "okx-perpetual-demo-paper-1"
+        ).strip()
+        perpetual_market_data_target_id = str(
+            settings.get("perpetual_market_data_target_id")
+            or "okx-perpetual-demo-market-1"
+        ).strip()
+        if perpetual_enabled and (
+            perpetual_execution_target_id != "okx-perpetual-demo-paper-1"
+            or perpetual_market_data_target_id != "okx-perpetual-demo-market-1"
+        ):
+            raise BrokerContractError(
+                "perpetual target IDs do not match the Phase 5 design"
+            )
+        if perpetual_enabled and len(
+            {
+                execution_target_id,
+                market_data_target_id,
+                perpetual_execution_target_id,
+                perpetual_market_data_target_id,
+            }
+        ) != 4:
+            raise BrokerContractError("Spot and perpetual targets must be distinct")
+        if perpetual_enabled and str(
+            settings.get("perpetual_position_mode") or "ONE_WAY"
+        ).strip().upper() != "ONE_WAY":
+            raise BrokerContractError("perpetual_position_mode must remain ONE_WAY")
+        if perpetual_enabled and str(
+            settings.get("perpetual_margin_mode") or "ISOLATED"
+        ).strip().upper() != "ISOLATED":
+            raise BrokerContractError("perpetual_margin_mode must remain ISOLATED")
+        perpetual_fixed_leverage = _int(
+            settings, "perpetual_fixed_leverage", 2, 1, 2
+        )
+        if perpetual_enabled and perpetual_fixed_leverage != 2:
+            raise BrokerContractError("perpetual_fixed_leverage must equal 2")
+
         return cls(
             api_key=api_key,
             secret=secret,
@@ -143,6 +211,14 @@ class CCXTCryptoSettings:
             minimum_notional=_decimal(
                 settings, "minimum_notional", "5", "0.01", "1000"
             ),
+            perpetual_enabled=perpetual_enabled,
+            perpetual_allowed_symbols=perpetual_symbols,
+            perpetual_execution_target_id=perpetual_execution_target_id,
+            perpetual_market_data_target_id=perpetual_market_data_target_id,
+            perpetual_account_id=str(
+                settings.get("perpetual_account_id") or "okx-demo-perpetual"
+            ).strip(),
+            perpetual_fixed_leverage=perpetual_fixed_leverage,
         )
 
     def redacted(self) -> dict[str, object]:
@@ -165,4 +241,11 @@ class CCXTCryptoSettings:
             "full_reconcile_interval_seconds": self.full_reconcile_interval_seconds,
             "clock_skew_block_ms": self.clock_skew_block_ms,
             "minimum_notional": str(self.minimum_notional),
+            "perpetual_enabled": self.perpetual_enabled,
+            "perpetual_allowed_symbols": list(self.perpetual_allowed_symbols),
+            "perpetual_execution_target_id": self.perpetual_execution_target_id,
+            "perpetual_market_data_target_id": self.perpetual_market_data_target_id,
+            "perpetual_position_mode": "ONE_WAY",
+            "perpetual_margin_mode": "ISOLATED",
+            "perpetual_fixed_leverage": self.perpetual_fixed_leverage,
         }

@@ -11,6 +11,7 @@ requires-python = ">=3.11"
 license = {text = "Apache-2.0"}
 dependencies = [
   "algo-trader-broker-sdk>=1,<2",
+  "algo-trader-ccxt-crypto-perpetual-internal==0.1.0",
   "ccxt==4.5.56",
 ]
 

@@ -6,10 +6,46 @@ from copy import deepcopy
 from datetime import UTC, datetime
 
 import pytest
+from unittest.mock import AsyncMock
 from algo_trader_broker_adapter_ccxt_crypto import CCXTCryptoAdapter
 from algo_trader_broker_sdk import BrokerConnectionError, BrokerOrderError
 
 from .fakes import BALANCE, ORDER, FakeClient, settings
+
+
+@pytest.mark.asyncio
+async def test_unified_adapter_exposes_and_routes_both_target_isolated_domains() -> None:
+    adapter = CCXTCryptoAdapter(
+        settings(
+            perpetual_enabled=True,
+            perpetual_allowed_symbols="BTC/USDT:USDT,ETH/USDT:USDT",
+            perpetual_execution_target_id="okx-perpetual-demo-paper-1",
+            perpetual_market_data_target_id="okx-perpetual-demo-market-1",
+            perpetual_fixed_leverage=2,
+        ),
+        backend=FakeClient(),
+        perpetual_backend=object(),
+    )
+    manifest = adapter.manifest()
+    assert manifest.adapter_id == "ccxt_crypto"
+    assert manifest.capabilities.asset_classes == {
+        "CRYPTO_SPOT",
+        "CRYPTO_PERPETUAL",
+    }
+    assert manifest.capabilities.native["executionTargets"] == {
+        "CRYPTO_SPOT": "okx-spot-demo-paper-1",
+        "CRYPTO_PERPETUAL": "okx-perpetual-demo-paper-1",
+    }
+    assert adapter._perpetual is not None
+    adapter._connected = True
+    adapter._perpetual.place_order_v2 = AsyncMock(return_value={"status": "SUBMITTED"})
+
+    result = await adapter.place_order_v2(
+        {"executionTargetId": "okx-perpetual-demo-paper-1"}
+    )
+
+    assert result == {"status": "SUBMITTED"}
+    adapter._perpetual.place_order_v2.assert_awaited_once()
 
 
 def order_payload(**overrides):

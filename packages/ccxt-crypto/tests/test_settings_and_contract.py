@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import tomllib
 
 import pytest
 from algo_trader_broker_adapter_ccxt_crypto import CCXTCryptoAdapter
@@ -55,6 +56,11 @@ def test_package_is_isolated_and_pins_ccxt() -> None:
     assert "ati_shared_sdk" not in source
     assert '"ccxt==4.5.56"' in pyproject
     assert 'ccxt_crypto = "algo_trader_broker_adapter_ccxt_crypto:create_adapter"' in pyproject
+    internal_pyproject = (
+        root.parent / "ccxt-crypto-perpetual" / "pyproject.toml"
+    ).read_text()
+    assert "algo_trader.broker_adapters" not in internal_pyproject
+    assert "entry-points" not in tomllib.loads(internal_pyproject)["project"]
 
 
 def test_verified_artifacts_download_the_complete_ccxt_wheelhouse() -> None:
@@ -71,3 +77,5 @@ def test_verified_artifacts_download_the_complete_ccxt_wheelhouse() -> None:
     assert '"--no-deps"' not in ccxt_download
     assert "ccxt==4.5.56" in wheelhouse_lock
     assert "aiohttp==3.14.3" in wheelhouse_lock
+    assert "CCXT_CRYPTO_PERPETUAL_INTERNAL_PACKAGE" in script
+    assert "SPDXRef-CCXTCryptoPerpetualInternal" in script

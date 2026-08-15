@@ -18,7 +18,7 @@ application's private `src` package.
 | Sim | Built into the official Broker Runner image; `sim` | Run deterministic local development, demonstrations, strategy validation, and end-to-end tests without a broker account or external market-data connection | Stocks: `AAPL`, `MSFT`, `NVDA`, `AMZN`, `META`, `GOOGL`, `TSLA`, `AMD`, `JPM`, `SPY`; index futures: `ES`, `MES`, `NQ`, `MNQ`, `YM`, `MYM`, `RTY`, `M2K` | Simulated account, positions, PnL, orders, historical bars, real-time prices, and tick-by-tick data; `MKT`, `LMT`, `STP`, and `STP LMT`; `DAY` and `GTC`; configurable seed, initial cash, commission, and slippage | Simulation only; fixed instrument set and generated market data; no broker connectivity, options, DOM, fractional quantities, partial fills, scanners, or order replacement; results do not represent broker execution or live-market performance |
 | IBKR Paper | `packages/ibkr-paper`; `ibkr_paper` | Develop and validate workflows against an Interactive Brokers Paper account through IB Gateway | Stocks and futures | Account, positions and PnL; order submission/cancellation and reconciliation; historical and real-time market data; tick-by-tick data; scanner support; `MKT`, `LMT`, `STP`, and `STP LMT`; `DAY` and `GTC` | Paper only; no live trading, options, DOM, fractional quantities, or order replacement; requires an IBKR Paper account, IB Gateway, and any applicable market-data subscriptions |
 | Alpaca Paper | `packages/alpaca-paper`; `alpaca_paper` | Develop and validate workflows against Alpaca Paper | Whole-share US stocks and ETFs | Account, positions and orders; fill reconciliation; historical bars, snapshots, and live stock bars/trades/quotes; `MKT`, `LMT`, `STP`, and `STP LMT`; `DAY` and `GTC` | Paper only; no futures, options, crypto, fractional shares, extended-hours orders, order replacement, scanners, or market depth; data feed must be explicitly set to `iex` or `sip` and requires the corresponding entitlement |
-| OKX Demo Spot | `packages/ccxt-crypto`; `ccxt_crypto` | Validate Crypto Spot workflows against OKX Demo Trading through CCXT Pro | BTC/USDT and ETH/USDT Spot | Account balances and positions; Broker V2 Market/Limit GTC/Cancel; fill reconciliation; ticker, trades, and OHLCV | Demo only; Production, margin, borrow, derivatives, transfer/withdrawal, stop orders, replace, scanners, and depth are disabled; all runtime gates default off |
+| OKX Demo Spot + Perpetual | `packages/ccxt-crypto`; `ccxt_crypto` | Validate Spot and USDT-linear perpetual workflows through one OKX Demo adapter | BTC/USDT and ETH/USDT Spot; BTC/USDT:USDT and ETH/USDT:USDT perpetual | Target-isolated Spot and perpetual orders/reconciliation; mark/index/funding and risk snapshots; one-way isolated fixed 2x perpetual policy | Demo only; Production, transfer/withdrawal, runtime mode/leverage changes, stop orders, replace, scanners, and depth are disabled; all runtime gates default off |
 
 Capabilities are a compatibility boundary, not a promise that a broker will
 accept a particular symbol or order. Broker permissions, subscriptions, market
@@ -50,7 +50,7 @@ python3.11 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip pytest ruff
 python -m pip install -e ../packages/broker-sdk
-python -m pip install -e packages/ibkr-paper -e packages/alpaca-paper -e packages/ccxt-crypto
+python -m pip install -e packages/ibkr-paper -e packages/alpaca-paper -e packages/ccxt-crypto-perpetual -e packages/ccxt-crypto
 pytest
 ruff check .
 ```

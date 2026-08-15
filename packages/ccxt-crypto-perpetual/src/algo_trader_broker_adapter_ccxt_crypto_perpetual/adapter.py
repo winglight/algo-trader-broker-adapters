@@ -1,4 +1,4 @@
-"""OKX Demo one-way isolated 2x USDT perpetual adapter."""
+"""Internal perpetual execution context for the unified OKX adapter."""
 
 from __future__ import annotations
 
@@ -12,8 +12,6 @@ from typing import Any
 
 from algo_trader_broker_sdk import (
     AccountSummaryItem,
-    BrokerAdapterManifest,
-    BrokerCapabilities,
     BrokerCapabilityError,
     BrokerConnectionError,
     BrokerConnectionState,
@@ -48,8 +46,10 @@ def _field(payload: Mapping[str, Any], camel: str, snake: str | None = None) -> 
     return payload[camel] if camel in payload else payload.get(snake or camel)
 
 
-class CCXTCryptoPerpetualAdapter:
-    adapter_id = "ccxt_crypto_perpetual"
+class PerpetualContext:
+    """Target-isolated engine; never exposed as an adapter or Runner profile."""
+
+    adapter_id = "ccxt_crypto"
 
     def __init__(self, settings: Mapping[str, Any], *, backend: Any | None = None) -> None:
         self._settings = CCXTCryptoPerpetualSettings.from_mapping(settings)
@@ -79,54 +79,6 @@ class CCXTCryptoPerpetualAdapter:
             Callable[[str, Mapping[str, Any]], Awaitable[None] | None]
         ] = []
         self._resub_tasks: list[Callable[[], Awaitable[None]]] = []
-
-    def manifest(self) -> BrokerAdapterManifest:
-        return BrokerAdapterManifest(
-            adapter_id=self.adapter_id,
-            display_name="OKX Demo USDT Perpetual (CCXT)",
-            adapter_version="0.1.0",
-            protocol_version="1.0",
-            environment="PAPER",
-            entrypoint=(
-                "algo_trader_broker_adapter_ccxt_crypto_perpetual:create_adapter"
-            ),
-            capabilities=self.capabilities(),
-        )
-
-    def capabilities(self) -> BrokerCapabilities:
-        return BrokerCapabilities(
-            adapter_name=self.adapter_id,
-            environment="PAPER",
-            asset_classes={"CRYPTO_PERPETUAL"},
-            order_types={"MKT", "LMT"},
-            time_in_force={"GTC", "IOC"},
-            market_data_streams={"mark", "index", "funding"},
-            account_features={
-                "summary",
-                "positions",
-                "reconciliation_v2",
-                "position_risk_v1",
-                "funding_ledger_v1",
-            },
-            supports_fractional=False,
-            supports_shorting=True,
-            supports_partial_fills=True,
-            supports_futures=True,
-            default_asset_class="CRYPTO_PERPETUAL",
-            symbol_examples={"CRYPTO_PERPETUAL": list(self._settings.allowed_symbols)},
-            native={
-                "exchangeId": "okx",
-                "paperOnly": True,
-                "sandboxRequired": True,
-                "simulatedTradingHeaderRequired": True,
-                "executionTargetId": self._settings.execution_target_id,
-                "marketDataTargetId": self._settings.market_data_target_id,
-                "positionMode": "ONE_WAY",
-                "marginMode": "ISOLATED",
-                "fixedLeverage": "2",
-                "live": False,
-            },
-        )
 
     async def start(self) -> None:
         await self.connect()
@@ -226,18 +178,34 @@ class CCXTCryptoPerpetualAdapter:
         await self.ensure_connected()
         return [
             {
+                "schemaVersion": "instrument.v1",
                 "instrumentId": instrument_id(rule.symbol),
                 "assetClass": "CRYPTO_PERPETUAL",
+                "displaySymbol": rule.symbol,
+                "rootSymbol": rule.symbol.split("/", 1)[0],
+                "contractSymbol": None,
+                "rollPolicyId": None,
+                "venue": "OKX",
+                "baseCurrency": rule.symbol.split("/", 1)[0],
+                "quoteCurrency": "USDT",
+                "settlementCurrency": "USDT",
+                "underlyingInstrumentId": None,
+                "expiry": None,
+                "strike": None,
+                "optionRight": None,
+                "optionStyle": None,
                 "symbol": rule.symbol,
                 "nativeInstrumentId": rule.native_instrument_id,
                 "metadataVersion": 1,
                 "metadataHash": rule.metadata_hash,
                 "perpetualContractKind": "LINEAR",
-                "settlementCurrency": "USDT",
                 "contractMultiplier": canonical(rule.contract_multiplier),
                 "tickSize": canonical(rule.tick_size),
                 "quantityStep": canonical(rule.quantity_step),
                 "minimumQuantity": canonical(rule.minimum_quantity),
+                "minimumNotional": None,
+                "tradingCalendarId": "CRYPTO_24X7",
+                "valuationPolicyId": "crypto.perpetual.linear.usdt.v1",
                 "active": rule.active,
             }
             for rule in self._rules.values()

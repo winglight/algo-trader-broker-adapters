@@ -1,5 +1,10 @@
 # CCXT Crypto Paper adapter
 
+One public `ccxt_crypto` adapter serves OKX Demo Spot and USDT-linear
+perpetual trading. The two asset classes share the broker credentials and
+Runner profile, while retaining separate execution targets, market-data
+targets, reconciliation snapshots, caches, and risk policy.
+
 `ccxt_crypto` is an independently installable Broker SDK 1.x package for the
 Phase 4 OKX Demo Trading Spot integration. Version 0.1.0 is deliberately fixed
 to OKX Demo and cannot be configured for Production.

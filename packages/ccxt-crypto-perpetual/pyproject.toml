@@ -3,9 +3,9 @@ requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "algo-trader-broker-adapter-ccxt-crypto-perpetual"
+name = "algo-trader-ccxt-crypto-perpetual-internal"
 version = "0.1.0"
-description = "OKX Demo USDT linear perpetual adapter for the algo-trader Broker SDK"
+description = "Internal OKX perpetual context for the unified CCXT crypto adapter"
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "Apache-2.0"}
@@ -13,9 +13,6 @@ dependencies = [
   "algo-trader-broker-sdk>=1,<2",
   "ccxt==4.5.56",
 ]
-
-[project.entry-points."algo_trader.broker_adapters"]
-ccxt_crypto_perpetual = "algo_trader_broker_adapter_ccxt_crypto_perpetual:create_adapter"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

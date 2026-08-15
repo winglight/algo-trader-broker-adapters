@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 IB_PACKAGE = ROOT / "packages" / "ibkr-paper"
 ALPACA_PACKAGE = ROOT / "packages" / "alpaca-paper"
 CCXT_CRYPTO_PACKAGE = ROOT / "packages" / "ccxt-crypto"
+CCXT_CRYPTO_PERPETUAL_INTERNAL_PACKAGE = ROOT / "packages" / "ccxt-crypto-perpetual"
 CCXT_CRYPTO_LOCK = CCXT_CRYPTO_PACKAGE / "wheelhouse-requirements.lock"
 
 
@@ -36,7 +37,13 @@ def main() -> int:
     output.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ)
     env.setdefault("SOURCE_DATE_EPOCH", "1784044800")
-    for package in (args.sdk_path.resolve(), IB_PACKAGE, ALPACA_PACKAGE, CCXT_CRYPTO_PACKAGE):
+    for package in (
+        args.sdk_path.resolve(),
+        IB_PACKAGE,
+        ALPACA_PACKAGE,
+        CCXT_CRYPTO_PERPETUAL_INTERNAL_PACKAGE,
+        CCXT_CRYPTO_PACKAGE,
+    ):
         subprocess.run(
             [
                 sys.executable,
@@ -99,6 +106,7 @@ def main() -> int:
             "SPDXRef-IBKRAdapter",
             "SPDXRef-AlpacaAdapter",
             "SPDXRef-CCXTCryptoAdapter",
+            "SPDXRef-CCXTCryptoPerpetualInternal",
         ],
         "packages": [
             {
@@ -128,6 +136,14 @@ def main() -> int:
             {
                 "name": "algo-trader-broker-adapter-ccxt-crypto",
                 "SPDXID": "SPDXRef-CCXTCryptoAdapter",
+                "versionInfo": "0.1.0",
+                "downloadLocation": "NOASSERTION",
+                "filesAnalyzed": False,
+                "licenseConcluded": "Apache-2.0",
+            },
+            {
+                "name": "algo-trader-ccxt-crypto-perpetual-internal",
+                "SPDXID": "SPDXRef-CCXTCryptoPerpetualInternal",
                 "versionInfo": "0.1.0",
                 "downloadLocation": "NOASSERTION",
                 "filesAnalyzed": False,
@@ -192,6 +208,21 @@ def main() -> int:
             },
             {
                 "spdxElementId": "SPDXRef-CCXTCryptoAdapter",
+                "relationshipType": "DEPENDS_ON",
+                "relatedSpdxElement": "SPDXRef-CCXT",
+            },
+            {
+                "spdxElementId": "SPDXRef-CCXTCryptoAdapter",
+                "relationshipType": "DEPENDS_ON",
+                "relatedSpdxElement": "SPDXRef-CCXTCryptoPerpetualInternal",
+            },
+            {
+                "spdxElementId": "SPDXRef-CCXTCryptoPerpetualInternal",
+                "relationshipType": "DEPENDS_ON",
+                "relatedSpdxElement": "SPDXRef-BrokerSDK",
+            },
+            {
+                "spdxElementId": "SPDXRef-CCXTCryptoPerpetualInternal",
                 "relationshipType": "DEPENDS_ON",
                 "relatedSpdxElement": "SPDXRef-CCXT",
             },
