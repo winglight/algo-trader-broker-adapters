@@ -1,0 +1,238 @@
+from __future__ import annotations
+
+import pytest
+from ati_shared_sdk.common.schemas.crypto_perpetual import (
+    FundingLedgerEntryV1,
+    PerpetualPositionRiskV1,
+)
+from ati_shared_sdk.common.schemas.multi_asset_market_data import (
+    MarketDataObjectEnvelopeV1,
+)
+
+from algo_trader_broker_sdk import BrokerConnectionError, BrokerContractError, BrokerOrderError
+from algo_trader_broker_adapter_ccxt_crypto_perpetual import CCXTCryptoPerpetualAdapter
+from algo_trader_broker_adapter_ccxt_crypto_perpetual.quantizer import PerpetualMarketRules
+from algo_trader_broker_adapter_ccxt_crypto_perpetual.settings import (
+    CCXTCryptoPerpetualSettings,
+)
+
+from .fakes import FakeBackend, market
+
+
+def _settings(**overrides: object) -> dict[str, object]:
+    result: dict[str, object] = {
+        "exchange_id": "okx",
+        "sandbox": True,
+        "live": False,
+        "api_key": "demo-key",
+        "secret": "demo-secret",
+        "passphrase": "demo-passphrase",
+        "allowed_symbols": "BTC/USDT:USDT,ETH/USDT:USDT",
+        "execution_target_id": "okx-perpetual-demo-paper-1",
+        "market_data_target_id": "okx-perpetual-demo-market-1",
+        "position_mode": "ONE_WAY",
+        "margin_mode": "ISOLATED",
+        "fixed_leverage": 2,
+    }
+    result.update(overrides)
+    return result
+
+
+def _order(**overrides: object) -> dict[str, object]:
+    result: dict[str, object] = {
+        "schemaVersion": "broker-order-request.v2",
+        "commandId": "phase5-command-1",
+        "clientOrderId": "phase5-client-order-1",
+        "executionTargetId": "okx-perpetual-demo-paper-1",
+        "instrumentId": "crypto-perpetual:BTC-USDT:USDT:OKX",
+        "side": "BUY",
+        "orderType": "LIMIT",
+        "quantityDecimal": "10",
+        "limitPriceDecimal": "60000.15",
+        "stopPriceDecimal": None,
+        "timeInForce": "GTC",
+        "reduceOnly": False,
+        "positionEffect": "OPEN",
+        "positionGroupId": "phase5-paper",
+        "legId": None,
+    }
+    result.update(overrides)
+    return result
+
+
+def test_settings_are_demo_only_one_way_isolated_2x() -> None:
+    settings = CCXTCryptoPerpetualSettings.from_mapping(_settings())
+    assert settings.fixed_leverage == 2
+    assert settings.execution_target_id == "okx-perpetual-demo-paper-1"
+    assert settings.redacted()["credential_fingerprint"]
+    assert "demo-secret" not in str(settings.redacted())
+
+    for overrides in (
+        {"live": True},
+        {"sandbox": False},
+        {"position_mode": "HEDGE"},
+        {"margin_mode": "CROSS"},
+        {"fixed_leverage": 1},
+    ):
+        with pytest.raises(BrokerContractError):
+            CCXTCryptoPerpetualSettings.from_mapping(_settings(**overrides))
+
+
+def test_market_metadata_requires_linear_usdt_swap_and_integer_contracts() -> None:
+    rules = PerpetualMarketRules.from_ccxt(
+        "BTC/USDT:USDT", market("BTC/USDT:USDT")
+    )
+    assert str(rules.contract_multiplier) == "0.001"
+    assert str(rules.quantity_step) == "1"
+
+    inverse = market("BTC/USDT:USDT")
+    inverse["linear"] = False
+    inverse["inverse"] = True
+    with pytest.raises(BrokerContractError, match="linear"):
+        PerpetualMarketRules.from_ccxt("BTC/USDT:USDT", inverse)
+
+
+@pytest.mark.asyncio
+async def test_connect_reads_back_mode_leverage_and_reconciles() -> None:
+    backend = FakeBackend()
+    adapter = CCXTCryptoPerpetualAdapter(_settings(), backend=backend)
+
+    await adapter.connect()
+
+    assert adapter.connection_state_snapshot().connected is True
+    assert adapter.connection_state_snapshot().state == "trading_ready"
+    assert adapter.manifest().environment == "PAPER"
+    assert adapter.capabilities().asset_classes == {"CRYPTO_PERPETUAL"}
+    assert adapter.capabilities().native["live"] is False
+    reconciliation = await adapter.reconcile_v2()
+    assert reconciliation["executionTargetId"] == "okx-perpetual-demo-paper-1"
+    assert reconciliation["positions"][0]["quantityDecimal"] == "10"
+    risks = await adapter.position_risk_v1()
+    assert risks[0]["baseExposureDecimal"] == "0.01"
+    assert risks[0]["markNotionalDecimal"] == "600"
+    assert risks[0]["liquidationDistanceDecimal"] == "0.5"
+    funding = await adapter.funding_ledger_v1()
+    assert funding[0]["brokerLedgerId"] == "funding-bill-1"
+    assert funding[0]["amountDecimal"] == "-0.06"
+    PerpetualPositionRiskV1.model_validate(risks[0])
+    FundingLedgerEntryV1.model_validate(funding[0])
+
+
+@pytest.mark.asyncio
+async def test_connect_blocks_hedged_cross_or_non_2x_state() -> None:
+    for field, value in (
+        ("hedged", True),
+        ("margin_mode", "cross"),
+        ("leverage", "3"),
+    ):
+        backend = FakeBackend()
+        setattr(backend, field, value)
+        adapter = CCXTCryptoPerpetualAdapter(_settings(), backend=backend)
+        with pytest.raises(BrokerConnectionError):
+            await adapter.connect()
+
+
+@pytest.mark.asyncio
+async def test_v2_order_compiles_only_reviewed_native_params() -> None:
+    backend = FakeBackend()
+    adapter = CCXTCryptoPerpetualAdapter(_settings(), backend=backend)
+    await adapter.connect()
+
+    result = await adapter.place_order_v2(_order())
+
+    assert result["status"] == "SUBMITTED"
+    assert result["instrumentId"] == "crypto-perpetual:BTC-USDT:USDT:OKX"
+    submitted = backend.created[0]
+    assert submitted["amount"] == "10"
+    assert submitted["price"] == "60000.1"
+    assert submitted["params"] == {
+        "tdMode": "isolated",
+        "posSide": "net",
+        "reduceOnly": False,
+        "clOrdId": "phase5-client-order-1",
+        "tag": "phase5-command-1",
+    }
+
+
+@pytest.mark.asyncio
+async def test_reduce_only_requires_close_and_integer_contract_step() -> None:
+    backend = FakeBackend()
+    adapter = CCXTCryptoPerpetualAdapter(_settings(), backend=backend)
+    await adapter.connect()
+
+    with pytest.raises(BrokerOrderError, match="declared together"):
+        await adapter.place_order_v2(_order(reduceOnly=True, positionEffect="OPEN"))
+    with pytest.raises(BrokerOrderError, match="integer contract"):
+        await adapter.place_order_v2(_order(quantityDecimal="1.5"))
+
+    result = await adapter.place_order_v2(
+        _order(
+            side="SELL",
+            quantityDecimal="10",
+            reduceOnly=True,
+            positionEffect="CLOSE",
+        )
+    )
+    assert result["status"] == "SUBMITTED"
+    assert backend.created[-1]["params"]["reduceOnly"] is True
+
+
+@pytest.mark.asyncio
+async def test_market_objects_have_target_sequence_and_distinct_types() -> None:
+    adapter = CCXTCryptoPerpetualAdapter(_settings(), backend=FakeBackend())
+    await adapter.connect()
+
+    objects = await adapter.market_data_objects_v1()
+
+    assert len(objects) == 6
+    assert {item["objectType"] for item in objects} == {"mark", "index", "funding"}
+    assert [item["sequence"] for item in objects] == [1, 2, 3, 4, 5, 6]
+    assert {
+        item["marketDataTargetId"] for item in objects
+    } == {"okx-perpetual-demo-market-1"}
+    for item in objects:
+        MarketDataObjectEnvelopeV1.model_validate(item)
+
+
+@pytest.mark.asyncio
+async def test_reduce_only_never_crosses_zero_or_closes_wrong_side() -> None:
+    backend = FakeBackend()
+    adapter = CCXTCryptoPerpetualAdapter(_settings(), backend=backend)
+    await adapter.connect()
+
+    with pytest.raises(BrokerOrderError, match="cross zero"):
+        await adapter.place_order_v2(
+            _order(
+                side="SELL",
+                quantityDecimal="11",
+                reduceOnly=True,
+                positionEffect="CLOSE",
+            )
+        )
+    with pytest.raises(BrokerOrderError, match="cross zero"):
+        await adapter.place_order_v2(
+            _order(
+                side="BUY",
+                quantityDecimal="1",
+                reduceOnly=True,
+                positionEffect="CLOSE",
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_cancel_is_target_and_instrument_scoped() -> None:
+    backend = FakeBackend()
+    adapter = CCXTCryptoPerpetualAdapter(_settings(), backend=backend)
+    await adapter.connect()
+
+    result = await adapter.cancel_order_v2(
+        {
+            "commandId": "cancel-1",
+            "executionTargetId": "okx-perpetual-demo-paper-1",
+            "brokerOrderId": "order-1",
+            "instrumentId": "crypto-perpetual:BTC-USDT:USDT:OKX",
+        }
+    )
+    assert result["status"] == "CANCELLED"
+    assert backend.cancelled == [("order-1", "BTC/USDT:USDT")]
