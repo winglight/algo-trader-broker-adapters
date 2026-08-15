@@ -329,9 +329,18 @@ class CCXTCryptoAdapter:
         for task in tasks:
             with suppress(asyncio.CancelledError):
                 await task
+        if self._perpetual is not None:
+            await self._perpetual.disconnect(reason)
         self._connected = False
         self._set_state("disconnected", reason=reason or "disconnect")
-        await self._notify_connection("disconnected", {"reason": reason})
+        await self._notify_connection(
+            "disconnected",
+            {
+                "reason": reason,
+                "executionTargetId": self._settings.execution_target_id,
+                "marketDataTargetId": self._settings.market_data_target_id,
+            },
+        )
 
     async def reconnect(self, *, reason: str | None = None) -> None:
         await self.disconnect(reason=reason)
@@ -356,6 +365,17 @@ class CCXTCryptoAdapter:
 
     def connection_diagnostics(self) -> dict[str, Any]:
         evidence = self._client.sandbox_evidence() if hasattr(self._client, "sandbox_evidence") else {}
+        try:
+            spot_reconciliation_ready = bool(
+                self._reconciler.cached_snapshot().get("executionTargetId")
+            )
+        except BrokerConnectionError:
+            spot_reconciliation_ready = False
+        perpetual = (
+            self._perpetual.connection_diagnostics()
+            if self._perpetual is not None
+            else None
+        )
         return {
             "adapter_id": self.adapter_id,
             "state": self._state,
@@ -365,6 +385,27 @@ class CCXTCryptoAdapter:
             "reportedFeeTiers": self._reported_fee_tiers,
             "sandbox": True,
             "live": False,
+            "contexts": {
+                "CRYPTO_SPOT": {
+                    "executionTargetId": self._settings.execution_target_id,
+                    "marketDataTargetId": self._settings.market_data_target_id,
+                    "state": self._state,
+                    "reconciliationReady": spot_reconciliation_ready,
+                },
+                **(
+                    {
+                        "CRYPTO_PERPETUAL": {
+                            "executionTargetId": self._settings.perpetual_execution_target_id,
+                            "marketDataTargetId": self._settings.perpetual_market_data_target_id,
+                            "state": perpetual.get("state"),
+                            "generation": perpetual.get("generation"),
+                            "reconciliationReady": perpetual.get("reconciliationReady"),
+                        }
+                    }
+                    if isinstance(perpetual, Mapping)
+                    else {}
+                ),
+            },
             **evidence,
             **self._settings.redacted(),
         }
@@ -988,7 +1029,12 @@ class CCXTCryptoAdapter:
 
     async def get_account_summary(self, account: str | None = None) -> list[AccountSummaryItem]:
         await self.ensure_connected()
-        return await self._account_summary_items(account_id=account or "okx-demo")
+        if self._perpetual is not None and account == self._settings.perpetual_account_id:
+            return await self._perpetual.get_account_summary(account)
+        spot = await self._account_summary_items(account_id=account or "okx-demo")
+        if self._perpetual is None or account is not None:
+            return spot
+        return [*spot, *await self._perpetual.get_account_summary()]
 
     async def get_account_pnl(
         self,
@@ -1001,7 +1047,10 @@ class CCXTCryptoAdapter:
 
     async def get_positions(self) -> list[PositionItem]:
         await self.ensure_connected()
-        return legacy_positions(self._balance, account_id="okx-demo")
+        spot = legacy_positions(self._balance, account_id="okx-demo")
+        if self._perpetual is None:
+            return spot
+        return [*spot, *await self._perpetual.get_positions()]
 
     async def place_stock_order(self, request: StockOrderRequest) -> OrderResult:
         raise unsupported("stock orders; use the broker V2 crypto order endpoint")
@@ -1026,12 +1075,17 @@ class CCXTCryptoAdapter:
     async def request_open_orders(self) -> list[TradeUpdate]:
         await self.ensure_connected()
         open_orders, _, _ = self._reconciler.legacy_snapshot()
-        return [legacy_trade_update(item) for item in open_orders]
+        spot = [legacy_trade_update(item) for item in open_orders]
+        if self._perpetual is None:
+            return spot
+        return [*spot, *await self._perpetual.request_open_orders()]
 
     async def request_executions(self, since: datetime | str | None = None) -> list[TradeUpdate]:
         await self.ensure_connected()
         _, _, trades = self._reconciler.legacy_snapshot()
         updates = [legacy_fill_update(item) for item in trades]
+        if self._perpetual is not None:
+            updates.extend(await self._perpetual.request_executions())
         if since is None:
             return updates
         since_at = since if isinstance(since, datetime) else datetime.fromisoformat(since)
@@ -1046,7 +1100,10 @@ class CCXTCryptoAdapter:
     async def request_completed_orders(self) -> list[TradeUpdate]:
         await self.ensure_connected()
         _, completed_orders, _ = self._reconciler.legacy_snapshot()
-        return [legacy_trade_update(item) for item in completed_orders]
+        spot = [legacy_trade_update(item) for item in completed_orders]
+        if self._perpetual is None:
+            return spot
+        return [*spot, *await self._perpetual.request_completed_orders()]
 
     async def qualify_contract(self, contract: Mapping[str, Any]) -> dict[str, Any]:
         await self.ensure_connected()

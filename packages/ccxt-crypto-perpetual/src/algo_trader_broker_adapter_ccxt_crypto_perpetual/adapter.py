@@ -120,7 +120,14 @@ class PerpetualContext:
         self._generation += 1
         self._connected_since = datetime.now(UTC)
         self._state = "trading_ready"
-        await self._notify_connection("connected", self.connection_diagnostics())
+        await self._notify_connection(
+            "connected",
+            {
+                **self.connection_diagnostics(),
+                "executionTargetId": self._settings.execution_target_id,
+                "marketDataTargetId": self._settings.market_data_target_id,
+            },
+        )
 
     async def close(self) -> None:
         self._closing = True
@@ -142,6 +149,14 @@ class PerpetualContext:
         self._reconnect_reason = reason
         self._connected = False
         self._state = "disconnected"
+        await self._notify_connection(
+            "disconnected",
+            {
+                "reason": reason,
+                "executionTargetId": self._settings.execution_target_id,
+                "marketDataTargetId": self._settings.market_data_target_id,
+            },
+        )
 
     async def reconnect(self, *, reason: str | None = None) -> None:
         await self.disconnect(reason)
@@ -296,6 +311,7 @@ class PerpetualContext:
             "tdMode": "isolated",
             "posSide": "net",
             "reduceOnly": reduce_only,
+            "timeInForce": tif,
             "clOrdId": str(_field(payload, "clientOrderId", "client_order_id") or "")[:32],
             "tag": str(_field(payload, "commandId", "command_id") or "")[:16],
         }
@@ -470,6 +486,9 @@ class PerpetualContext:
                                 adapter_id=self.adapter_id,
                                 adapter_order_id=mapped["orderIdentity"]["brokerOrderId"],
                                 adapter_execution_id=mapped["brokerExecutionId"],
+                                adapter_metadata=self._trade_metadata(
+                                    instrument_id=str(mapped["instrumentId"])
+                                ),
                                 status="FILLED",
                                 last_fill_price=float(mapped["priceDecimal"]),
                                 last_fill_quantity=float(mapped["quantityDecimal"]),
@@ -540,6 +559,8 @@ class PerpetualContext:
                 "reason": self._reconnect_reason,
                 "error_type": type(exc).__name__,
                 "reconciliation_required": True,
+                "executionTargetId": self._settings.execution_target_id,
+                "marketDataTargetId": self._settings.market_data_target_id,
             },
         )
 
@@ -657,6 +678,9 @@ class PerpetualContext:
                 adapter_id=self.adapter_id,
                 adapter_order_id=item["orderIdentity"]["brokerOrderId"],
                 adapter_execution_id=item["brokerExecutionId"],
+                adapter_metadata=self._trade_metadata(
+                    instrument_id=str(item["instrumentId"])
+                ),
                 status="FILLED",
                 last_fill_price=float(item["priceDecimal"]),
                 last_fill_quantity=float(item["quantityDecimal"]),
@@ -670,6 +694,9 @@ class PerpetualContext:
         return TradeUpdate(
             adapter_id=self.adapter_id,
             adapter_order_id=str(item["identity"]["brokerOrderId"]),
+            adapter_metadata=self._trade_metadata(
+                instrument_id=str(item["instrumentId"])
+            ),
             status=str(item["status"]),
             filled=float(item["cumulativeFilledDecimal"]),
             remaining=float(item["remainingDecimal"]),
@@ -681,6 +708,18 @@ class PerpetualContext:
             client_order_id=str(item["clientOrderId"]),
             event_time=datetime.fromisoformat(str(item["eventTime"]).replace("Z", "+00:00")),
         )
+
+    def _trade_metadata(self, *, instrument_id: str) -> dict[str, Any]:
+        return {
+            "schemaVersion": 1,
+            "native": {"venue": "OKX"},
+            "diagnostics": {},
+            "extensions": {
+                "executionTargetId": self._settings.execution_target_id,
+                "assetClass": "CRYPTO_PERPETUAL",
+                "instrumentId": instrument_id,
+            },
+        }
 
     async def place_stock_order(self, request: StockOrderRequest) -> OrderResult:
         del request

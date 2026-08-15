@@ -12,6 +12,7 @@ from ati_shared_sdk.common.schemas.multi_asset_market_data import (
 from algo_trader_broker_sdk import BrokerConnectionError, BrokerContractError, BrokerOrderError
 from algo_trader_broker_adapter_ccxt_crypto_perpetual import PerpetualContext
 from algo_trader_broker_adapter_ccxt_crypto_perpetual.quantizer import PerpetualMarketRules
+from algo_trader_broker_adapter_ccxt_crypto_perpetual.mapping import position_payload
 from algo_trader_broker_adapter_ccxt_crypto_perpetual.settings import (
     CCXTCryptoPerpetualSettings,
 )
@@ -93,6 +94,34 @@ def test_market_metadata_requires_linear_usdt_swap_and_integer_contracts() -> No
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "field",
+    [
+        "indexPrice",
+        "initialMargin",
+        "maintenanceMargin",
+        "marginRatio",
+        "maintenanceTierId",
+    ],
+)
+async def test_non_flat_position_requires_complete_risk_evidence(field: str) -> None:
+    backend = FakeBackend()
+    position = (await backend.fetch_positions(list(_settings()["allowed_symbols"].split(","))))[0]
+    position.pop(field)
+    rules = PerpetualMarketRules.from_ccxt(
+        "BTC/USDT:USDT", market("BTC/USDT:USDT")
+    )
+
+    with pytest.raises(ValueError, match="required risk fields"):
+        position_payload(
+            position,
+            rules=rules,
+            account_id="okx-demo-perpetual",
+            execution_target_id="okx-perpetual-demo-paper-1",
+        )
+
+
+@pytest.mark.asyncio
 async def test_connect_reads_back_mode_leverage_and_reconciles() -> None:
     backend = FakeBackend()
     adapter = PerpetualContext(_settings(), backend=backend)
@@ -149,9 +178,21 @@ async def test_v2_order_compiles_only_reviewed_native_params() -> None:
         "tdMode": "isolated",
         "posSide": "net",
         "reduceOnly": False,
+        "timeInForce": "GTC",
         "clOrdId": "phase5-client-order-1",
         "tag": "phase5-command-1",
     }
+
+
+@pytest.mark.asyncio
+async def test_ioc_is_compiled_into_the_native_order_request() -> None:
+    backend = FakeBackend()
+    adapter = PerpetualContext(_settings(), backend=backend)
+    await adapter.connect()
+
+    await adapter.place_order_v2(_order(timeInForce="IOC"))
+
+    assert backend.created[0]["params"]["timeInForce"] == "IOC"
 
 
 @pytest.mark.asyncio

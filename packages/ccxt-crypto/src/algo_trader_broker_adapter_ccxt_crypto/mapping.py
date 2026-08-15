@@ -330,6 +330,14 @@ def legacy_positions(balance: Mapping[str, Any], *, account_id: str) -> list[Pos
 
 def legacy_trade_update(order: Mapping[str, Any]) -> TradeUpdate:
     status = order_status(order)
+    info = order.get("info") if isinstance(order.get("info"), Mapping) else {}
+    symbol = str(order.get("symbol") or info.get("instId") or "").replace("-", "/")
+    extensions = {
+        "executionTargetId": "okx-spot-demo-paper-1",
+        "assetClass": "CRYPTO_SPOT",
+    }
+    if "/" in symbol:
+        extensions["instrumentId"] = instrument_id(symbol)
     amount = decimal(order.get("amount"))
     filled_amount = decimal(order.get("filled"))
     return TradeUpdate(
@@ -346,7 +354,7 @@ def legacy_trade_update(order: Mapping[str, Any]) -> TradeUpdate:
             "schemaVersion": 1,
             "native": {"venue": "OKX", "status": str(order.get("status") or "")},
             "diagnostics": {},
-            "extensions": {},
+            "extensions": extensions,
         },
     )
 
@@ -404,6 +412,9 @@ def legacy_fill_update(trade: Mapping[str, Any]) -> TradeUpdate:
             },
             "diagnostics": {},
             "extensions": {
+                "executionTargetId": "okx-spot-demo-paper-1",
+                "assetClass": "CRYPTO_SPOT",
+                "instrumentId": instrument_id(symbol),
                 "accounting": {
                     "commission": {
                         "currency": commission_currency,

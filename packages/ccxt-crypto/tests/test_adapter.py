@@ -47,6 +47,14 @@ async def test_unified_adapter_exposes_and_routes_both_target_isolated_domains()
     assert result == {"status": "SUBMITTED"}
     adapter._perpetual.place_order_v2.assert_awaited_once()
 
+    adapter._perpetual.disconnect = AsyncMock()
+    await adapter.disconnect(reason="test_unified_disconnect")
+
+    adapter._perpetual.disconnect.assert_awaited_once_with(
+        "test_unified_disconnect"
+    )
+    assert adapter.connection_state_snapshot().state == "disconnected"
+
 
 def order_payload(**overrides):
     payload = {

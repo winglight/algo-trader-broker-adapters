@@ -179,8 +179,24 @@ def position_payload(
     }
     if signed == 0:
         return broker_position, None
-    if entry in (None, "") or mark in (None, "") or liquidation in (None, ""):
-        raise ValueError("Non-flat perpetual position lacks entry, mark, or liquidation price")
+    required_risk_fields = {
+        "entryPrice": entry,
+        "markPrice": mark,
+        "indexPrice": position.get("indexPrice") or info.get("idxPx"),
+        "liquidationPrice": liquidation,
+        "initialMargin": position.get("initialMargin") or info.get("imr"),
+        "maintenanceMargin": position.get("maintenanceMargin") or info.get("mmr"),
+        "marginRatio": position.get("marginRatio") or info.get("mgnRatio"),
+        "maintenanceTierId": position.get("maintenanceTierId") or info.get("tier"),
+    }
+    missing = sorted(
+        name for name, value in required_risk_fields.items() if value in (None, "")
+    )
+    if missing:
+        raise ValueError(
+            "Non-flat perpetual position lacks required risk fields: "
+            + ", ".join(missing)
+        )
     if str(position.get("marginMode") or info.get("mgnMode") or "").lower() != "isolated":
         raise ValueError("Perpetual position is not isolated")
     leverage = decimal(position.get("leverage") or info.get("lever"))
@@ -203,22 +219,22 @@ def position_payload(
         "markNotionalDecimal": canonical(mark_notional),
         "averageEntryPriceDecimal": canonical(decimal(entry)),
         "markPriceDecimal": canonical(mark_decimal),
-        "indexPriceDecimal": canonical(decimal(position.get("indexPrice") or info.get("idxPx"))),
+        "indexPriceDecimal": canonical(decimal(required_risk_fields["indexPrice"])),
         "leverageDecimal": "2",
         "marginMode": "ISOLATED",
         "positionMode": "ONE_WAY",
-        "initialMarginDecimal": canonical(decimal(position.get("initialMargin") or info.get("imr"))),
+        "initialMarginDecimal": canonical(decimal(required_risk_fields["initialMargin"])),
         "maintenanceMarginDecimal": canonical(
-            decimal(position.get("maintenanceMargin") or info.get("mmr"))
+            decimal(required_risk_fields["maintenanceMargin"])
         ),
-        "marginRatioDecimal": canonical(decimal(position.get("marginRatio") or info.get("mgnRatio"))),
+        "marginRatioDecimal": canonical(decimal(required_risk_fields["marginRatio"])),
         "liquidationPriceDecimal": canonical(liquidation_decimal),
         "liquidationDistanceDecimal": canonical(distance),
         "unrealizedPnlDecimal": canonical(
             signed * rules.contract_multiplier * (mark_decimal - decimal(entry))
         ),
         "settlementCurrency": "USDT",
-        "maintenanceTierId": str(position.get("maintenanceTierId") or "okx:tier-unknown"),
+        "maintenanceTierId": str(required_risk_fields["maintenanceTierId"]),
         "metadataVersion": 1,
         "eventTime": event_time,
         "availableAt": timestamp(),
