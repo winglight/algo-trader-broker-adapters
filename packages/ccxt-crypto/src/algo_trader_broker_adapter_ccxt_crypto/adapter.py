@@ -114,7 +114,9 @@ class CCXTCryptoAdapter:
         self._prices_in_usdt: dict[str, Decimal] = {"USDT": Decimal(1)}
         self._trade_update_handler: Callable[[TradeUpdate], Awaitable[None]] | None = None
         self._position_update_handler: Callable[[list[PositionItem]], Awaitable[None]] | None = None
-        self._account_update_handler: Callable[[list[AccountSummaryItem]], Awaitable[None]] | None = None
+        self._account_update_handler: (
+            Callable[[list[AccountSummaryItem]], Awaitable[None]] | None
+        ) = None
         self._reconciliation_handler: (
             Callable[[Mapping[str, Any], int], Awaitable[None] | None] | None
         ) = None
@@ -197,9 +199,7 @@ class CCXTCryptoAdapter:
                 "executionTargets": {
                     "CRYPTO_SPOT": self._settings.execution_target_id,
                     **(
-                        {
-                            "CRYPTO_PERPETUAL": self._settings.perpetual_execution_target_id
-                        }
+                        {"CRYPTO_PERPETUAL": self._settings.perpetual_execution_target_id}
                         if self._perpetual is not None
                         else {}
                     ),
@@ -207,9 +207,7 @@ class CCXTCryptoAdapter:
                 "marketDataTargets": {
                     "CRYPTO_SPOT": self._settings.market_data_target_id,
                     **(
-                        {
-                            "CRYPTO_PERPETUAL": self._settings.perpetual_market_data_target_id
-                        }
+                        {"CRYPTO_PERPETUAL": self._settings.perpetual_market_data_target_id}
                         if self._perpetual is not None
                         else {}
                     ),
@@ -236,7 +234,9 @@ class CCXTCryptoAdapter:
                     "positionMode": "ONE_WAY",
                     "marginMode": "ISOLATED",
                     "fixedLeverage": "2",
-                } if self._perpetual is not None else None,
+                }
+                if self._perpetual is not None
+                else None,
                 "allowedSymbols": list(self._settings.allowed_symbols),
             },
         )
@@ -270,9 +270,7 @@ class CCXTCryptoAdapter:
                     strict=True,
                 )
             }
-            snapshot = await self._capture_reconciliation(
-                generation=self._generation + 1
-            )
+            snapshot = await self._capture_reconciliation(generation=self._generation + 1)
             self._balance = await self._client.fetch_balance()
             await self._refresh_valuation_prices()
             if snapshot.get("orderUpdates") is None:
@@ -367,7 +365,9 @@ class CCXTCryptoAdapter:
         )
 
     def connection_diagnostics(self) -> dict[str, Any]:
-        evidence = self._client.sandbox_evidence() if hasattr(self._client, "sandbox_evidence") else {}
+        evidence = (
+            self._client.sandbox_evidence() if hasattr(self._client, "sandbox_evidence") else {}
+        )
         try:
             spot_reconciliation_ready = bool(
                 self._reconciler.cached_snapshot().get("executionTargetId")
@@ -375,9 +375,7 @@ class CCXTCryptoAdapter:
         except BrokerConnectionError:
             spot_reconciliation_ready = False
         perpetual = (
-            self._perpetual.connection_diagnostics()
-            if self._perpetual is not None
-            else None
+            self._perpetual.connection_diagnostics() if self._perpetual is not None else None
         )
         return {
             "adapter_id": self.adapter_id,
@@ -402,9 +400,7 @@ class CCXTCryptoAdapter:
                             "marketDataTargetId": self._settings.perpetual_market_data_target_id,
                             "state": perpetual.get("state"),
                             "generation": perpetual.get("generation"),
-                            "reconciliationGeneration": perpetual.get(
-                                "reconciliationGeneration"
-                            ),
+                            "reconciliationGeneration": perpetual.get("reconciliationGeneration"),
                             "reconciliationReady": perpetual.get("reconciliationReady"),
                             "policyReadback": perpetual.get("policyReadback"),
                             "metadataHashes": perpetual.get("metadataHashes"),
@@ -445,9 +441,7 @@ class CCXTCryptoAdapter:
                 "event": "broker.crypto.metadata_accepted",
                 "broker.adapter_id": self.adapter_id,
                 "broker.execution_target_id": self._settings.execution_target_id,
-                "broker.instruments": sorted(
-                    rule.instrument_id for rule in rules.values()
-                ),
+                "broker.instruments": sorted(rule.instrument_id for rule in rules.values()),
                 "broker.metadata_hashes": {
                     symbol: rule.metadata_hash for symbol, rule in sorted(rules.items())
                 },
@@ -489,7 +483,9 @@ class CCXTCryptoAdapter:
         target = str(_field(payload, "executionTargetId", "execution_target_id") or "")
         if target == self._settings.perpetual_execution_target_id:
             if self._perpetual is None:
-                raise order_error("Perpetual execution context is disabled", code="execution_target_disabled")
+                raise order_error(
+                    "Perpetual execution context is disabled", code="execution_target_disabled"
+                )
             return await self._perpetual.place_order_v2(payload)
         if self._state != "trading_ready":
             raise order_error(
@@ -503,9 +499,13 @@ class CCXTCryptoAdapter:
         if not symbol or symbol not in self._settings.allowed_symbols:
             raise order_error("instrument is not allowlisted", code="instrument_not_allowed")
         if bool(_field(payload, "reduceOnly", "reduce_only")):
-            raise order_error("reduceOnly is not supported for Spot", code="unsupported_order_semantics")
+            raise order_error(
+                "reduceOnly is not supported for Spot", code="unsupported_order_semantics"
+            )
         if str(_field(payload, "positionEffect", "position_effect") or "") != "AUTO":
-            raise order_error("Spot orders require positionEffect=AUTO", code="unsupported_order_semantics")
+            raise order_error(
+                "Spot orders require positionEffect=AUTO", code="unsupported_order_semantics"
+            )
         order_type = str(_field(payload, "orderType", "order_type") or "").upper()
         if order_type not in {"MARKET", "LIMIT"}:
             raise order_error("only Market and Limit are supported", code="unsupported_order_type")
@@ -591,7 +591,9 @@ class CCXTCryptoAdapter:
         target = str(_field(payload, "executionTargetId", "execution_target_id") or "")
         if target == self._settings.perpetual_execution_target_id:
             if self._perpetual is None:
-                raise order_error("Perpetual execution context is disabled", code="execution_target_disabled")
+                raise order_error(
+                    "Perpetual execution context is disabled", code="execution_target_disabled"
+                )
             return await self._perpetual.cancel_order_v2(payload)
         if target != self._settings.execution_target_id:
             raise order_error("execution target mismatch", code="execution_target_mismatch")
@@ -643,16 +645,16 @@ class CCXTCryptoAdapter:
             or any(f"{status}" in message for status in range(500, 600))
         )
 
-    async def reconcile_v2(
-        self, execution_target_id: str | None = None
-    ) -> dict[str, Any]:
+    async def reconcile_v2(self, execution_target_id: str | None = None) -> dict[str, Any]:
         await self.ensure_connected()
         if execution_target_id == self._settings.perpetual_execution_target_id:
             if self._perpetual is None:
                 raise BrokerConnectionError("Perpetual execution context is disabled")
-            return await self._perpetual.reconcile_v2()
+            return self._perpetual.cached_reconciliation_v2()
         if execution_target_id is None and self._perpetual is not None:
-            raise BrokerConnectionError("executionTargetId is required for multi-target reconciliation")
+            raise BrokerConnectionError(
+                "executionTargetId is required for multi-target reconciliation"
+            )
         if execution_target_id not in {None, self._settings.execution_target_id}:
             raise BrokerConnectionError("Unknown execution target")
         # Private streams and the periodic reconciler continuously refresh the
@@ -685,7 +687,9 @@ class CCXTCryptoAdapter:
         if self._perpetual is None:
             raise BrokerConnectionError("Perpetual execution context is disabled")
         if execution_target_id != self._settings.perpetual_execution_target_id:
-            raise BrokerConnectionError("executionTargetId is required for perpetual funding ledger")
+            raise BrokerConnectionError(
+                "executionTargetId is required for perpetual funding ledger"
+            )
         return await self._perpetual.funding_ledger_v1()
 
     def set_reconciliation_handler(
@@ -703,9 +707,7 @@ class CCXTCryptoAdapter:
         if self._perpetual is not None:
             self._perpetual.set_market_data_update_handler(handler)
 
-    async def _capture_reconciliation(
-        self, *, generation: int | None = None
-    ) -> dict[str, Any]:
+    async def _capture_reconciliation(self, *, generation: int | None = None) -> dict[str, Any]:
         snapshot = await self._reconciler.snapshot()
         handler = self._reconciliation_handler
         if handler is not None:
@@ -721,9 +723,7 @@ class CCXTCryptoAdapter:
                 "event": "broker.crypto.reconciliation_completed",
                 "broker.adapter_id": self.adapter_id,
                 "broker.execution_target_id": self._settings.execution_target_id,
-                "broker.generation": (
-                    self._generation if generation is None else int(generation)
-                ),
+                "broker.generation": (self._generation if generation is None else int(generation)),
                 "broker.order_update_count": len(snapshot.get("orderUpdates") or []),
                 "broker.fill_count": len(snapshot.get("fills") or []),
                 "broker.position_count": len(snapshot.get("positions") or []),
@@ -781,9 +781,7 @@ class CCXTCryptoAdapter:
             },
         )
 
-    def _unknown_order_outcome(
-        self, *, operation: str, client_order_id: str
-    ) -> BrokerOrderError:
+    def _unknown_order_outcome(self, *, operation: str, client_order_id: str) -> BrokerOrderError:
         LOGGER.error(
             "OKX Demo order outcome is unknown",
             extra={
@@ -870,13 +868,9 @@ class CCXTCryptoAdapter:
                 elapsed += self._settings.reconcile_interval_seconds
                 await self._capture_reconciliation()
                 if elapsed >= self._settings.full_reconcile_interval_seconds:
-                    previous = {
-                        symbol: rule.metadata_hash for symbol, rule in self._rules.items()
-                    }
+                    previous = {symbol: rule.metadata_hash for symbol, rule in self._rules.items()}
                     await self._load_and_validate_markets()
-                    current = {
-                        symbol: rule.metadata_hash for symbol, rule in self._rules.items()
-                    }
+                    current = {symbol: rule.metadata_hash for symbol, rule in self._rules.items()}
                     if previous != current:
                         self._metadata_approval_required = True
                         raise BrokerConnectionError(
@@ -970,8 +964,10 @@ class CCXTCryptoAdapter:
                 **self._spot_target_identity(),
             },
         )
-        if not self._closing and not self._metadata_approval_required and (
-            self._recovery_task is None or self._recovery_task.done()
+        if (
+            not self._closing
+            and not self._metadata_approval_required
+            and (self._recovery_task is None or self._recovery_task.done())
         ):
             self._recovery_task = asyncio.create_task(
                 self._recover_private_streams(),
@@ -987,9 +983,7 @@ class CCXTCryptoAdapter:
             delay = min(30.0, float(2 ** (attempt - 1)))
             await asyncio.sleep(delay + random.uniform(0.0, delay * 0.25))
             try:
-                await self._capture_reconciliation(
-                    generation=self._generation + 1
-                )
+                await self._capture_reconciliation(generation=self._generation + 1)
                 previous = asyncio.current_task()
                 stale, self._stream_tasks = self._stream_tasks, []
                 for task in stale:
@@ -1035,9 +1029,7 @@ class CCXTCryptoAdapter:
 
     async def _refresh_valuation_prices(self) -> None:
         symbols = self._settings.allowed_symbols
-        tickers = await asyncio.gather(
-            *(self._client.fetch_ticker(symbol) for symbol in symbols)
-        )
+        tickers = await asyncio.gather(*(self._client.fetch_ticker(symbol) for symbol in symbols))
         for symbol, ticker in zip(symbols, tickers, strict=True):
             self._update_valuation_price(symbol, ticker)
 
@@ -1293,9 +1285,7 @@ class CCXTCryptoAdapter:
                     raw_timestamp = trade.get("timestamp")
                     if raw_timestamp in (None, ""):
                         continue
-                    trade_id = trade.get("id") or _field(
-                        trade.get("info") or {}, "tradeId"
-                    )
+                    trade_id = trade.get("id") or _field(trade.get("info") or {}, "tradeId")
                     key = (
                         ("id", str(trade_id))
                         if trade_id not in (None, "")
@@ -1331,7 +1321,9 @@ class CCXTCryptoAdapter:
 
         return iterator()
 
-    async def get_historical_ticks(self, *args: Any, **kwargs: Any) -> list[HistoricalTickBidAsk | HistoricalTickLast]:
+    async def get_historical_ticks(
+        self, *args: Any, **kwargs: Any
+    ) -> list[HistoricalTickBidAsk | HistoricalTickLast]:
         raise unsupported("historical ticks")
 
     async def stream_market_depth(self, *args: Any, **kwargs: Any) -> AsyncIterator[DOMSnapshot]:

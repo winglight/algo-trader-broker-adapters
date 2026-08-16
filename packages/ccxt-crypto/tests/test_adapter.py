@@ -40,12 +40,17 @@ async def test_unified_adapter_exposes_and_routes_both_target_isolated_domains()
     adapter._connected = True
     adapter._perpetual.place_order_v2 = AsyncMock(return_value={"status": "SUBMITTED"})
 
-    result = await adapter.place_order_v2(
-        {"executionTargetId": "okx-perpetual-demo-paper-1"}
-    )
+    result = await adapter.place_order_v2({"executionTargetId": "okx-perpetual-demo-paper-1"})
 
     assert result == {"status": "SUBMITTED"}
     adapter._perpetual.place_order_v2.assert_awaited_once()
+
+    adapter._perpetual.cached_reconciliation_v2 = Mock(
+        return_value={"executionTargetId": "okx-perpetual-demo-paper-1"}
+    )
+    reconciliation = await adapter.reconcile_v2("okx-perpetual-demo-paper-1")
+    assert reconciliation["executionTargetId"] == "okx-perpetual-demo-paper-1"
+    adapter._perpetual.cached_reconciliation_v2.assert_called_once_with()
 
     connection_events = []
     adapter.add_connection_listener(
@@ -54,9 +59,7 @@ async def test_unified_adapter_exposes_and_routes_both_target_isolated_domains()
     adapter._perpetual.disconnect = AsyncMock()
     await adapter.disconnect(reason="test_unified_disconnect")
 
-    adapter._perpetual.disconnect.assert_awaited_once_with(
-        "test_unified_disconnect"
-    )
+    adapter._perpetual.disconnect.assert_awaited_once_with("test_unified_disconnect")
     assert adapter.connection_state_snapshot().state == "disconnected"
     assert connection_events[-1][1]["executionTargetId"] == "okx-spot-demo-paper-1"
     assert connection_events[-1][1]["marketDataTargetId"] == "okx-spot-demo-market-1"
@@ -64,9 +67,7 @@ async def test_unified_adapter_exposes_and_routes_both_target_isolated_domains()
     market_handler = AsyncMock()
     adapter._perpetual.set_market_data_update_handler = Mock()
     adapter.set_market_data_update_handler(market_handler)
-    adapter._perpetual.set_market_data_update_handler.assert_called_once_with(
-        market_handler
-    )
+    adapter._perpetual.set_market_data_update_handler.assert_called_once_with(market_handler)
 
 
 def order_payload(**overrides):
@@ -194,9 +195,7 @@ async def test_public_stream_methods_follow_runner_awaitable_contract(caplog) ->
     adapter = CCXTCryptoAdapter(settings(), backend=backend)
     await adapter.start()
 
-    ticker_stream = await adapter.stream_real_time_price(
-        {"symbol": "BTC/USDT"}, snapshot=True
-    )
+    ticker_stream = await adapter.stream_real_time_price({"symbol": "BTC/USDT"}, snapshot=True)
     ticker = await anext(ticker_stream)
     assert ticker.symbol == "BTC/USDT"
     assert ticker.last == 10000.0
@@ -208,16 +207,11 @@ async def test_public_stream_methods_follow_runner_awaitable_contract(caplog) ->
     assert trade.price == 10000.0
     assert trade.size == 0.001
 
-    bar_stream = await adapter.stream_historical_bars(
-        {"symbol": "BTC/USDT"}, bar_size="1 min"
-    )
+    bar_stream = await adapter.stream_historical_bars({"symbol": "BTC/USDT"}, bar_size="1 min")
     bar = await anext(bar_stream)
     assert bar.close == 1.5
 
-    events = [
-        getattr(record, "event", None)
-        for record in caplog.records
-    ]
+    events = [getattr(record, "event", None) for record in caplog.records]
     assert "broker.crypto.metadata_accepted" in events
     assert events.count("broker.crypto.public_stream_ready") == 3
     assert "broker.crypto.readiness_changed" in events
@@ -256,9 +250,7 @@ async def test_trade_stream_discards_cached_stale_and_duplicate_rows() -> None:
 
     adapter = CCXTCryptoAdapter(settings(), backend=CachedTradeClient())
     await adapter.start()
-    stream = await adapter.stream_tick_by_tick_data(
-        {"symbol": "BTC/USDT"}, number_of_ticks=2
-    )
+    stream = await adapter.stream_tick_by_tick_data({"symbol": "BTC/USDT"}, number_of_ticks=2)
 
     first = await anext(stream)
     second = await anext(stream)
@@ -395,9 +387,7 @@ async def test_limit_order_quantizes_and_rejects_native_parameters() -> None:
         backend=backend,
     )
     await adapter.start()
-    await adapter.place_order_v2(
-        order_payload(orderType="LIMIT", limitPriceDecimal="10000.09")
-    )
+    await adapter.place_order_v2(order_payload(orderType="LIMIT", limitPriceDecimal="10000.09"))
     create = next(value for name, value in backend.calls if name == "create_order")
     assert create[4] == "10000"
     assert create[5] == {"tdMode": "cash", "clOrdId": "client123"}
@@ -443,8 +433,7 @@ async def test_unresolved_timeout_is_unknown_and_suppresses_retry(caplog) -> Non
     assert exc.value.details["retry_allowed"] is False
     assert len([name for name, _ in backend.calls if name == "create_order"]) == 1
     assert any(
-        getattr(record, "event", None) == "broker.crypto.order_unknown"
-        for record in caplog.records
+        getattr(record, "event", None) == "broker.crypto.order_unknown" for record in caplog.records
     )
     await adapter.close()
 
@@ -523,11 +512,13 @@ async def test_reconciliation_handler_receives_snapshot_and_generation(caplog) -
     assert evidence == [
         ("okx-spot-demo-paper-1", 1),
     ]
-    assert sum(
-        getattr(record, "event", None)
-        == "broker.crypto.reconciliation_completed"
-        for record in caplog.records
-    ) == 1
+    assert (
+        sum(
+            getattr(record, "event", None) == "broker.crypto.reconciliation_completed"
+            for record in caplog.records
+        )
+        == 1
+    )
     await adapter.close()
 
 

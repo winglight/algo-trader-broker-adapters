@@ -17,26 +17,30 @@ LOGGER = logging.getLogger(__name__)
 class OKXDemoPerpetualClient:
     def __init__(self, settings: CCXTCryptoPerpetualSettings) -> None:
         try:
+            import ccxt.async_support as ccxtasync
             import ccxt.pro as ccxtpro
         except ImportError as exc:  # pragma: no cover - packaging boundary
             raise RuntimeError("ccxt==4.5.56 with CCXT Pro is required") from exc
-        self._exchange = ccxtpro.okx(
-            {
-                "apiKey": settings.api_key,
-                "secret": settings.secret,
-                "password": settings.passphrase,
-                "enableRateLimit": True,
-                "timeout": settings.request_timeout_ms,
-                "headers": {"x-simulated-trading": "1"},
-                "options": {
-                    "defaultType": "swap",
-                    "fetchMarkets": {"types": ["spot", "swap"]},
-                    "adjustForTimeDifference": True,
-                },
-            }
-        )
+        config = {
+            "apiKey": settings.api_key,
+            "secret": settings.secret,
+            "password": settings.passphrase,
+            "enableRateLimit": True,
+            "timeout": settings.request_timeout_ms,
+            "headers": {"x-simulated-trading": "1"},
+            "options": {
+                "defaultType": "swap",
+                "fetchMarkets": {"types": ["spot", "swap"]},
+                "adjustForTimeDifference": True,
+            },
+        }
+        self._exchange = ccxtasync.okx(config)
+        self._ws_exchange = ccxtpro.okx(config)
         self._exchange.set_sandbox_mode(True)
+        self._ws_exchange.set_sandbox_mode(True)
         self._semaphore = asyncio.Semaphore(4)
+        self._websocket_reset_lock = asyncio.Lock()
+        self._websocket_generation = 0
         required_streams = (
             "watchMarkPrice",
             "watchFundingRate",
@@ -45,15 +49,18 @@ class OKXDemoPerpetualClient:
             "watchPositions",
             "watchBalance",
         )
-        missing = [name for name in required_streams if self._exchange.has.get(name) is not True]
+        missing = [name for name in required_streams if self._ws_exchange.has.get(name) is not True]
         if missing:
             raise RuntimeError(
-                "ccxt==4.5.56 lacks required OKX Pro capabilities: "
-                + ", ".join(sorted(missing))
+                "ccxt==4.5.56 lacks required OKX Pro capabilities: " + ", ".join(sorted(missing))
             )
 
     async def close(self) -> None:
-        await self._exchange.close()
+        await asyncio.gather(
+            self._exchange.close(),
+            self._ws_exchange.close(),
+            return_exceptions=True,
+        )
 
     async def load_markets(self) -> dict[str, Any]:
         available = await self._read("fetch_markets")
@@ -63,12 +70,11 @@ class OKXDemoPerpetualClient:
             "BTC-USDT",
             "ETH-USDT",
         }
-        selected = [
-            market
-            for market in available
-            if str(market.get("id") or "") in allowed_ids
-        ]
+        selected = [market for market in available if str(market.get("id") or "") in allowed_ids]
         markets = self._exchange.set_markets(selected)
+        websocket = getattr(self, "_ws_exchange", None)
+        if websocket is not None:
+            websocket.set_markets(selected)
         return {
             symbol: markets[symbol]
             for symbol in ("BTC/USDT:USDT", "ETH/USDT:USDT")
@@ -207,15 +213,58 @@ class OKXDemoPerpetualClient:
         raise AssertionError("unreachable")
 
     async def _watch(self, method: str, *args: Any) -> Any:
+        websocket = getattr(self, "_ws_exchange", self._exchange)
+        generation = getattr(self, "_websocket_generation", 0)
         try:
-            return await getattr(self._exchange, method)(*args)
+            return await getattr(websocket, method)(*args)
         except BrokerError:
             raise
         except Exception as exc:
+            reset = False
+            generation_advanced = getattr(self, "_websocket_generation", generation) != generation
+            transient = generation_advanced or self._is_transient(exc)
+            if transient and not generation_advanced and hasattr(self, "_websocket_reset_lock"):
+                reset = await self._reset_websocket(
+                    failed_generation=generation,
+                    operation=method,
+                    error=exc,
+                )
             raise BrokerConnectionError(
                 f"OKX Demo perpetual {method} websocket failed",
-                details={"operation": method, "error_type": type(exc).__name__},
+                details={
+                    "operation": method,
+                    "error_type": type(exc).__name__,
+                    "websocketBoundary": "perpetual_private_or_public",
+                    "websocketGeneration": generation,
+                    "websocketResetHandled": transient,
+                    "resetPerformed": reset,
+                    "nextWebsocketGeneration": getattr(self, "_websocket_generation", generation),
+                },
             ) from exc
+
+    async def _reset_websocket(
+        self,
+        *,
+        failed_generation: int,
+        operation: str,
+        error: Exception,
+    ) -> bool:
+        async with self._websocket_reset_lock:
+            if failed_generation != self._websocket_generation:
+                return False
+            await self._ws_exchange.close()
+            self._websocket_generation += 1
+            LOGGER.warning(
+                "OKX Demo perpetual websocket reset after transient failure",
+                extra={
+                    "event": "broker.crypto.perpetual_websocket_reset",
+                    "broker.adapter_id": "ccxt_crypto",
+                    "broker.operation": operation,
+                    "broker.error_type": type(error).__name__,
+                    "broker.websocket_generation": self._websocket_generation,
+                },
+            )
+            return True
 
     @staticmethod
     def _error_type(exc: Exception) -> str:

@@ -92,9 +92,7 @@ def test_settings_are_demo_only_one_way_isolated_2x() -> None:
 
 
 def test_market_metadata_requires_linear_usdt_swap_and_broker_contract_step() -> None:
-    rules = PerpetualMarketRules.from_ccxt(
-        "BTC/USDT:USDT", market("BTC/USDT:USDT")
-    )
+    rules = PerpetualMarketRules.from_ccxt("BTC/USDT:USDT", market("BTC/USDT:USDT"))
     assert str(rules.contract_multiplier) == "0.01"
     assert str(rules.quantity_step) == "0.01"
     assert str(rules.quantize_contracts("0.01")) == "0.01"
@@ -154,6 +152,38 @@ async def test_perpetual_client_retries_reads_but_not_mutations(monkeypatch) -> 
 
 
 @pytest.mark.asyncio
+async def test_perpetual_websocket_reset_isolated_from_rest_client() -> None:
+    client = object.__new__(OKXDemoPerpetualClient)
+    client._websocket_reset_lock = asyncio.Lock()
+    client._websocket_generation = 0
+    client._exchange = AsyncMock()
+    client._ws_exchange = AsyncMock()
+    client._ws_exchange.watch_orders.side_effect = TimeoutError("ping-pong timed out")
+
+    with pytest.raises(BrokerConnectionError) as captured:
+        await client.watch_orders()
+
+    assert captured.value.details["websocketResetHandled"] is True
+    assert captured.value.details["nextWebsocketGeneration"] == 1
+    client._ws_exchange.close.assert_awaited_once_with()
+    client._exchange.close.assert_not_awaited()
+
+    client._ws_exchange.reset_mock()
+    client._websocket_generation = 2
+
+    async def sibling_reset() -> None:
+        client._websocket_generation = 3
+        raise RuntimeError("closed by sibling")
+
+    client._ws_exchange.watch_orders.side_effect = sibling_reset
+    with pytest.raises(BrokerConnectionError) as sibling:
+        await client._watch("watch_orders")
+    assert sibling.value.details["websocketResetHandled"] is True
+    assert sibling.value.details["resetPerformed"] is False
+    client._ws_exchange.close.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_perpetual_client_loads_only_swap_and_index_markets() -> None:
     client = object.__new__(OKXDemoPerpetualClient)
     client._semaphore = asyncio.Semaphore(1)
@@ -166,9 +196,7 @@ async def test_perpetual_client_loads_only_swap_and_index_markets() -> None:
     ]
     exchange = AsyncMock()
     exchange.fetch_markets.return_value = markets
-    exchange.set_markets = lambda selected: {
-        row["symbol"]: row for row in selected
-    }
+    exchange.set_markets = lambda selected: {row["symbol"]: row for row in selected}
     client._exchange = exchange
 
     loaded = await client.load_markets()
@@ -193,9 +221,7 @@ async def test_non_flat_position_requires_complete_risk_evidence(field: str) -> 
     backend = FakeBackend()
     position = (await backend.fetch_positions(list(_settings()["allowed_symbols"].split(","))))[0]
     position.pop(field)
-    rules = PerpetualMarketRules.from_ccxt(
-        "BTC/USDT:USDT", market("BTC/USDT:USDT")
-    )
+    rules = PerpetualMarketRules.from_ccxt("BTC/USDT:USDT", market("BTC/USDT:USDT"))
 
     with pytest.raises(ValueError, match="required risk fields"):
         position_payload(
@@ -230,6 +256,22 @@ async def test_connect_reads_back_mode_leverage_and_reconciles() -> None:
     assert funding[0]["amountDecimal"] == "-0.06"
     PerpetualPositionRiskV1.model_validate(risks[0])
     FundingLedgerEntryV1.model_validate(funding[0])
+
+
+@pytest.mark.asyncio
+async def test_cached_reconciliation_and_order_path_do_not_repeat_provider_reads() -> None:
+    backend = FakeBackend()
+    backend.fetch_balance = AsyncMock(wraps=backend.fetch_balance)
+    adapter = PerpetualContext(_settings(), backend=backend)
+    await adapter.connect()
+
+    first = adapter.cached_reconciliation_v2()
+    first["positions"].clear()
+    second = adapter.cached_reconciliation_v2()
+    await adapter.place_order_v2(_order())
+
+    assert second["positions"]
+    assert backend.fetch_balance.await_count == 1
 
 
 @pytest.mark.asyncio
@@ -312,9 +354,7 @@ async def test_reconciliation_generation_is_monotonic_and_stream_failure_recover
     assert lifecycle[-2:] == [("reconcile", 3), ("streams", 3)]
     assert adapter.connection_state_snapshot().state == "trading_ready"
     assert connection_states[-1][0] == "connected"
-    assert connection_states[-1][1]["executionTargetId"] == (
-        "okx-perpetual-demo-paper-1"
-    )
+    assert connection_states[-1][1]["executionTargetId"] == ("okx-perpetual-demo-paper-1")
     await adapter.close()
     assert adapter._recovery_task is None
 
@@ -386,9 +426,7 @@ async def test_market_objects_have_target_sequence_and_distinct_types() -> None:
     assert len(objects) == 6
     assert {item["objectType"] for item in objects} == {"mark", "index", "funding"}
     assert [item["sequence"] for item in objects] == [1, 2, 3, 4, 5, 6]
-    assert {
-        item["marketDataTargetId"] for item in objects
-    } == {"okx-perpetual-demo-market-1"}
+    assert {item["marketDataTargetId"] for item in objects} == {"okx-perpetual-demo-market-1"}
     assert {item["source"] for item in objects} == {"OKX"}
     assert all(len(item["metadataHash"]) == 64 for item in objects)
     for item in objects:

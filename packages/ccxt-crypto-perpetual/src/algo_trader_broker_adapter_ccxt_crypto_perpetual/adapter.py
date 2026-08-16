@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import inspect
 import random
 import time
@@ -68,6 +69,7 @@ class PerpetualContext:
         self._funding_ledger: list[dict[str, Any]] = []
         self._sequence = 0
         self._reconciliation_generation = 0
+        self._last_reconciliation_monotonic: float | None = None
         self._reconciliation_lock = asyncio.Lock()
         self._stream_tasks: list[asyncio.Task[None]] = []
         self._recovery_task: asyncio.Task[None] | None = None
@@ -174,12 +176,18 @@ class PerpetualContext:
         )
 
     def connection_diagnostics(self) -> dict[str, Any]:
+        reconciliation_age = (
+            None
+            if self._last_reconciliation_monotonic is None
+            else max(0.0, time.monotonic() - self._last_reconciliation_monotonic)
+        )
         return {
             "adapter_id": self.adapter_id,
             "state": self._state,
             "generation": self._generation,
             "reconciliationGeneration": self._reconciliation_generation,
             "reconciliationReady": self._snapshot is not None,
+            "reconciliationAgeSeconds": reconciliation_age,
             "metadataHashes": dict(self._market_metadata_hashes),
             "policyReadback": dict(self._policy_readback),
             "lastStreamFailure": dict(self._last_stream_failure),
@@ -221,7 +229,18 @@ class PerpetualContext:
         self._rules = rules
         self._market_metadata_hashes = hashes
 
-        remote_time = int(await self._client.fetch_time())
+        policy_reads = await asyncio.gather(
+            self._client.fetch_time(),
+            *(
+                coroutine
+                for symbol in self._settings.allowed_symbols
+                for coroutine in (
+                    self._client.fetch_position_mode(symbol),
+                    self._client.fetch_leverage(symbol),
+                )
+            ),
+        )
+        remote_time = int(policy_reads[0])
         skew = abs(int(datetime.now(UTC).timestamp() * 1000) - remote_time)
         if skew > self._settings.clock_skew_block_ms:
             raise BrokerConnectionError(
@@ -232,9 +251,8 @@ class PerpetualContext:
         checked_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
         symbols: dict[str, dict[str, Any]] = {}
         matches = True
-        for symbol in self._settings.allowed_symbols:
-            mode = await self._client.fetch_position_mode(symbol)
-            leverage = await self._client.fetch_leverage(symbol)
+        for offset, symbol in enumerate(self._settings.allowed_symbols):
+            mode, leverage = policy_reads[1 + offset * 2 : 3 + offset * 2]
             margin_mode = str(leverage.get("marginMode") or "").lower()
             values = sorted(
                 {
@@ -243,9 +261,7 @@ class PerpetualContext:
                 }
             )
             symbol_matches = (
-                not bool(mode.get("hedged"))
-                and margin_mode == "isolated"
-                and values == ["2"]
+                not bool(mode.get("hedged")) and margin_mode == "isolated" and values == ["2"]
             )
             matches = matches and symbol_matches
             symbols[symbol] = {
@@ -305,9 +321,11 @@ class PerpetualContext:
         result: list[dict[str, Any]] = []
         for symbol in self._settings.allowed_symbols:
             cached = self._market_data_cache.get(symbol)
-            if cached is not None and {
-                str(item.get("objectType")) for item in cached
-            } == {"mark", "index", "funding"}:
+            if cached is not None and {str(item.get("objectType")) for item in cached} == {
+                "mark",
+                "index",
+                "funding",
+            }:
                 result.extend(cached)
                 continue
             result.extend(await self._fetch_market_data_objects(symbol))
@@ -328,7 +346,7 @@ class PerpetualContext:
 
     async def place_order_v2(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         await self.ensure_connected()
-        await self.reconcile_v2()
+        self.cached_reconciliation_v2()
         if self._state != "trading_ready":
             raise BrokerOrderError("Perpetual adapter is not trading ready")
         target = str(_field(payload, "executionTargetId", "execution_target_id") or "")
@@ -355,9 +373,7 @@ class PerpetualContext:
                 code="unsupported_order_semantics",
             )
         rules = self._rules[symbol]
-        contracts = rules.quantize_contracts(
-            _field(payload, "quantityDecimal", "quantity_decimal")
-        )
+        contracts = rules.quantize_contracts(_field(payload, "quantityDecimal", "quantity_decimal"))
         if reduce_only:
             current = next(
                 (
@@ -426,24 +442,22 @@ class PerpetualContext:
             command_id=str(_field(payload, "commandId", "command_id") or ""),
         )
 
-    async def reconcile_v2(
-        self, *, force_runtime_validation: bool = True
-    ) -> dict[str, Any]:
+    async def reconcile_v2(self, *, force_runtime_validation: bool = True) -> dict[str, Any]:
         async with self._reconciliation_lock:
             return await self._reconcile_v2_unlocked(
                 force_runtime_validation=force_runtime_validation
             )
 
-    async def _reconcile_v2_unlocked(
-        self, *, force_runtime_validation: bool
-    ) -> dict[str, Any]:
+    async def _reconcile_v2_unlocked(self, *, force_runtime_validation: bool) -> dict[str, Any]:
         try:
             await self._validate_runtime_contract(force=force_runtime_validation)
         except Exception:
             self._state = "blocked"
             raise
-        balance = await self._client.fetch_balance()
-        positions = await self._client.fetch_positions(list(self._settings.allowed_symbols))
+        balance, positions = await asyncio.gather(
+            self._client.fetch_balance(),
+            self._client.fetch_positions(list(self._settings.allowed_symbols)),
+        )
         mapped_positions: list[dict[str, Any]] = []
         position_risk: list[dict[str, Any]] = []
         for row in positions:
@@ -464,19 +478,29 @@ class PerpetualContext:
         orders: dict[str, Mapping[str, Any]] = {}
         trades: dict[str, Mapping[str, Any]] = {}
         funding_rows: dict[str, Mapping[str, Any]] = {}
-        for symbol in self._settings.allowed_symbols:
-            for row in [
-                *await self._client.fetch_open_orders(symbol),
-                *await self._client.fetch_closed_orders(symbol),
-            ]:
+        reads = await asyncio.gather(
+            *(
+                coroutine
+                for symbol in self._settings.allowed_symbols
+                for coroutine in (
+                    self._client.fetch_open_orders(symbol),
+                    self._client.fetch_closed_orders(symbol),
+                    self._client.fetch_my_trades(symbol),
+                    self._client.fetch_funding_history(symbol),
+                )
+            )
+        )
+        for offset, symbol in enumerate(self._settings.allowed_symbols):
+            open_rows, closed_rows, trade_rows, funding_history = reads[offset * 4 : offset * 4 + 4]
+            for row in [*open_rows, *closed_rows]:
                 order_id = str(row.get("id") or "")
                 if order_id:
                     orders[order_id] = row
-            for row in await self._client.fetch_my_trades(symbol):
+            for row in trade_rows:
                 trade_id = str(row.get("id") or "")
                 if trade_id:
                     trades[trade_id] = row
-            for row in await self._client.fetch_funding_history(symbol):
+            for row in funding_history:
                 row_id = str(row.get("id") or "")
                 if row_id:
                     funding_rows[row_id] = row
@@ -508,14 +532,29 @@ class PerpetualContext:
             ),
         }
         self._snapshot = snapshot
+        self._last_reconciliation_monotonic = time.monotonic()
         self._reconciliation_generation += 1
         if self._reconciliation_handler is not None:
-            maybe = self._reconciliation_handler(
-                snapshot, self._reconciliation_generation
-            )
+            maybe = self._reconciliation_handler(snapshot, self._reconciliation_generation)
             if inspect.isawaitable(maybe):
                 await maybe
         return snapshot
+
+    def cached_reconciliation_v2(self) -> dict[str, Any]:
+        """Return the authoritative snapshot without starting provider I/O."""
+
+        if not self._connected or self._state != "trading_ready":
+            raise BrokerConnectionError("Perpetual reconciliation is not trading ready")
+        if self._snapshot is None or self._last_reconciliation_monotonic is None:
+            raise BrokerConnectionError("Perpetual reconciliation snapshot is unavailable")
+        age = time.monotonic() - self._last_reconciliation_monotonic
+        maximum_age = float(self._settings.reconcile_interval_seconds * 2)
+        if age > maximum_age:
+            raise BrokerConnectionError(
+                "Perpetual reconciliation snapshot is stale",
+                details={"age_seconds": round(age, 3), "maximum_age_seconds": maximum_age},
+            )
+        return copy.deepcopy(self._snapshot)
 
     async def position_risk_v1(self) -> list[dict[str, Any]]:
         await self.ensure_connected()
@@ -574,6 +613,9 @@ class PerpetualContext:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - fail closed on stream loss
+                if self._websocket_was_reset(exc):
+                    await asyncio.sleep(0)
+                    continue
                 await self._stream_failed("orders", exc)
                 return
 
@@ -582,9 +624,7 @@ class PerpetualContext:
             try:
                 for row in await self._client.watch_my_trades():
                     if self._trade_update_handler is not None:
-                        mapped = fill(
-                            row, execution_target_id=self._settings.execution_target_id
-                        )
+                        mapped = fill(row, execution_target_id=self._settings.execution_target_id)
                         await self._trade_update_handler(
                             TradeUpdate(
                                 adapter_id=self.adapter_id,
@@ -605,6 +645,9 @@ class PerpetualContext:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - fail closed on stream loss
+                if self._websocket_was_reset(exc):
+                    await asyncio.sleep(0)
+                    continue
                 await self._stream_failed("trades", exc)
                 return
 
@@ -618,6 +661,9 @@ class PerpetualContext:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - fail closed on stream loss
+                if self._websocket_was_reset(exc):
+                    await asyncio.sleep(0)
+                    continue
                 await self._stream_failed("positions", exc)
                 return
 
@@ -631,14 +677,14 @@ class PerpetualContext:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - fail closed on stream loss
+                if self._websocket_was_reset(exc):
+                    await asyncio.sleep(0)
+                    continue
                 await self._stream_failed("balance", exc)
                 return
 
     def _cache_market_object(self, symbol: str, item: dict[str, Any]) -> None:
-        by_type = {
-            str(row["objectType"]): row
-            for row in self._market_data_cache.get(symbol, [])
-        }
+        by_type = {str(row["objectType"]): row for row in self._market_data_cache.get(symbol, [])}
         by_type[str(item["objectType"])] = item
         self._market_data_cache[symbol] = [
             by_type[object_type]
@@ -672,8 +718,16 @@ class PerpetualContext:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - fail closed on stream loss
+                if self._websocket_was_reset(exc):
+                    await asyncio.sleep(0)
+                    continue
                 await self._stream_failed(f"{object_type}_market_data", exc)
                 return
+
+    @staticmethod
+    def _websocket_was_reset(exc: Exception) -> bool:
+        details = getattr(exc, "details", None)
+        return bool(isinstance(details, Mapping) and details.get("websocketResetHandled") is True)
 
     async def _stream_failed(self, stream: str, exc: Exception) -> None:
         self._state = "blocked"
@@ -694,9 +748,7 @@ class PerpetualContext:
                 "marketDataTargetId": self._settings.market_data_target_id,
             },
         )
-        if not self._closing and (
-            self._recovery_task is None or self._recovery_task.done()
-        ):
+        if not self._closing and (self._recovery_task is None or self._recovery_task.done()):
             self._recovery_task = asyncio.create_task(
                 self._recover_streams(), name="ccxt-perpetual.recovery"
             )
@@ -735,9 +787,7 @@ class PerpetualContext:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                self._reconnect_reason = (
-                    f"reconciliation_failed:{type(exc).__name__}"
-                )
+                self._reconnect_reason = f"reconciliation_failed:{type(exc).__name__}"
 
     def set_trade_update_handler(
         self, handler: Callable[[TradeUpdate], Awaitable[None]] | None
@@ -859,9 +909,7 @@ class PerpetualContext:
                 adapter_id=self.adapter_id,
                 adapter_order_id=item["orderIdentity"]["brokerOrderId"],
                 adapter_execution_id=item["brokerExecutionId"],
-                adapter_metadata=self._trade_metadata(
-                    instrument_id=str(item["instrumentId"])
-                ),
+                adapter_metadata=self._trade_metadata(instrument_id=str(item["instrumentId"])),
                 status="FILLED",
                 last_fill_price=float(item["priceDecimal"]),
                 last_fill_quantity=float(item["quantityDecimal"]),
@@ -875,9 +923,7 @@ class PerpetualContext:
         return TradeUpdate(
             adapter_id=self.adapter_id,
             adapter_order_id=str(item["identity"]["brokerOrderId"]),
-            adapter_metadata=self._trade_metadata(
-                instrument_id=str(item["instrumentId"])
-            ),
+            adapter_metadata=self._trade_metadata(instrument_id=str(item["instrumentId"])),
             status=str(item["status"]),
             filled=float(item["cumulativeFilledDecimal"]),
             remaining=float(item["remainingDecimal"]),
