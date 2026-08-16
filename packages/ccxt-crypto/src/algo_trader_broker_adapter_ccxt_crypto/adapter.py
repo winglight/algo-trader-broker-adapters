@@ -408,6 +408,7 @@ class CCXTCryptoAdapter:
                             "reconciliationReady": perpetual.get("reconciliationReady"),
                             "policyReadback": perpetual.get("policyReadback"),
                             "metadataHashes": perpetual.get("metadataHashes"),
+                            "lastStreamFailure": perpetual.get("lastStreamFailure"),
                         }
                     }
                     if isinstance(perpetual, Mapping)
