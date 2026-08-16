@@ -370,6 +370,23 @@ async def test_fast_reconciliation_reuses_runtime_policy_until_full_interval() -
 
 
 @pytest.mark.asyncio
+async def test_websocket_reconciliation_is_coalesced_within_fast_interval() -> None:
+    backend = FakeBackend()
+    backend.fetch_balance = AsyncMock(wraps=backend.fetch_balance)
+    adapter = PerpetualContext(_settings(reconcile_interval_seconds=60), backend=backend)
+    await adapter.connect()
+    backend.fetch_balance.reset_mock()
+
+    first = await adapter._reconcile_if_due()
+    adapter._last_reconciliation_monotonic = time.monotonic() - 61
+    second = await adapter._reconcile_if_due()
+
+    assert first is False
+    assert second is True
+    backend.fetch_balance.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
 async def test_startup_failure_recovers_without_restarting_unified_adapter(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

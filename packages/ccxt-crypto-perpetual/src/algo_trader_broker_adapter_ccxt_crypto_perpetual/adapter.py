@@ -564,6 +564,19 @@ class PerpetualContext:
                 force_runtime_validation=force_runtime_validation
             )
 
+    async def _reconcile_if_due(self) -> bool:
+        """Coalesce websocket bursts into at most one provider fan-out per interval."""
+
+        async with self._reconciliation_lock:
+            if (
+                self._last_reconciliation_monotonic is not None
+                and time.monotonic() - self._last_reconciliation_monotonic
+                < self._settings.reconcile_interval_seconds
+            ):
+                return False
+            await self._reconcile_v2_unlocked(force_runtime_validation=False)
+            return True
+
     async def _reconcile_v2_unlocked(self, *, force_runtime_validation: bool) -> dict[str, Any]:
         try:
             await self._validate_runtime_contract(force=force_runtime_validation)
@@ -768,7 +781,7 @@ class PerpetualContext:
         while True:
             try:
                 await self._client.watch_positions(list(self._settings.allowed_symbols))
-                await self.reconcile_v2(force_runtime_validation=False)
+                await self._reconcile_if_due()
                 if self._position_update_handler is not None:
                     await self._position_update_handler(await self.get_positions())
             except asyncio.CancelledError:
@@ -784,7 +797,7 @@ class PerpetualContext:
         while True:
             try:
                 await self._client.watch_balance()
-                await self.reconcile_v2(force_runtime_validation=False)
+                await self._reconcile_if_due()
                 if self._account_update_handler is not None:
                     await self._account_update_handler(await self.get_account_summary())
             except asyncio.CancelledError:
