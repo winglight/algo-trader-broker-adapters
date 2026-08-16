@@ -98,6 +98,9 @@ class CCXTCryptoAdapter:
                     "fixed_leverage": self._settings.perpetual_fixed_leverage,
                     "request_timeout_ms": self._settings.request_timeout_ms,
                     "reconcile_interval_seconds": self._settings.reconcile_interval_seconds,
+                    "full_reconcile_interval_seconds": (
+                        self._settings.full_reconcile_interval_seconds
+                    ),
                     "clock_skew_block_ms": self._settings.clock_skew_block_ms,
                 },
                 backend=perpetual_backend,

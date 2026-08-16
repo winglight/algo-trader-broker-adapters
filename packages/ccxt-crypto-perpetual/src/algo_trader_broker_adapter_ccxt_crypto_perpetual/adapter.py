@@ -212,7 +212,7 @@ class PerpetualContext:
             not force
             and self._last_runtime_validation_monotonic is not None
             and time.monotonic() - self._last_runtime_validation_monotonic
-            < self._settings.reconcile_interval_seconds
+            < self._settings.full_reconcile_interval_seconds
         ):
             return
         markets = await self._client.load_markets()
@@ -681,10 +681,19 @@ class PerpetualContext:
                 )
 
     async def _periodic_reconciliation(self) -> None:
+        elapsed = 0
         while True:
             try:
                 await asyncio.sleep(self._settings.reconcile_interval_seconds)
-                await self.reconcile_v2()
+                elapsed += self._settings.reconcile_interval_seconds
+                force_runtime_validation = (
+                    elapsed >= self._settings.full_reconcile_interval_seconds
+                )
+                await self.reconcile_v2(
+                    force_runtime_validation=force_runtime_validation
+                )
+                if force_runtime_validation:
+                    elapsed = 0
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - fail closed on drift

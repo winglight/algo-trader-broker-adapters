@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import AsyncMock
@@ -350,6 +351,22 @@ async def test_cached_reconciliation_and_order_path_do_not_repeat_provider_reads
     assert second["positions"]
     assert backend.fetch_balance.await_count == 1
     assert backend.fetch_funding_rate.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_fast_reconciliation_reuses_runtime_policy_until_full_interval() -> None:
+    backend = FakeBackend()
+    backend.load_markets = AsyncMock(wraps=backend.load_markets)
+    adapter = PerpetualContext(
+        _settings(full_reconcile_interval_seconds=900), backend=backend
+    )
+    await adapter.connect()
+    backend.load_markets.reset_mock()
+    adapter._last_runtime_validation_monotonic = time.monotonic() - 120
+
+    await adapter.reconcile_v2(force_runtime_validation=False)
+
+    backend.load_markets.assert_not_awaited()
 
 
 @pytest.mark.asyncio

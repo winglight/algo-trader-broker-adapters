@@ -53,6 +53,7 @@ class CCXTCryptoPerpetualSettings:
     fixed_leverage: int
     request_timeout_ms: int
     reconcile_interval_seconds: int
+    full_reconcile_interval_seconds: int
     clock_skew_block_ms: int
 
     @classmethod
@@ -112,6 +113,9 @@ class CCXTCryptoPerpetualSettings:
             request_timeout_ms=_int(settings, "request_timeout_ms", 30000, 5000, 60000),
             reconcile_interval_seconds=_int(
                 settings, "reconcile_interval_seconds", 60, 15, 3600
+            ),
+            full_reconcile_interval_seconds=_int(
+                settings, "full_reconcile_interval_seconds", 900, 60, 86400
             ),
             clock_skew_block_ms=_int(settings, "clock_skew_block_ms", 1000, 250, 5000),
         )
