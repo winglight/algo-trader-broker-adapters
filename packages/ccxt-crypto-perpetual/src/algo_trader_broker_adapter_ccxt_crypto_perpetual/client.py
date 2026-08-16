@@ -35,12 +35,16 @@ class OKXDemoPerpetualClient:
             },
         }
         self._exchange = ccxtasync.okx(config)
-        self._ws_exchange = ccxtpro.okx(config)
+        self._public_ws_exchange = ccxtpro.okx(config)
+        self._private_ws_exchange = ccxtpro.okx(config)
         self._exchange.set_sandbox_mode(True)
-        self._ws_exchange.set_sandbox_mode(True)
+        self._public_ws_exchange.set_sandbox_mode(True)
+        self._private_ws_exchange.set_sandbox_mode(True)
         self._semaphore = asyncio.Semaphore(4)
-        self._websocket_reset_lock = asyncio.Lock()
-        self._websocket_generation = 0
+        self._websocket_reset_locks = {
+            boundary: asyncio.Lock() for boundary in ("public", "private")
+        }
+        self._websocket_generations = {boundary: 0 for boundary in ("public", "private")}
         required_streams = (
             "watchMarkPrice",
             "watchFundingRate",
@@ -49,7 +53,20 @@ class OKXDemoPerpetualClient:
             "watchPositions",
             "watchBalance",
         )
-        missing = [name for name in required_streams if self._ws_exchange.has.get(name) is not True]
+        private_streams = {
+            "watchOrders",
+            "watchMyTrades",
+            "watchPositions",
+            "watchBalance",
+        }
+        missing = [
+            name
+            for name in required_streams
+            if (
+                self._private_ws_exchange if name in private_streams else self._public_ws_exchange
+            ).has.get(name)
+            is not True
+        ]
         if missing:
             raise RuntimeError(
                 "ccxt==4.5.56 lacks required OKX Pro capabilities: " + ", ".join(sorted(missing))
@@ -58,7 +75,8 @@ class OKXDemoPerpetualClient:
     async def close(self) -> None:
         await asyncio.gather(
             self._exchange.close(),
-            self._ws_exchange.close(),
+            self._public_ws_exchange.close(),
+            self._private_ws_exchange.close(),
             return_exceptions=True,
         )
 
@@ -72,8 +90,16 @@ class OKXDemoPerpetualClient:
         }
         selected = [market for market in available if str(market.get("id") or "") in allowed_ids]
         markets = self._exchange.set_markets(selected)
-        websocket = getattr(self, "_ws_exchange", None)
-        if websocket is not None:
+        websockets = {
+            item
+            for item in (
+                getattr(self, "_public_ws_exchange", None),
+                getattr(self, "_private_ws_exchange", None),
+                getattr(self, "_ws_exchange", None),
+            )
+            if item is not None
+        }
+        for websocket in websockets:
             websocket.set_markets(selected)
         return {
             symbol: markets[symbol]
@@ -213,19 +239,25 @@ class OKXDemoPerpetualClient:
         raise AssertionError("unreachable")
 
     async def _watch(self, method: str, *args: Any) -> Any:
-        websocket = getattr(self, "_ws_exchange", self._exchange)
-        generation = getattr(self, "_websocket_generation", 0)
+        boundary = self._websocket_boundary(method)
+        websocket = self._websocket_exchange(boundary)
+        generations = getattr(self, "_websocket_generations", {boundary: 0})
+        generation = generations[boundary]
         try:
             return await getattr(websocket, method)(*args)
         except BrokerError:
             raise
         except Exception as exc:
             reset = False
-            generation_advanced = getattr(self, "_websocket_generation", generation) != generation
+            current_generation = getattr(self, "_websocket_generations", {boundary: generation})[
+                boundary
+            ]
+            generation_advanced = current_generation != generation
             transient = generation_advanced or self._is_transient(exc)
-            if transient and not generation_advanced and hasattr(self, "_websocket_reset_lock"):
+            if transient and not generation_advanced and hasattr(self, "_websocket_reset_locks"):
                 reset = await self._reset_websocket(
                     failed_generation=generation,
+                    boundary=boundary,
                     operation=method,
                     error=exc,
                 )
@@ -234,34 +266,55 @@ class OKXDemoPerpetualClient:
                 details={
                     "operation": method,
                     "error_type": type(exc).__name__,
-                    "websocketBoundary": "perpetual_private_or_public",
+                    "websocketBoundary": boundary,
                     "websocketGeneration": generation,
                     "websocketResetHandled": transient,
                     "resetPerformed": reset,
-                    "nextWebsocketGeneration": getattr(self, "_websocket_generation", generation),
+                    "nextWebsocketGeneration": getattr(
+                        self, "_websocket_generations", {boundary: generation}
+                    )[boundary],
                 },
             ) from exc
+
+    @staticmethod
+    def _websocket_boundary(method: str) -> str:
+        if method in {
+            "watch_orders",
+            "watch_my_trades",
+            "watch_positions",
+            "watch_balance",
+        }:
+            return "private"
+        return "public"
+
+    def _websocket_exchange(self, boundary: str) -> Any:
+        exchange = getattr(self, f"_{boundary}_ws_exchange", None)
+        if exchange is not None:
+            return exchange
+        return getattr(self, "_ws_exchange", self._exchange)
 
     async def _reset_websocket(
         self,
         *,
         failed_generation: int,
+        boundary: str,
         operation: str,
         error: Exception,
     ) -> bool:
-        async with self._websocket_reset_lock:
-            if failed_generation != self._websocket_generation:
+        async with self._websocket_reset_locks[boundary]:
+            if failed_generation != self._websocket_generations[boundary]:
                 return False
-            await self._ws_exchange.close()
-            self._websocket_generation += 1
+            await self._websocket_exchange(boundary).close()
+            self._websocket_generations[boundary] += 1
             LOGGER.warning(
                 "OKX Demo perpetual websocket reset after transient failure",
                 extra={
                     "event": "broker.crypto.perpetual_websocket_reset",
                     "broker.adapter_id": "ccxt_crypto",
                     "broker.operation": operation,
+                    "broker.websocket_boundary": boundary,
                     "broker.error_type": type(error).__name__,
-                    "broker.websocket_generation": self._websocket_generation,
+                    "broker.websocket_generation": self._websocket_generations[boundary],
                 },
             )
             return True
@@ -292,6 +345,10 @@ class OKXDemoPerpetualClient:
                 "network",
                 "unavailable",
                 "disconnect",
+                "closedbyuser",
+                "closed by user",
+                "connection is closed",
+                "1006",
                 "ratelimit",
                 "50011",
             )

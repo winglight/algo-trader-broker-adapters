@@ -732,9 +732,19 @@ class PerpetualContext:
     async def _stream_failed(self, stream: str, exc: Exception) -> None:
         self._state = "blocked"
         self._reconnect_reason = f"{stream}_stream_failed"
+        details = getattr(exc, "details", None)
         self._last_stream_failure = {
             "stream": stream,
             "errorType": type(exc).__name__,
+            **(
+                {
+                    "operation": str(details.get("operation") or ""),
+                    "providerErrorType": str(details.get("error_type") or ""),
+                    "websocketBoundary": str(details.get("websocketBoundary") or ""),
+                }
+                if isinstance(details, Mapping)
+                else {}
+            ),
             "occurredAt": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         }
         await self._notify_connection(
