@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import inspect
+import logging
 import random
 import time
 from contextlib import suppress
@@ -39,6 +40,8 @@ from .mapping import (
 from .quantizer import PerpetualMarketRules, canonical, instrument_id, native_identifier
 from .settings import CCXTCryptoPerpetualSettings
 
+LOGGER = logging.getLogger(__name__)
+
 _SYMBOL_BY_INSTRUMENT = {
     "crypto-perpetual:BTC-USDT:USDT:OKX": "BTC/USDT:USDT",
     "crypto-perpetual:ETH-USDT:USDT:OKX": "ETH/USDT:USDT",
@@ -49,6 +52,11 @@ _SYMBOL_BY_INSTRUMENT = {
 # window while the next REST request is in flight. Keep enough headroom for a
 # bounded retry without weakening the fail-closed freshness rule.
 _FUNDING_REFRESH_INTERVAL_SECONDS = 20.0
+# OKX mark/index streams publish on change and can be silent even while the
+# connection remains healthy. Refresh only cache entries nearing the strict
+# five-second risk boundary; the websocket remains the primary data path.
+_MARK_INDEX_HEARTBEAT_AGE_SECONDS = 2.0
+_MARK_INDEX_HEARTBEAT_POLL_SECONDS = 0.5
 
 
 def _field(payload: Mapping[str, Any], camel: str, snake: str | None = None) -> Any:
@@ -707,6 +715,9 @@ class PerpetualContext:
             asyncio.create_task(
                 self._periodic_reconciliation(), name="ccxt-perpetual.reconciliation"
             ),
+            asyncio.create_task(
+                self._market_data_heartbeat(), name="ccxt-perpetual.market-data-heartbeat"
+            ),
         ]
         for symbol in self._settings.allowed_symbols:
             task_symbol = symbol.replace("/", "-").replace(":", "-").lower()
@@ -737,6 +748,69 @@ class PerpetualContext:
             except Exception as exc:  # noqa: BLE001 - fail closed on drift
                 await self._stream_failed("reconciliation", exc)
                 return
+
+    async def _market_data_heartbeat(self) -> None:
+        while True:
+            try:
+                await asyncio.sleep(_MARK_INDEX_HEARTBEAT_POLL_SECONDS)
+                await self._refresh_stale_mark_index()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - websocket remains primary
+                LOGGER.warning(
+                    "OKX Demo perpetual market-data heartbeat will retry",
+                    extra={
+                        "event": "broker.crypto.perpetual_market_data_heartbeat_retry",
+                        "broker.adapter_id": self.adapter_id,
+                        "broker.error_type": type(exc).__name__,
+                    },
+                )
+
+    async def _refresh_stale_mark_index(
+        self, *, observed_at: datetime | None = None
+    ) -> int:
+        now = observed_at or datetime.now(UTC)
+        due: list[tuple[str, str]] = []
+        for symbol in self._settings.allowed_symbols:
+            by_type = {
+                str(row.get("objectType")): row
+                for row in self._market_data_cache.get(symbol, [])
+            }
+            for object_type in ("mark", "index"):
+                available_at = str(by_type.get(object_type, {}).get("availableAt") or "")
+                try:
+                    available = datetime.fromisoformat(available_at.replace("Z", "+00:00"))
+                    age = max(0.0, (now - available).total_seconds())
+                except ValueError:
+                    age = _MARK_INDEX_HEARTBEAT_AGE_SECONDS
+                if age >= _MARK_INDEX_HEARTBEAT_AGE_SECONDS:
+                    due.append((symbol, object_type))
+
+        if not due:
+            return 0
+
+        rows = await asyncio.gather(
+            *(
+                self._client.fetch_mark_price(symbol)
+                if object_type == "mark"
+                else self._client.fetch_index_price(symbol)
+                for symbol, object_type in due
+            )
+        )
+        for (symbol, object_type), row in zip(due, rows, strict=True):
+            self._sequence += 1
+            item = market_data_object(
+                row,
+                object_type=object_type,
+                symbol=symbol,
+                market_data_target_id=self._settings.market_data_target_id,
+                metadata_hash=self._rules[symbol].metadata_hash,
+                sequence=self._sequence,
+            )
+            self._cache_market_object(symbol, item)
+            if self._market_data_update_handler is not None:
+                await self._market_data_update_handler([item])
+        return len(rows)
 
     async def _watch_orders(self) -> None:
         retry_delay = 1.0

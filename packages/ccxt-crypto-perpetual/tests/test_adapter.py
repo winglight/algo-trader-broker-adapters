@@ -652,6 +652,38 @@ async def test_market_objects_have_target_sequence_and_distinct_types() -> None:
 
 
 @pytest.mark.asyncio
+async def test_market_data_heartbeat_refreshes_only_stale_mark_and_index() -> None:
+    backend = FakeBackend()
+    adapter = PerpetualContext(_settings(), backend=backend)
+    await adapter.connect()
+    observed_at = datetime.now(UTC)
+    stale_at = (observed_at - timedelta(seconds=3)).isoformat().replace("+00:00", "Z")
+    funding_before: dict[str, str] = {}
+    for symbol, rows in adapter._market_data_cache.items():
+        for row in rows:
+            if row["objectType"] in {"mark", "index"}:
+                row["availableAt"] = stale_at
+            else:
+                funding_before[symbol] = str(row["availableAt"])
+
+    backend.fetch_mark_price = AsyncMock(side_effect=backend.fetch_mark_price)
+    backend.fetch_index_price = AsyncMock(side_effect=backend.fetch_index_price)
+    backend.fetch_funding_rate = AsyncMock(side_effect=backend.fetch_funding_rate)
+
+    refreshed = await adapter._refresh_stale_mark_index(observed_at=observed_at)
+
+    assert refreshed == 4
+    assert backend.fetch_mark_price.await_count == 2
+    assert backend.fetch_index_price.await_count == 2
+    backend.fetch_funding_rate.assert_not_awaited()
+    for symbol, rows in adapter._market_data_cache.items():
+        by_type = {row["objectType"]: row for row in rows}
+        assert by_type["mark"]["availableAt"] != stale_at
+        assert by_type["index"]["availableAt"] != stale_at
+        assert by_type["funding"]["availableAt"] == funding_before[symbol]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("object_type", "method_name", "payload", "payload_key"),
     [
