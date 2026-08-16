@@ -32,6 +32,7 @@ async def test_unified_adapter_exposes_and_routes_both_target_isolated_domains()
         "CRYPTO_SPOT",
         "CRYPTO_PERPETUAL",
     }
+    assert "multi_account" in manifest.capabilities.account_features
     assert manifest.capabilities.native["executionTargets"] == {
         "CRYPTO_SPOT": "okx-spot-demo-paper-1",
         "CRYPTO_PERPETUAL": "okx-perpetual-demo-paper-1",

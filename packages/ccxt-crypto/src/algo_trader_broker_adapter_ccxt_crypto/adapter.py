@@ -169,6 +169,7 @@ class CCXTCryptoAdapter:
                     "summary",
                     "positions",
                     "position_updates",
+                    "multi_account",
                     "reconciliation_v2",
                     "position_risk_v1",
                     "funding_ledger_v1",
