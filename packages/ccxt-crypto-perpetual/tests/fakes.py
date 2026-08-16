@@ -34,6 +34,8 @@ class FakeBackend:
         self.margin_mode = "isolated"
         self.leverage = "2"
         self.tick_size = "0.1"
+        self.position_contracts = "10"
+        self.position_side = "long"
         self.created: list[dict[str, Any]] = []
         self.cancelled: list[tuple[str, str]] = []
         self.closed = False
@@ -75,8 +77,8 @@ class FakeBackend:
         return [
             {
                 "symbol": "BTC/USDT:USDT",
-                "contracts": "10",
-                "side": "long",
+                "contracts": self.position_contracts,
+                "side": self.position_side,
                 "entryPrice": "55000",
                 "markPrice": "60000",
                 "indexPrice": "59990",

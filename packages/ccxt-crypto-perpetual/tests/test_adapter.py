@@ -444,24 +444,46 @@ async def test_dedicated_market_stream_emits_one_target_scoped_object(
 
 
 @pytest.mark.asyncio
-async def test_reduce_only_never_crosses_zero_or_closes_wrong_side() -> None:
+@pytest.mark.parametrize(
+    ("position_side", "close_side"),
+    [("long", "SELL"), ("short", "BUY")],
+)
+async def test_reduce_only_supports_partial_and_full_close_without_crossing_zero(
+    position_side: str,
+    close_side: str,
+) -> None:
     backend = FakeBackend()
+    backend.position_side = position_side
     adapter = PerpetualContext(_settings(), backend=backend)
     await adapter.connect()
+
+    for quantity in ("4", "10"):
+        result = await adapter.place_order_v2(
+            _order(
+                side=close_side,
+                quantityDecimal=quantity,
+                reduceOnly=True,
+                positionEffect="CLOSE",
+            )
+        )
+        assert result["status"] == "SUBMITTED"
+        assert backend.created[-1]["amount"] == quantity
+        assert backend.created[-1]["params"]["reduceOnly"] is True
 
     with pytest.raises(BrokerOrderError, match="cross zero"):
         await adapter.place_order_v2(
             _order(
-                side="SELL",
+                side=close_side,
                 quantityDecimal="11",
                 reduceOnly=True,
                 positionEffect="CLOSE",
             )
         )
+    wrong_side = "BUY" if close_side == "SELL" else "SELL"
     with pytest.raises(BrokerOrderError, match="cross zero"):
         await adapter.place_order_v2(
             _order(
-                side="BUY",
+                side=wrong_side,
                 quantityDecimal="1",
                 reduceOnly=True,
                 positionEffect="CLOSE",
