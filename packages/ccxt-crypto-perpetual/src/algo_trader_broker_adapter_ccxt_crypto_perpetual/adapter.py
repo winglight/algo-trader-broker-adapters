@@ -303,7 +303,9 @@ class PerpetualContext:
         result: list[dict[str, Any]] = []
         for symbol in self._settings.allowed_symbols:
             cached = self._market_data_cache.get(symbol)
-            if cached is not None:
+            if cached is not None and {
+                str(item.get("objectType")) for item in cached
+            } == {"mark", "index", "funding"}:
                 result.extend(cached)
                 continue
             result.extend(await self._fetch_market_data_objects(symbol))

@@ -16,6 +16,9 @@ from ati_shared_sdk.common.schemas.multi_asset_market_data import (
 
 from algo_trader_broker_sdk import BrokerConnectionError, BrokerContractError, BrokerOrderError
 from algo_trader_broker_adapter_ccxt_crypto_perpetual import PerpetualContext
+from algo_trader_broker_adapter_ccxt_crypto_perpetual.client import (
+    OKXDemoPerpetualClient,
+)
 from algo_trader_broker_adapter_ccxt_crypto_perpetual.quantizer import PerpetualMarketRules
 from algo_trader_broker_adapter_ccxt_crypto_perpetual.mapping import decimal, position_payload
 from algo_trader_broker_adapter_ccxt_crypto_perpetual.settings import (
@@ -107,6 +110,20 @@ def test_broker_float_is_converted_only_at_external_mapping_boundary() -> None:
     assert decimal(0.01) == Decimal("0.01")
     with pytest.raises(ValueError, match="non-finite"):
         decimal(float("nan"))
+
+
+@pytest.mark.asyncio
+async def test_index_stream_subscribes_to_okx_index_instrument() -> None:
+    client = object.__new__(OKXDemoPerpetualClient)
+    exchange = AsyncMock()
+    exchange.watch_mark_price.return_value = {"last": "63000"}
+    client._exchange = exchange
+
+    assert await client.watch_index_price("BTC/USDT:USDT") == {"last": "63000"}
+    exchange.watch_mark_price.assert_awaited_once_with(
+        "BTC/USDT",
+        {"channel": "index-tickers"},
+    )
 
 
 @pytest.mark.asyncio

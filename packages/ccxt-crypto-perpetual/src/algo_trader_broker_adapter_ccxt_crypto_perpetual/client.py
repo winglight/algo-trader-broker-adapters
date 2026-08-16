@@ -98,9 +98,13 @@ class OKXDemoPerpetualClient:
         return dict(await self._exchange.watch_mark_price(symbol))
 
     async def watch_index_price(self, symbol: str) -> dict[str, Any]:
+        # OKX index-tickers uses the index instrument id (BTC-USDT), not the
+        # swap instrument id (BTC-USDT-SWAP). CCXT derives that id from the
+        # Spot-shaped unified symbol while still parsing an index ticker.
+        index_symbol = symbol.split(":", 1)[0]
         return dict(
             await self._exchange.watch_mark_price(
-                symbol,
+                index_symbol,
                 {"channel": "index-tickers"},
             )
         )
