@@ -601,9 +601,13 @@ class PerpetualContext:
                 account_id=self._settings.account_id,
                 execution_target_id=self._settings.execution_target_id,
             )
+            # OKX may alternate between omitting a closed position and returning
+            # the same position with zero contracts. Both representations are
+            # the same flat account state and must reconcile identically.
+            if risk is None:
+                continue
             mapped_positions.append(mapped)
-            if risk is not None:
-                position_risk.append(risk)
+            position_risk.append(risk)
         orders: dict[str, Mapping[str, Any]] = {}
         trades: dict[str, Mapping[str, Any]] = {}
         funding_rows: dict[str, Mapping[str, Any]] = {}

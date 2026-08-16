@@ -334,6 +334,19 @@ async def test_connect_reads_back_mode_leverage_and_reconciles() -> None:
 
 
 @pytest.mark.asyncio
+async def test_reconciliation_omits_zero_contract_positions() -> None:
+    backend = FakeBackend()
+    backend.position_contracts = "0"
+    adapter = PerpetualContext(_settings(), backend=backend)
+
+    await adapter.connect()
+
+    assert adapter.cached_reconciliation_v2()["positions"] == []
+    assert await adapter.get_positions() == []
+    assert await adapter.position_risk_v1() == []
+
+
+@pytest.mark.asyncio
 async def test_cached_reconciliation_and_order_path_do_not_repeat_provider_reads() -> None:
     backend = FakeBackend()
     backend.fetch_balance = AsyncMock(wraps=backend.fetch_balance)
