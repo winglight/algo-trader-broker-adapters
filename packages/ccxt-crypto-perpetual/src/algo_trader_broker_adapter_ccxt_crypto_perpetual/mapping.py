@@ -355,8 +355,16 @@ def market_data_object(
     sequence: int,
 ) -> dict[str, Any]:
     info = _info(row)
-    event_time = timestamp(row.get("timestamp") or info.get("ts"))
-    available = timestamp()
+    observed_at = datetime.now(UTC)
+    raw_event_time = datetime.fromisoformat(
+        timestamp(row.get("timestamp") or info.get("ts")).replace("Z", "+00:00")
+    )
+    # OKX's clock may legally be slightly ahead of the Runner while remaining
+    # inside the startup skew limit. An exchange timestamp in that sub-second
+    # window must not violate the broker-neutral envelope ordering or appear
+    # unavailable to the local risk evaluator.
+    event_time = timestamp(min(raw_event_time, observed_at))
+    available = timestamp(observed_at)
     observed = timestamp()
     common: dict[str, Any] = {
         "schemaVersion": "market-data-object-envelope.v1",

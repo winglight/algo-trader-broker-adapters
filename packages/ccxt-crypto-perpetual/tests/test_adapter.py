@@ -28,6 +28,7 @@ from algo_trader_broker_adapter_ccxt_crypto_perpetual.quantizer import (
 )
 from algo_trader_broker_adapter_ccxt_crypto_perpetual.mapping import (
     decimal,
+    market_data_object,
     position_payload,
     timestamp,
 )
@@ -59,6 +60,21 @@ def _settings(**overrides: object) -> dict[str, object]:
 
 def test_funding_refresh_interval_stays_below_risk_freshness_boundary() -> None:
     assert _FUNDING_REFRESH_INTERVAL_SECONDS < 60
+
+
+def test_market_data_clamps_subsecond_provider_clock_lead() -> None:
+    future_timestamp = int((datetime.now(UTC) + timedelta(milliseconds=500)).timestamp() * 1000)
+    payload = market_data_object(
+        {"timestamp": future_timestamp, "indexPrice": "63000.1"},
+        object_type="index",
+        symbol="BTC/USDT:USDT",
+        market_data_target_id="okx-perpetual-demo-market-1",
+        metadata_hash="a" * 64,
+        sequence=1,
+    )
+
+    validated = MarketDataObjectEnvelopeV1.model_validate(payload)
+    assert validated.event_time <= validated.available_at <= validated.observed_at
 
 
 def _order(**overrides: object) -> dict[str, object]:
