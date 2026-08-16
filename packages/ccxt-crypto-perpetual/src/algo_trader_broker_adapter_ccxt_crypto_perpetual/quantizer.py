@@ -69,8 +69,6 @@ class PerpetualMarketRules:
             raise BrokerContractError("Perpetual metadata is incomplete") from exc
         if min(multiplier, tick, step, minimum) <= 0:
             raise BrokerContractError("Perpetual metadata values must be positive")
-        if step != step.to_integral_value() or minimum != minimum.to_integral_value():
-            raise BrokerContractError("Phase 5 quantity unit must be integer contracts")
         payload = {
             "symbol": symbol,
             "nativeInstrumentId": native_id,
@@ -103,7 +101,7 @@ class PerpetualMarketRules:
         ) * self.quantity_step
         if quantized != quantity:
             raise BrokerOrderError(
-                "Quantity must align to integer contract step",
+                "Quantity must align to the broker contract step",
                 code="quantity_step_mismatch",
             )
         return quantized

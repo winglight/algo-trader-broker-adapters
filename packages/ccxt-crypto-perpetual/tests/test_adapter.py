@@ -83,12 +83,17 @@ def test_settings_are_demo_only_one_way_isolated_2x() -> None:
             CCXTCryptoPerpetualSettings.from_mapping(_settings(**overrides))
 
 
-def test_market_metadata_requires_linear_usdt_swap_and_integer_contracts() -> None:
+def test_market_metadata_requires_linear_usdt_swap_and_broker_contract_step() -> None:
     rules = PerpetualMarketRules.from_ccxt(
         "BTC/USDT:USDT", market("BTC/USDT:USDT")
     )
-    assert str(rules.contract_multiplier) == "0.001"
-    assert str(rules.quantity_step) == "1"
+    assert str(rules.contract_multiplier) == "0.01"
+    assert str(rules.quantity_step) == "0.01"
+    assert str(rules.quantize_contracts("0.01")) == "0.01"
+    with pytest.raises(BrokerOrderError, match="below minimum"):
+        rules.quantize_contracts("0.001")
+    with pytest.raises(BrokerOrderError, match="broker contract step"):
+        rules.quantize_contracts("0.015")
 
     inverse = market("BTC/USDT:USDT")
     inverse["linear"] = False
@@ -141,8 +146,8 @@ async def test_connect_reads_back_mode_leverage_and_reconciles() -> None:
     assert reconciliation["executionTargetId"] == "okx-perpetual-demo-paper-1"
     assert reconciliation["positions"][0]["quantityDecimal"] == "10"
     risks = await adapter.position_risk_v1()
-    assert risks[0]["baseExposureDecimal"] == "0.01"
-    assert risks[0]["markNotionalDecimal"] == "600"
+    assert risks[0]["baseExposureDecimal"] == "0.1"
+    assert risks[0]["markNotionalDecimal"] == "6000"
     assert risks[0]["liquidationDistanceDecimal"] == "0.5"
     funding = await adapter.funding_ledger_v1()
     assert funding[0]["brokerLedgerId"] == "funding-bill-1"
@@ -278,8 +283,8 @@ async def test_reduce_only_requires_close_and_integer_contract_step() -> None:
 
     with pytest.raises(BrokerOrderError, match="declared together"):
         await adapter.place_order_v2(_order(reduceOnly=True, positionEffect="OPEN"))
-    with pytest.raises(BrokerOrderError, match="integer contract"):
-        await adapter.place_order_v2(_order(quantityDecimal="1.5"))
+    with pytest.raises(BrokerOrderError, match="broker contract step"):
+        await adapter.place_order_v2(_order(quantityDecimal="1.005"))
 
     result = await adapter.place_order_v2(
         _order(

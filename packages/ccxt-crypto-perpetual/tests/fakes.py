@@ -14,16 +14,16 @@ def market(symbol: str) -> dict[str, Any]:
         "linear": True,
         "inverse": False,
         "settle": "USDT",
-        "contractSize": 0.001 if base == "BTC" else 0.01,
+        "contractSize": 0.01 if base == "BTC" else 0.1,
         "active": True,
         "info": {
             "instId": f"{base}-USDT-SWAP",
             "ctType": "linear",
             "settleCcy": "USDT",
-            "ctVal": "0.001" if base == "BTC" else "0.01",
+            "ctVal": "0.01" if base == "BTC" else "0.1",
             "tickSz": "0.1" if base == "BTC" else "0.01",
-            "lotSz": "1",
-            "minSz": "1",
+            "lotSz": "0.01",
+            "minSz": "0.01",
         },
     }
 
