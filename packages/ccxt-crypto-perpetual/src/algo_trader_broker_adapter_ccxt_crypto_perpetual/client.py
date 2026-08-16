@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Mapping
 from typing import Any
 
@@ -108,7 +109,33 @@ class OKXDemoPerpetualClient:
         }
 
     async def fetch_time(self) -> int:
-        return int(await self._read("fetch_time"))
+        remote_time, _, _ = await self.fetch_time_sample()
+        return remote_time
+
+    async def fetch_time_sample(self) -> tuple[int, int, int]:
+        """Return server time with the successful request's local RTT bounds."""
+
+        for attempt in range(3):
+            started_at_ms = time.time_ns() // 1_000_000
+            try:
+                remote_time = int(await self._call("fetch_time"))
+                completed_at_ms = time.time_ns() // 1_000_000
+                return remote_time, started_at_ms, completed_at_ms
+            except Exception as exc:
+                if not self._is_transient(exc) or attempt == 2:
+                    raise
+                LOGGER.warning(
+                    "OKX Demo perpetual read request will be retried",
+                    extra={
+                        "event": "broker.crypto.perpetual_read_retry",
+                        "broker.adapter_id": "ccxt_crypto",
+                        "broker.operation": "fetch_time",
+                        "broker.retry_attempt": attempt + 1,
+                        "broker.error_type": self._error_type(exc),
+                    },
+                )
+                await asyncio.sleep(float(2**attempt))
+        raise AssertionError("unreachable")
 
     async def fetch_position_mode(self, symbol: str) -> dict[str, Any]:
         return dict(await self._read("fetch_position_mode", symbol))

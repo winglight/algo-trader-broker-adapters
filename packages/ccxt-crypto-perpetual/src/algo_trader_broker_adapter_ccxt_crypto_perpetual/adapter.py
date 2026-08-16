@@ -281,8 +281,15 @@ class PerpetualContext:
     async def _clock_skew_ms(self) -> int:
         """Measure skew when the time response arrives, before sibling reads finish."""
 
-        remote_time = int(await self._client.fetch_time())
-        return abs(int(datetime.now(UTC).timestamp() * 1000) - remote_time)
+        sampler = getattr(self._client, "fetch_time_sample", None)
+        if callable(sampler):
+            remote_time, started_at_ms, completed_at_ms = await sampler()
+        else:
+            started_at_ms = int(datetime.now(UTC).timestamp() * 1000)
+            remote_time = int(await self._client.fetch_time())
+            completed_at_ms = int(datetime.now(UTC).timestamp() * 1000)
+        midpoint_ms = (int(started_at_ms) + int(completed_at_ms)) // 2
+        return abs(midpoint_ms - int(remote_time))
 
     async def market_metadata_v2(self) -> list[dict[str, Any]]:
         await self.ensure_connected()
