@@ -16,6 +16,9 @@ from ati_shared_sdk.common.schemas.multi_asset_market_data import (
 
 from algo_trader_broker_sdk import BrokerConnectionError, BrokerContractError, BrokerOrderError
 from algo_trader_broker_adapter_ccxt_crypto_perpetual import PerpetualContext
+from algo_trader_broker_adapter_ccxt_crypto_perpetual.adapter import (
+    _FUNDING_REFRESH_INTERVAL_SECONDS,
+)
 from algo_trader_broker_adapter_ccxt_crypto_perpetual.client import (
     OKXDemoPerpetualClient,
 )
@@ -52,6 +55,10 @@ def _settings(**overrides: object) -> dict[str, object]:
     }
     result.update(overrides)
     return result
+
+
+def test_funding_refresh_interval_stays_below_risk_freshness_boundary() -> None:
+    assert _FUNDING_REFRESH_INTERVAL_SECONDS < 60
 
 
 def _order(**overrides: object) -> dict[str, object]:

@@ -44,6 +44,12 @@ _SYMBOL_BY_INSTRUMENT = {
     "crypto-perpetual:ETH-USDT:USDT:OKX": "ETH/USDT:USDT",
 }
 
+# The risk domain expires funding inputs after 60 seconds. Refreshing on the
+# reconciliation interval (also 60 seconds by default) guarantees a stale-data
+# window while the next REST request is in flight. Keep enough headroom for a
+# bounded retry without weakening the fail-closed freshness rule.
+_FUNDING_REFRESH_INTERVAL_SECONDS = 20.0
+
 
 def _field(payload: Mapping[str, Any], camel: str, snake: str | None = None) -> Any:
     return payload[camel] if camel in payload else payload.get(snake or camel)
@@ -798,7 +804,12 @@ class PerpetualContext:
                 if self._market_data_update_handler is not None:
                     await self._market_data_update_handler([item])
                 if object_type == "funding":
-                    await asyncio.sleep(self._settings.reconcile_interval_seconds)
+                    await asyncio.sleep(
+                        min(
+                            float(self._settings.reconcile_interval_seconds),
+                            _FUNDING_REFRESH_INTERVAL_SECONDS,
+                        )
+                    )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - fail closed on stream loss
