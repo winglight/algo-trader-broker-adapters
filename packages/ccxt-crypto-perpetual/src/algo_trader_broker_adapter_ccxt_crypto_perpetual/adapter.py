@@ -230,7 +230,7 @@ class PerpetualContext:
         self._market_metadata_hashes = hashes
 
         policy_reads = await asyncio.gather(
-            self._client.fetch_time(),
+            self._clock_skew_ms(),
             *(
                 coroutine
                 for symbol in self._settings.allowed_symbols
@@ -240,8 +240,7 @@ class PerpetualContext:
                 )
             ),
         )
-        remote_time = int(policy_reads[0])
-        skew = abs(int(datetime.now(UTC).timestamp() * 1000) - remote_time)
+        skew = int(policy_reads[0])
         if skew > self._settings.clock_skew_block_ms:
             raise BrokerConnectionError(
                 "OKX clock skew exceeds Phase 5 threshold",
@@ -278,6 +277,12 @@ class PerpetualContext:
         if not matches:
             raise BrokerConnectionError("OKX mode or leverage drifted from Phase 5 policy")
         self._last_runtime_validation_monotonic = time.monotonic()
+
+    async def _clock_skew_ms(self) -> int:
+        """Measure skew when the time response arrives, before sibling reads finish."""
+
+        remote_time = int(await self._client.fetch_time())
+        return abs(int(datetime.now(UTC).timestamp() * 1000) - remote_time)
 
     async def market_metadata_v2(self) -> list[dict[str, Any]]:
         await self.ensure_connected()

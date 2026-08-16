@@ -296,6 +296,26 @@ async def test_connect_blocks_hedged_cross_or_non_2x_state() -> None:
 
 
 @pytest.mark.asyncio
+async def test_clock_skew_is_measured_at_time_response_boundary() -> None:
+    backend = FakeBackend()
+    original = backend.fetch_leverage
+
+    async def delayed_leverage(symbol: str) -> dict[str, object]:
+        await asyncio.sleep(0.3)
+        return await original(symbol)
+
+    backend.fetch_leverage = delayed_leverage
+    adapter = PerpetualContext(
+        _settings(clock_skew_block_ms=250),
+        backend=backend,
+    )
+
+    await adapter.connect()
+
+    assert adapter.connection_state_snapshot().state == "trading_ready"
+
+
+@pytest.mark.asyncio
 async def test_reconciliation_blocks_runtime_policy_or_metadata_drift() -> None:
     backend = FakeBackend()
     adapter = PerpetualContext(_settings(), backend=backend)
