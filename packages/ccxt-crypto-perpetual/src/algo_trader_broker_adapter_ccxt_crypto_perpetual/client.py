@@ -30,6 +30,7 @@ class OKXDemoPerpetualClient:
                 "headers": {"x-simulated-trading": "1"},
                 "options": {
                     "defaultType": "swap",
+                    "fetchMarkets": {"types": ["spot", "swap"]},
                     "adjustForTimeDifference": True,
                 },
             }
@@ -55,8 +56,7 @@ class OKXDemoPerpetualClient:
         await self._exchange.close()
 
     async def load_markets(self) -> dict[str, Any]:
-        swaps = await self._read("fetch_markets", {"instType": "SWAP"})
-        spots = await self._read("fetch_markets", {"instType": "SPOT"})
+        available = await self._read("fetch_markets")
         allowed_ids = {
             "BTC-USDT-SWAP",
             "ETH-USDT-SWAP",
@@ -65,7 +65,7 @@ class OKXDemoPerpetualClient:
         }
         selected = [
             market
-            for market in [*swaps, *spots]
+            for market in available
             if str(market.get("id") or "") in allowed_ids
         ]
         markets = self._exchange.set_markets(selected)

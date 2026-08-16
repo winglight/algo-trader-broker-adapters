@@ -154,6 +154,31 @@ async def test_perpetual_client_retries_reads_but_not_mutations(monkeypatch) -> 
 
 
 @pytest.mark.asyncio
+async def test_perpetual_client_loads_only_swap_and_index_markets() -> None:
+    client = object.__new__(OKXDemoPerpetualClient)
+    client._semaphore = asyncio.Semaphore(1)
+    markets = [
+        {"id": "BTC-USDT-SWAP", "symbol": "BTC/USDT:USDT"},
+        {"id": "ETH-USDT-SWAP", "symbol": "ETH/USDT:USDT"},
+        {"id": "BTC-USDT", "symbol": "BTC/USDT"},
+        {"id": "ETH-USDT", "symbol": "ETH/USDT"},
+        {"id": "BTC-USD-OPTION", "symbol": "BTC/USD:BTC-OPTION"},
+    ]
+    exchange = AsyncMock()
+    exchange.fetch_markets.return_value = markets
+    exchange.set_markets = lambda selected: {
+        row["symbol"]: row for row in selected
+    }
+    client._exchange = exchange
+
+    loaded = await client.load_markets()
+
+    exchange.fetch_markets.assert_awaited_once_with()
+    assert set(loaded) == {"BTC/USDT:USDT", "ETH/USDT:USDT"}
+    assert "BTC/USD:BTC-OPTION" not in loaded
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "field",
     [
