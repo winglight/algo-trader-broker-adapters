@@ -114,6 +114,12 @@ class PerpetualContext:
         except Exception as exc:
             self._state = "blocked"
             self._reconnect_reason = f"startup_validation_failed:{type(exc).__name__}"
+            if not self._closing and (
+                self._recovery_task is None or self._recovery_task.done()
+            ):
+                self._recovery_task = asyncio.create_task(
+                    self._recover_startup(), name="ccxt-perpetual.startup-recovery"
+                )
             raise
         self._connected = True
         self._generation += 1
@@ -206,6 +212,21 @@ class PerpetualContext:
             recovery.cancel()
             with suppress(asyncio.CancelledError):
                 await recovery
+
+    async def _recover_startup(self) -> None:
+        attempt = 0
+        while not self._connected and not self._closing:
+            attempt += 1
+            delay = min(30.0, float(2 ** (attempt - 1)))
+            await asyncio.sleep(delay + random.uniform(0.0, delay * 0.25))
+            try:
+                await self.start()
+                self._reconnect_reason = "startup_recovered"
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - bounded provider recovery loop
+                self._reconnect_reason = f"startup_validation_failed:{type(exc).__name__}"
 
     async def _validate_runtime_contract(self, *, force: bool) -> None:
         if (

@@ -4,7 +4,7 @@ import asyncio
 import time
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from ati_shared_sdk.common.schemas.crypto_perpetual import (
@@ -367,6 +367,40 @@ async def test_fast_reconciliation_reuses_runtime_policy_until_full_interval() -
     await adapter.reconcile_v2(force_runtime_validation=False)
 
     backend.load_markets.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_startup_failure_recovers_without_restarting_unified_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = PerpetualContext(_settings(), backend=FakeBackend())
+    snapshot = {
+        "schemaVersion": "broker-reconciliation.v1",
+        "executionTargetId": "okx-perpetual-demo-paper-1",
+        "orderUpdates": [],
+        "fills": [],
+        "positions": [],
+        "balances": [],
+    }
+    adapter.reconcile_v2 = AsyncMock(
+        side_effect=[BrokerConnectionError("transient timeout"), snapshot]
+    )
+    adapter._refresh_market_data_cache = AsyncMock()
+    adapter._start_streams = Mock()
+    monkeypatch.setattr(
+        "algo_trader_broker_adapter_ccxt_crypto_perpetual.adapter.random.uniform",
+        lambda _start, _end: 0.0,
+    )
+
+    with pytest.raises(BrokerConnectionError, match="transient timeout"):
+        await adapter.start()
+
+    await asyncio.wait_for(adapter._recovery_task, timeout=2)
+
+    assert adapter.connection_diagnostics()["state"] == "trading_ready"
+    assert adapter.connection_state_snapshot().reconnect_reason == "startup_recovered"
+    assert adapter.reconcile_v2.await_count == 2
+    adapter._start_streams.assert_called_once_with()
 
 
 @pytest.mark.asyncio
