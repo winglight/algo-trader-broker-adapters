@@ -132,6 +132,28 @@ async def test_index_stream_subscribes_to_okx_index_instrument() -> None:
 
 
 @pytest.mark.asyncio
+async def test_perpetual_client_retries_reads_but_not_mutations(monkeypatch) -> None:
+    client = object.__new__(OKXDemoPerpetualClient)
+    client._semaphore = asyncio.Semaphore(1)
+    exchange = AsyncMock()
+    exchange.fetch_time.side_effect = [TimeoutError("temporary"), 1786867200000]
+    exchange.create_order.side_effect = TimeoutError("unknown outcome")
+    client._exchange = exchange
+    sleep = AsyncMock()
+    monkeypatch.setattr(
+        "algo_trader_broker_adapter_ccxt_crypto_perpetual.client.asyncio.sleep",
+        sleep,
+    )
+
+    assert await client.fetch_time() == 1786867200000
+    assert exchange.fetch_time.await_count == 2
+    sleep.assert_awaited_once_with(1.0)
+    with pytest.raises(BrokerConnectionError, match="create_order request failed"):
+        await client.create_order("BTC/USDT:USDT", "limit", "buy", "0.01", "1", {})
+    assert exchange.create_order.await_count == 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "field",
     [
