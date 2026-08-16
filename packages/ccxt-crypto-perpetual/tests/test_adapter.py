@@ -231,6 +231,22 @@ async def test_perpetual_client_loads_only_swap_and_index_markets() -> None:
 
 
 @pytest.mark.asyncio
+async def test_index_price_uses_okx_index_ticker_contract() -> None:
+    client = object.__new__(OKXDemoPerpetualClient)
+    client._semaphore = asyncio.Semaphore(1)
+    exchange = AsyncMock()
+    exchange.public_get_market_index_tickers.return_value = {
+        "data": [{"instId": "BTC-USDT", "idxPx": "63000.1", "ts": "1"}]
+    }
+    client._exchange = exchange
+
+    result = await client.fetch_index_price("BTC/USDT:USDT")
+
+    assert result["indexPrice"] == "63000.1"
+    exchange.public_get_market_index_tickers.assert_awaited_once_with({"instId": "BTC-USDT"})
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "field",
     [
@@ -286,16 +302,20 @@ async def test_connect_reads_back_mode_leverage_and_reconciles() -> None:
 async def test_cached_reconciliation_and_order_path_do_not_repeat_provider_reads() -> None:
     backend = FakeBackend()
     backend.fetch_balance = AsyncMock(wraps=backend.fetch_balance)
+    backend.fetch_funding_rate = AsyncMock(wraps=backend.fetch_funding_rate)
     adapter = PerpetualContext(_settings(), backend=backend)
     await adapter.connect()
 
     first = adapter.cached_reconciliation_v2()
     first["positions"].clear()
     second = adapter.cached_reconciliation_v2()
+    await adapter.market_data_objects_v1()
+    await adapter.market_data_objects_v1()
     await adapter.place_order_v2(_order())
 
     assert second["positions"]
     assert backend.fetch_balance.await_count == 1
+    assert backend.fetch_funding_rate.await_count == 2
 
 
 @pytest.mark.asyncio

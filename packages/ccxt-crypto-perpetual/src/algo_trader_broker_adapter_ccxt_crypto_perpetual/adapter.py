@@ -33,7 +33,6 @@ from .mapping import (
     fill,
     funding_entry,
     market_data_object,
-    market_data_objects,
     order_update,
     position_payload,
 )
@@ -105,6 +104,7 @@ class PerpetualContext:
         self._closing = False
         try:
             await self.reconcile_v2()
+            await self._refresh_market_data_cache()
         except Exception as exc:
             self._state = "blocked"
             self._reconnect_reason = f"startup_validation_failed:{type(exc).__name__}"
@@ -333,28 +333,45 @@ class PerpetualContext:
         result: list[dict[str, Any]] = []
         for symbol in self._settings.allowed_symbols:
             cached = self._market_data_cache.get(symbol)
-            if cached is not None and {str(item.get("objectType")) for item in cached} == {
+            if cached is None or {str(item.get("objectType")) for item in cached} != {
                 "mark",
                 "index",
                 "funding",
             }:
-                result.extend(cached)
-                continue
-            result.extend(await self._fetch_market_data_objects(symbol))
+                raise BrokerConnectionError("Perpetual market-data cache is incomplete")
+            result.extend(cached)
         return result
 
-    async def _fetch_market_data_objects(self, symbol: str) -> list[dict[str, Any]]:
-        rate = await self._client.fetch_funding_rate(symbol)
-        objects = market_data_objects(
-            rate,
-            symbol=symbol,
-            market_data_target_id=self._settings.market_data_target_id,
-            metadata_hash=self._rules[symbol].metadata_hash,
-            first_sequence=self._sequence + 1,
+    async def _refresh_market_data_cache(self) -> None:
+        rows = await asyncio.gather(
+            *(
+                coroutine
+                for symbol in self._settings.allowed_symbols
+                for coroutine in (
+                    self._client.fetch_mark_price(symbol),
+                    self._client.fetch_index_price(symbol),
+                    self._client.fetch_funding_rate(symbol),
+                )
+            )
         )
-        self._sequence += 3
-        self._market_data_cache[symbol] = objects
-        return objects
+        for offset, symbol in enumerate(self._settings.allowed_symbols):
+            for object_type, row in zip(
+                ("mark", "index", "funding"),
+                rows[offset * 3 : offset * 3 + 3],
+                strict=True,
+            ):
+                self._sequence += 1
+                self._cache_market_object(
+                    symbol,
+                    market_data_object(
+                        row,
+                        object_type=object_type,
+                        symbol=symbol,
+                        market_data_target_id=self._settings.market_data_target_id,
+                        metadata_hash=self._rules[symbol].metadata_hash,
+                        sequence=self._sequence,
+                    ),
+                )
 
     async def place_order_v2(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         await self.ensure_connected()
@@ -625,7 +642,6 @@ class PerpetualContext:
             return
         self._stream_tasks = [
             asyncio.create_task(self._watch_orders(), name="ccxt-perpetual.orders"),
-            asyncio.create_task(self._watch_trades(), name="ccxt-perpetual.trades"),
             asyncio.create_task(self._watch_positions(), name="ccxt-perpetual.positions"),
             asyncio.create_task(self._watch_balance(), name="ccxt-perpetual.balance"),
             asyncio.create_task(
@@ -666,6 +682,9 @@ class PerpetualContext:
                                 )
                             )
                         )
+                    trade = self._client.trade_from_order(row)
+                    if trade is not None:
+                        await self._publish_trade(trade)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - fail closed on stream loss
@@ -675,37 +694,23 @@ class PerpetualContext:
                 await self._stream_failed("orders", exc)
                 return
 
-    async def _watch_trades(self) -> None:
-        while True:
-            try:
-                for row in await self._client.watch_my_trades():
-                    if self._trade_update_handler is not None:
-                        mapped = fill(row, execution_target_id=self._settings.execution_target_id)
-                        await self._trade_update_handler(
-                            TradeUpdate(
-                                adapter_id=self.adapter_id,
-                                adapter_order_id=mapped["orderIdentity"]["brokerOrderId"],
-                                adapter_execution_id=mapped["brokerExecutionId"],
-                                adapter_metadata=self._trade_metadata(
-                                    instrument_id=str(mapped["instrumentId"])
-                                ),
-                                status="FILLED",
-                                last_fill_price=float(mapped["priceDecimal"]),
-                                last_fill_quantity=float(mapped["quantityDecimal"]),
-                                commission=float(mapped["feeDecimal"]),
-                                event_time=datetime.fromisoformat(
-                                    mapped["eventTime"].replace("Z", "+00:00")
-                                ),
-                            )
-                        )
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001 - fail closed on stream loss
-                if self._websocket_was_reset(exc):
-                    await asyncio.sleep(0)
-                    continue
-                await self._stream_failed("trades", exc)
-                return
+    async def _publish_trade(self, row: Mapping[str, Any]) -> None:
+        if self._trade_update_handler is None:
+            return
+        mapped = fill(row, execution_target_id=self._settings.execution_target_id)
+        await self._trade_update_handler(
+            TradeUpdate(
+                adapter_id=self.adapter_id,
+                adapter_order_id=mapped["orderIdentity"]["brokerOrderId"],
+                adapter_execution_id=mapped["brokerExecutionId"],
+                adapter_metadata=self._trade_metadata(instrument_id=str(mapped["instrumentId"])),
+                status="FILLED",
+                last_fill_price=float(mapped["priceDecimal"]),
+                last_fill_quantity=float(mapped["quantityDecimal"]),
+                commission=float(mapped["feeDecimal"]),
+                event_time=datetime.fromisoformat(mapped["eventTime"].replace("Z", "+00:00")),
+            )
+        )
 
     async def _watch_positions(self) -> None:
         while True:

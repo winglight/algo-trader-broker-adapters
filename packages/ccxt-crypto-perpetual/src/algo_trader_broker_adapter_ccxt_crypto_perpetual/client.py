@@ -176,11 +176,37 @@ class OKXDemoPerpetualClient:
     async def fetch_funding_rate(self, symbol: str) -> dict[str, Any]:
         return dict(await self._read("fetch_funding_rate", symbol))
 
+    async def fetch_mark_price(self, symbol: str) -> dict[str, Any]:
+        return dict(await self._read("fetch_mark_price", symbol))
+
+    async def fetch_index_price(self, symbol: str) -> dict[str, Any]:
+        index_instrument_id = symbol.split("/", 1)[0] + "-USDT"
+        response = await self._read(
+            "public_get_market_index_tickers",
+            {"instId": index_instrument_id},
+        )
+        data = response.get("data") if isinstance(response, Mapping) else None
+        row = data[0] if isinstance(data, list) and data else None
+        if not isinstance(row, Mapping) or not row.get("idxPx"):
+            raise BrokerConnectionError("OKX index-price response is incomplete")
+        return {
+            "symbol": symbol,
+            "indexPrice": row["idxPx"],
+            "timestamp": row.get("ts"),
+        }
+
     async def watch_orders(self) -> list[dict[str, Any]]:
         return list(await self._watch("watch_orders"))
 
     async def watch_my_trades(self) -> list[dict[str, Any]]:
         return list(await self._watch("watch_my_trades"))
+
+    def trade_from_order(self, order: Mapping[str, Any]) -> dict[str, Any] | None:
+        info = order.get("info") if isinstance(order.get("info"), Mapping) else {}
+        if not info.get("tradeId"):
+            return None
+        trade = self._private_ws_exchange.order_to_trade(dict(order))
+        return dict(trade) if isinstance(trade, Mapping) else None
 
     async def watch_positions(self, symbols: list[str]) -> list[dict[str, Any]]:
         return list(await self._watch("watch_positions", symbols))

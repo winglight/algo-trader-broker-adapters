@@ -44,10 +44,7 @@ class FakeBackend:
         self.closed = True
 
     async def load_markets(self) -> dict[str, Any]:
-        result = {
-            symbol: market(symbol)
-            for symbol in ("BTC/USDT:USDT", "ETH/USDT:USDT")
-        }
+        result = {symbol: market(symbol) for symbol in ("BTC/USDT:USDT", "ETH/USDT:USDT")}
         result["BTC/USDT:USDT"]["info"]["tickSz"] = self.tick_size
         return result
 
@@ -133,6 +130,22 @@ class FakeBackend:
             "indexPrice": "59990" if symbol.startswith("BTC") else "2999",
             "fundingRate": "0.0001",
             "fundingTimestamp": int((now + timedelta(hours=8)).timestamp() * 1000),
+            "timestamp": int(now.timestamp() * 1000),
+        }
+
+    async def fetch_mark_price(self, symbol: str) -> dict[str, Any]:
+        now = datetime.now(UTC)
+        return {
+            "symbol": symbol,
+            "markPrice": "60000" if symbol.startswith("BTC") else "3000",
+            "timestamp": int(now.timestamp() * 1000),
+        }
+
+    async def fetch_index_price(self, symbol: str) -> dict[str, Any]:
+        now = datetime.now(UTC)
+        return {
+            "symbol": symbol,
+            "indexPrice": "59990" if symbol.startswith("BTC") else "2999",
             "timestamp": int(now.timestamp() * 1000),
         }
 
