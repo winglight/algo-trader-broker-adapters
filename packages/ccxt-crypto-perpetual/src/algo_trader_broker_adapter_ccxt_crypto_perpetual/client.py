@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from collections.abc import Mapping
 from typing import Any
@@ -13,6 +14,8 @@ from algo_trader_broker_sdk import BrokerConnectionError, BrokerError, BrokerOrd
 from .settings import CCXTCryptoPerpetualSettings
 
 LOGGER = logging.getLogger(__name__)
+_PROVIDER_CODE = re.compile(r'"(?:sCode|code)"\s*:\s*"([^"\\]+)"')
+_PROVIDER_MESSAGE = re.compile(r'"(?:sMsg|msg)"\s*:\s*"([^"\\]+)"')
 
 
 class OKXDemoPerpetualClient:
@@ -285,6 +288,17 @@ class OKXDemoPerpetualClient:
                 raise
             except Exception as exc:
                 if method in {"create_order", "cancel_order"} and not self._is_transient(exc):
+                    provider_details = self._provider_rejection_details(exc)
+                    LOGGER.warning(
+                        "OKX Demo perpetual mutation was rejected",
+                        extra={
+                            "event": "broker.crypto.perpetual_mutation_rejected",
+                            "broker.adapter_id": "ccxt_crypto",
+                            "broker.operation": method,
+                            "broker.error_type": type(exc).__name__,
+                            **provider_details,
+                        },
+                    )
                     raise BrokerOrderError(
                         f"OKX Demo perpetual rejected {method}",
                         code="provider_order_error",
@@ -292,12 +306,26 @@ class OKXDemoPerpetualClient:
                             "operation": method,
                             "error_type": type(exc).__name__,
                             "outcome_unknown": False,
+                            **provider_details,
                         },
                     ) from exc
                 raise BrokerConnectionError(
                     f"OKX Demo perpetual {method} request failed",
                     details={"operation": method, "error_type": type(exc).__name__},
                 ) from exc
+
+    @staticmethod
+    def _provider_rejection_details(exc: Exception) -> dict[str, str]:
+        rendered = str(exc)
+        codes = _PROVIDER_CODE.findall(rendered)
+        messages = _PROVIDER_MESSAGE.findall(rendered)
+        nonzero = next((value for value in reversed(codes) if value != "0"), None)
+        details: dict[str, str] = {}
+        if nonzero or codes:
+            details["broker.provider_code"] = nonzero or codes[0]
+        if messages:
+            details["broker.provider_message"] = messages[-1][:240]
+        return details
 
     async def _read(self, method: str, *args: Any) -> Any:
         """Bounded retries for idempotent reads; never used by mutations."""

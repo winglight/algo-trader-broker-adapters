@@ -439,7 +439,6 @@ class PerpetualContext:
             "reduceOnly": reduce_only,
             "timeInForce": tif,
             "clOrdId": native_client_order_id,
-            "tag": native_identifier(command_id, maximum_length=16),
         }
         try:
             order = await self._client.create_order(

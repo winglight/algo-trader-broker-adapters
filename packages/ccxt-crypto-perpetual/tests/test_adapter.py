@@ -162,11 +162,15 @@ async def test_perpetual_client_retries_reads_but_not_mutations(monkeypatch) -> 
         await client.create_order("BTC/USDT:USDT", "limit", "buy", "0.01", "1", {})
     assert exchange.create_order.await_count == 1
 
-    exchange.create_order.side_effect = ValueError("provider rejected params")
+    exchange.create_order.side_effect = ValueError(
+        'okx {"code":"1","data":[{"sCode":"51000","sMsg":"Parameter tag error"}]}'
+    )
     with pytest.raises(BrokerOrderError) as rejected:
         await client.create_order("BTC/USDT:USDT", "limit", "buy", "0.01", "1", {})
     assert rejected.value.code == "provider_order_error"
     assert rejected.value.details["outcome_unknown"] is False
+    assert rejected.value.details["broker.provider_code"] == "51000"
+    assert rejected.value.details["broker.provider_message"] == "Parameter tag error"
 
 
 @pytest.mark.asyncio
@@ -449,7 +453,6 @@ async def test_v2_order_compiles_only_reviewed_native_params() -> None:
         "reduceOnly": False,
         "timeInForce": "GTC",
         "clOrdId": native_identifier("phase5-client-order-1", maximum_length=32),
-        "tag": native_identifier("phase5-command-1", maximum_length=16),
     }
 
 
