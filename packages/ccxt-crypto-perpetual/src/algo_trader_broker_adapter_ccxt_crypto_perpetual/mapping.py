@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from .quantizer import PerpetualMarketRules, canonical, instrument_id
@@ -31,8 +31,15 @@ def timestamp(value: Any = None) -> str:
     elif isinstance(value, (int, Decimal)):
         parsed = datetime.fromtimestamp(float(value) / 1000, tz=UTC)
     else:
-        token = str(value)
-        parsed = datetime.fromisoformat(token[:-1] + "+00:00" if token.endswith("Z") else token)
+        token = str(value).strip()
+        try:
+            milliseconds = Decimal(token)
+        except InvalidOperation:
+            parsed = datetime.fromisoformat(
+                token[:-1] + "+00:00" if token.endswith("Z") else token
+            )
+        else:
+            parsed = datetime.fromtimestamp(float(milliseconds) / 1000, tz=UTC)
     return parsed.astimezone(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 

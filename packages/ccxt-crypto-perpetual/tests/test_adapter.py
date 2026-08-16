@@ -20,7 +20,11 @@ from algo_trader_broker_adapter_ccxt_crypto_perpetual.client import (
     OKXDemoPerpetualClient,
 )
 from algo_trader_broker_adapter_ccxt_crypto_perpetual.quantizer import PerpetualMarketRules
-from algo_trader_broker_adapter_ccxt_crypto_perpetual.mapping import decimal, position_payload
+from algo_trader_broker_adapter_ccxt_crypto_perpetual.mapping import (
+    decimal,
+    position_payload,
+    timestamp,
+)
 from algo_trader_broker_adapter_ccxt_crypto_perpetual.settings import (
     CCXTCryptoPerpetualSettings,
 )
@@ -108,6 +112,7 @@ def test_market_metadata_requires_linear_usdt_swap_and_broker_contract_step() ->
 
 def test_broker_float_is_converted_only_at_external_mapping_boundary() -> None:
     assert decimal(0.01) == Decimal("0.01")
+    assert timestamp("1786867200000") == "2026-08-16T08:00:00.000Z"
     with pytest.raises(ValueError, match="non-finite"):
         decimal(float("nan"))
 
