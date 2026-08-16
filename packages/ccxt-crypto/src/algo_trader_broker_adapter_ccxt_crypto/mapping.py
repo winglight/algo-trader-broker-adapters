@@ -294,6 +294,7 @@ def account_summary(
         AccountSummaryItem(account_id, tag, canonical(amount), "USD")
         for tag, amount in usd_values.items()
     ]
+    result.append(AccountSummaryItem(account_id, "AssetClass", "CRYPTO_SPOT", ""))
     for currency, currency_values in (
         ("USDT", values(total_usdt, available_usdt)),
         ("USDC", usd_values),

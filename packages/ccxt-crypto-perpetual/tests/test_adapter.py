@@ -341,6 +341,9 @@ async def test_connect_reads_back_mode_leverage_and_reconciles() -> None:
     assert adapter.adapter_id == "ccxt_crypto"
     assert not hasattr(adapter, "manifest")
     assert not hasattr(adapter, "capabilities")
+    summary = {item.tag: item for item in await adapter.get_account_summary()}
+    assert summary["AssetClass"].value == "CRYPTO_PERPETUAL"
+    assert summary["AssetClass"].currency == ""
     reconciliation = await adapter.reconcile_v2()
     assert reconciliation["executionTargetId"] == "okx-perpetual-demo-paper-1"
     assert reconciliation["positions"][0]["quantityDecimal"] == "10"

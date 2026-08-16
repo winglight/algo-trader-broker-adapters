@@ -1077,7 +1077,7 @@ class PerpetualContext:
     async def get_account_summary(self, account: str | None = None) -> list[AccountSummaryItem]:
         await self.ensure_connected()
         balances = {row["balanceType"]: row for row in (self._snapshot or {}).get("balances", [])}
-        return [
+        summary = [
             AccountSummaryItem(
                 account=account or self._settings.account_id,
                 tag=tag,
@@ -1090,6 +1090,15 @@ class PerpetualContext:
                 ("InitialMargin", "MARGIN_USED"),
             )
         ]
+        summary.append(
+            AccountSummaryItem(
+                account=account or self._settings.account_id,
+                tag="AssetClass",
+                value="CRYPTO_PERPETUAL",
+                currency="",
+            )
+        )
+        return summary
 
     async def get_account_pnl(
         self,

@@ -402,6 +402,8 @@ async def test_account_summary_aggregates_assets_into_stable_valuation_units() -
     by_tag = {item.tag: item for item in summary}
 
     assert len(by_tag) == len(summary)
+    assert by_tag["AssetClass"].value == "CRYPTO_SPOT"
+    assert by_tag["AssetClass"].currency == ""
     assert by_tag["NetLiquidation"].currency == "USD"
     assert by_tag["NetLiquidation"].value == "30699"
     assert by_tag["AvailableFunds"].value == "15849"
