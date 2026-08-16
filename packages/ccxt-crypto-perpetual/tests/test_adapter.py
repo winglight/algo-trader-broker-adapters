@@ -256,6 +256,8 @@ async def test_reconciliation_generation_is_monotonic_and_stream_failure_recover
     )
     await adapter._stream_failed("market_data", TimeoutError("test"))
     assert adapter.connection_state_snapshot().state == "blocked"
+    assert adapter.connection_diagnostics()["lastStreamFailure"]["stream"] == "market_data"
+    assert adapter.connection_diagnostics()["lastStreamFailure"]["errorType"] == "TimeoutError"
     assert adapter._recovery_task is not None
     await adapter._recovery_task
 
@@ -305,7 +307,7 @@ async def test_ioc_is_compiled_into_the_native_order_request() -> None:
 
 
 @pytest.mark.asyncio
-async def test_reduce_only_requires_close_and_integer_contract_step() -> None:
+async def test_reduce_only_requires_close_and_broker_contract_step() -> None:
     backend = FakeBackend()
     adapter = PerpetualContext(_settings(), backend=backend)
     await adapter.connect()

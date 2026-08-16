@@ -75,6 +75,7 @@ class PerpetualContext:
         self._market_data_cache: dict[str, list[dict[str, Any]]] = {}
         self._market_metadata_hashes: dict[str, str] = {}
         self._policy_readback: dict[str, Any] = {}
+        self._last_stream_failure: dict[str, Any] = {}
         self._last_runtime_validation_monotonic: float | None = None
         self._market_data_update_handler: (
             Callable[[list[dict[str, Any]]], Awaitable[None]] | None
@@ -181,6 +182,7 @@ class PerpetualContext:
             "reconciliationReady": self._snapshot is not None,
             "metadataHashes": dict(self._market_metadata_hashes),
             "policyReadback": dict(self._policy_readback),
+            "lastStreamFailure": dict(self._last_stream_failure),
             **self._settings.redacted(),
         }
 
@@ -676,6 +678,11 @@ class PerpetualContext:
     async def _stream_failed(self, stream: str, exc: Exception) -> None:
         self._state = "blocked"
         self._reconnect_reason = f"{stream}_stream_failed"
+        self._last_stream_failure = {
+            "stream": stream,
+            "errorType": type(exc).__name__,
+            "occurredAt": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        }
         await self._notify_connection(
             "disconnected",
             {
