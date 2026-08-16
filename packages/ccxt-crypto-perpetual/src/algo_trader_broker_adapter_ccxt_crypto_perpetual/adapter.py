@@ -761,7 +761,12 @@ class PerpetualContext:
                 elif object_type == "index":
                     row = await self._client.watch_index_price(symbol)
                 elif object_type == "funding":
-                    row = await self._client.watch_funding_rate(symbol)
+                    # Funding changes on a multi-hour cadence. OKX Demo's funding
+                    # websocket can remain silent long enough for CCXT Pro's ping
+                    # watchdog to close the shared public connection. A bounded
+                    # REST refresh preserves freshness without disrupting the live
+                    # mark and index streams.
+                    row = await self._client.fetch_funding_rate(symbol)
                 else:
                     raise ValueError("Unsupported perpetual market-data stream")
                 self._sequence += 1
@@ -776,6 +781,8 @@ class PerpetualContext:
                 self._cache_market_object(symbol, item)
                 if self._market_data_update_handler is not None:
                     await self._market_data_update_handler([item])
+                if object_type == "funding":
+                    await asyncio.sleep(self._settings.reconcile_interval_seconds)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - fail closed on stream loss

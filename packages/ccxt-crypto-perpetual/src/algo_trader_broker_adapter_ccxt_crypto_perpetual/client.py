@@ -55,7 +55,6 @@ class OKXDemoPerpetualClient:
         self._websocket_generations = {boundary: 0 for boundary in boundaries}
         required_streams = (
             "watchMarkPrice",
-            "watchFundingRate",
             "watchOrders",
             "watchMyTrades",
             "watchPositions",

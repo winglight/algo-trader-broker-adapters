@@ -512,7 +512,7 @@ async def test_market_objects_have_target_sequence_and_distinct_types() -> None:
         ("index", "watch_index_price", {"last": "59991"}, "indexPriceDecimal"),
         (
             "funding",
-            "watch_funding_rate",
+            "fetch_funding_rate",
             {
                 "fundingRate": "0.0001",
                 "fundingTimestamp": int(
@@ -534,6 +534,7 @@ async def test_dedicated_market_stream_emits_one_target_scoped_object(
     setattr(backend, method_name, stream)
     adapter = PerpetualContext(_settings(), backend=backend)
     await adapter.connect()
+    stream.reset_mock()
     captured: list[dict[str, object]] = []
 
     async def handler(rows: list[dict[str, object]]) -> None:
