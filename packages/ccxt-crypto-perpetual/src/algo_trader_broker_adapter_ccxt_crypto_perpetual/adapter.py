@@ -37,7 +37,7 @@ from .mapping import (
     order_update,
     position_payload,
 )
-from .quantizer import PerpetualMarketRules, canonical, instrument_id
+from .quantizer import PerpetualMarketRules, canonical, instrument_id, native_identifier
 from .settings import CCXTCryptoPerpetualSettings
 
 _SYMBOL_BY_INSTRUMENT = {
@@ -413,27 +413,49 @@ class PerpetualContext:
                     side=side,
                 )
             )
+        full_client_order_id = str(_field(payload, "clientOrderId", "client_order_id") or "")
+        command_id = str(_field(payload, "commandId", "command_id") or "")
+        native_client_order_id = native_identifier(full_client_order_id, maximum_length=32)
         params = {
             "tdMode": "isolated",
             "posSide": "net",
             "reduceOnly": reduce_only,
             "timeInForce": tif,
-            "clOrdId": str(_field(payload, "clientOrderId", "client_order_id") or "")[:32],
-            "tag": str(_field(payload, "commandId", "command_id") or "")[:16],
+            "clOrdId": native_client_order_id,
+            "tag": native_identifier(command_id, maximum_length=16),
         }
-        order = await self._client.create_order(
-            symbol,
-            order_type.lower(),
-            side.lower(),
-            canonical(contracts),
-            price,
-            params,
-        )
+        try:
+            order = await self._client.create_order(
+                symbol,
+                order_type.lower(),
+                side.lower(),
+                canonical(contracts),
+                price,
+                params,
+            )
+        except BrokerConnectionError:
+            try:
+                order = await asyncio.wait_for(
+                    self._client.fetch_order_by_client_id(native_client_order_id, symbol),
+                    timeout=10.0,
+                )
+            except Exception:
+                order = None
+            if order is None:
+                raise BrokerOrderError(
+                    "OKX Demo perpetual order outcome is unknown; reconciliation is required",
+                    code="order_outcome_unknown",
+                    details={
+                        "client_order_id": full_client_order_id,
+                        "reconciliation_required": True,
+                        "retry_allowed": False,
+                    },
+                ) from None
         return order_update(
             order,
             execution_target_id=self._settings.execution_target_id,
-            command_id=str(_field(payload, "commandId", "command_id") or ""),
-            client_order_id=str(_field(payload, "clientOrderId", "client_order_id") or ""),
+            command_id=command_id,
+            client_order_id=full_client_order_id,
         )
 
     async def cancel_order_v2(self, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -445,9 +467,31 @@ class PerpetualContext:
         symbol = _SYMBOL_BY_INSTRUMENT.get(instrument)
         if symbol is None:
             raise BrokerOrderError("Instrument is not allowlisted")
-        order = await self._client.cancel_order(
-            str(_field(payload, "brokerOrderId", "broker_order_id") or ""), symbol
-        )
+        broker_order_id = str(_field(payload, "brokerOrderId", "broker_order_id") or "")
+        try:
+            order = await self._client.cancel_order(broker_order_id, symbol)
+        except BrokerConnectionError:
+            try:
+                order = await asyncio.wait_for(
+                    self._client.fetch_order(broker_order_id, symbol),
+                    timeout=10.0,
+                )
+            except Exception:
+                order = None
+            if order is None or str(order.get("status") or "").lower() in {
+                "open",
+                "new",
+                "live",
+            }:
+                raise BrokerOrderError(
+                    "OKX Demo perpetual cancel outcome is unknown; reconciliation is required",
+                    code="cancel_outcome_unknown",
+                    details={
+                        "broker_order_id": broker_order_id,
+                        "reconciliation_required": True,
+                        "retry_allowed": False,
+                    },
+                ) from None
         return order_update(
             order,
             execution_target_id=self._settings.execution_target_id,

@@ -19,7 +19,10 @@ from algo_trader_broker_adapter_ccxt_crypto_perpetual import PerpetualContext
 from algo_trader_broker_adapter_ccxt_crypto_perpetual.client import (
     OKXDemoPerpetualClient,
 )
-from algo_trader_broker_adapter_ccxt_crypto_perpetual.quantizer import PerpetualMarketRules
+from algo_trader_broker_adapter_ccxt_crypto_perpetual.quantizer import (
+    PerpetualMarketRules,
+    native_identifier,
+)
 from algo_trader_broker_adapter_ccxt_crypto_perpetual.mapping import (
     decimal,
     position_payload,
@@ -108,6 +111,15 @@ def test_market_metadata_requires_linear_usdt_swap_and_broker_contract_step() ->
         PerpetualMarketRules.from_ccxt("BTC/USDT:USDT", inverse)
 
 
+def test_okx_native_identifiers_are_alphanumeric_and_bounded() -> None:
+    client_id = native_identifier("p5e-zf-fixed-1", maximum_length=32)
+    tag = native_identifier("phase5-command-1", maximum_length=16)
+
+    assert client_id.isalnum() and len(client_id) == 32
+    assert tag.isalnum() and len(tag) == 16
+    assert native_identifier("AlreadyValid123", maximum_length=32) == "AlreadyValid123"
+
+
 def test_broker_float_is_converted_only_at_external_mapping_boundary() -> None:
     assert decimal(0.01) == Decimal("0.01")
     assert timestamp("1786867200000") == "2026-08-16T08:00:00.000Z"
@@ -149,6 +161,12 @@ async def test_perpetual_client_retries_reads_but_not_mutations(monkeypatch) -> 
     with pytest.raises(BrokerConnectionError, match="create_order request failed"):
         await client.create_order("BTC/USDT:USDT", "limit", "buy", "0.01", "1", {})
     assert exchange.create_order.await_count == 1
+
+    exchange.create_order.side_effect = ValueError("provider rejected params")
+    with pytest.raises(BrokerOrderError) as rejected:
+        await client.create_order("BTC/USDT:USDT", "limit", "buy", "0.01", "1", {})
+    assert rejected.value.code == "provider_order_error"
+    assert rejected.value.details["outcome_unknown"] is False
 
 
 @pytest.mark.asyncio
@@ -403,8 +421,8 @@ async def test_v2_order_compiles_only_reviewed_native_params() -> None:
         "posSide": "net",
         "reduceOnly": False,
         "timeInForce": "GTC",
-        "clOrdId": "phase5-client-order-1",
-        "tag": "phase5-command-1",
+        "clOrdId": native_identifier("phase5-client-order-1", maximum_length=32),
+        "tag": native_identifier("phase5-command-1", maximum_length=16),
     }
 
 

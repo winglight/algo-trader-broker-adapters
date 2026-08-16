@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_UP
 from typing import Any
 
 from algo_trader_broker_sdk import BrokerContractError, BrokerOrderError
+
+_NATIVE_ID = re.compile(r"^[A-Za-z0-9]+$")
 
 
 def canonical(value: Any) -> str:
@@ -33,6 +36,16 @@ def instrument_id(symbol: str) -> str:
     if symbol == "ETH/USDT:USDT":
         return "crypto-perpetual:ETH-USDT:USDT:OKX"
     raise BrokerContractError("Perpetual symbol is not allowlisted")
+
+
+def native_identifier(value: Any, *, maximum_length: int) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise BrokerOrderError("Native OKX identifier source is required")
+    if len(text) <= maximum_length and _NATIVE_ID.fullmatch(text):
+        return text
+    prefix = "ati"
+    return prefix + hashlib.sha256(text.encode("utf-8")).hexdigest()[: maximum_length - len(prefix)]
 
 
 @dataclass(frozen=True, slots=True)

@@ -8,7 +8,7 @@ import time
 from collections.abc import Mapping
 from typing import Any
 
-from algo_trader_broker_sdk import BrokerConnectionError, BrokerError
+from algo_trader_broker_sdk import BrokerConnectionError, BrokerError, BrokerOrderError
 
 from .settings import CCXTCryptoPerpetualSettings
 
@@ -231,6 +231,23 @@ class OKXDemoPerpetualClient:
     async def cancel_order(self, order_id: str, symbol: str) -> dict[str, Any]:
         return dict(await self._call("cancel_order", order_id, symbol))
 
+    async def fetch_order(self, order_id: str, symbol: str) -> dict[str, Any]:
+        return dict(await self._read("fetch_order", order_id, symbol))
+
+    async def fetch_order_by_client_id(
+        self, client_order_id: str, symbol: str
+    ) -> dict[str, Any] | None:
+        open_orders, closed_orders = await asyncio.gather(
+            self.fetch_open_orders(symbol),
+            self.fetch_closed_orders(symbol),
+        )
+        for order in [*open_orders, *closed_orders]:
+            info = order.get("info") if isinstance(order.get("info"), Mapping) else {}
+            value = str(order.get("clientOrderId") or info.get("clOrdId") or "")
+            if value == client_order_id:
+                return dict(order)
+        return None
+
     async def _call(self, method: str, *args: Any) -> Any:
         async with self._semaphore:
             try:
@@ -238,6 +255,16 @@ class OKXDemoPerpetualClient:
             except BrokerError:
                 raise
             except Exception as exc:
+                if method in {"create_order", "cancel_order"} and not self._is_transient(exc):
+                    raise BrokerOrderError(
+                        f"OKX Demo perpetual rejected {method}",
+                        code="provider_order_error",
+                        details={
+                            "operation": method,
+                            "error_type": type(exc).__name__,
+                            "outcome_unknown": False,
+                        },
+                    ) from exc
                 raise BrokerConnectionError(
                     f"OKX Demo perpetual {method} request failed",
                     details={"operation": method, "error_type": type(exc).__name__},
