@@ -118,6 +118,13 @@ class OKXDemoPerpetualClient:
         remote_time, _, _ = await self.fetch_time_sample()
         return remote_time
 
+    async def fetch_account_config(self) -> dict[str, Any]:
+        payload = await self._read("private_get_account_config")
+        rows = payload.get("data") if isinstance(payload, Mapping) else None
+        if not isinstance(rows, list) or not rows or not isinstance(rows[0], Mapping):
+            raise BrokerConnectionError("OKX account configuration response is invalid")
+        return dict(rows[0])
+
     async def fetch_time_sample(self) -> tuple[int, int, int]:
         """Return server time with the successful request's local RTT bounds."""
 

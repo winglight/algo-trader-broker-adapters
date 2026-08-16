@@ -31,6 +31,7 @@ def market(symbol: str) -> dict[str, Any]:
 class FakeBackend:
     def __init__(self) -> None:
         self.hedged = False
+        self.account_level = "2"
         self.margin_mode = "isolated"
         self.leverage = "2"
         self.tick_size = "0.1"
@@ -50,6 +51,9 @@ class FakeBackend:
 
     async def fetch_time(self) -> int:
         return int(datetime.now(UTC).timestamp() * 1000)
+
+    async def fetch_account_config(self) -> dict[str, Any]:
+        return {"acctLv": self.account_level, "posMode": "net_mode"}
 
     async def fetch_position_mode(self, symbol: str) -> dict[str, Any]:
         return {"symbol": symbol, "hedged": self.hedged}

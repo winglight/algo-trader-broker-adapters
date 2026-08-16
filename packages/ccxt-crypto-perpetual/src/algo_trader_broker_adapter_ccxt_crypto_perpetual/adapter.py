@@ -230,6 +230,7 @@ class PerpetualContext:
         self._market_metadata_hashes = hashes
 
         policy_reads = await asyncio.gather(
+            self._client.fetch_account_config(),
             self._clock_skew_ms(),
             *(
                 coroutine
@@ -240,7 +241,10 @@ class PerpetualContext:
                 )
             ),
         )
-        skew = int(policy_reads[0])
+        account_config = policy_reads[0]
+        account_level = str(account_config.get("acctLv") or "")
+        account_mode_matches = account_level in {"2", "3"}
+        skew = int(policy_reads[1])
         if skew > self._settings.clock_skew_block_ms:
             raise BrokerConnectionError(
                 "OKX clock skew exceeds Phase 5 threshold",
@@ -249,9 +253,9 @@ class PerpetualContext:
 
         checked_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
         symbols: dict[str, dict[str, Any]] = {}
-        matches = True
+        matches = account_mode_matches
         for offset, symbol in enumerate(self._settings.allowed_symbols):
-            mode, leverage = policy_reads[1 + offset * 2 : 3 + offset * 2]
+            mode, leverage = policy_reads[2 + offset * 2 : 4 + offset * 2]
             margin_mode = str(leverage.get("marginMode") or "").lower()
             values = sorted(
                 {
@@ -272,9 +276,22 @@ class PerpetualContext:
         self._policy_readback = {
             "checkedAt": checked_at,
             "matches": matches,
+            "accountMode": {
+                "accountLevel": account_level or "UNKNOWN",
+                "positionMode": str(account_config.get("posMode") or "UNKNOWN"),
+                "matches": account_mode_matches,
+            },
             "symbols": symbols,
         }
         if not matches:
+            if not account_mode_matches:
+                raise BrokerConnectionError(
+                    "OKX account mode does not support Phase 5 isolated perpetual trading",
+                    details={
+                        "code": "perpetual_account_mode_unsupported",
+                        "account_level": account_level or "UNKNOWN",
+                    },
+                )
             raise BrokerConnectionError("OKX mode or leverage drifted from Phase 5 policy")
         self._last_runtime_validation_monotonic = time.monotonic()
 

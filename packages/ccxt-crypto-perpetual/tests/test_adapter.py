@@ -345,6 +345,24 @@ async def test_connect_blocks_hedged_cross_or_non_2x_state() -> None:
 
 
 @pytest.mark.asyncio
+async def test_connect_blocks_spot_only_account_mode_before_ordering() -> None:
+    backend = FakeBackend()
+    backend.account_level = "1"
+    adapter = PerpetualContext(_settings(), backend=backend)
+
+    with pytest.raises(BrokerConnectionError) as blocked:
+        await adapter.connect()
+
+    assert blocked.value.details["code"] == "perpetual_account_mode_unsupported"
+    assert adapter.connection_state_snapshot().state == "blocked"
+    assert adapter.connection_diagnostics()["policyReadback"]["accountMode"] == {
+        "accountLevel": "1",
+        "positionMode": "net_mode",
+        "matches": False,
+    }
+
+
+@pytest.mark.asyncio
 async def test_clock_skew_is_measured_at_time_response_boundary() -> None:
     backend = FakeBackend()
     original = backend.fetch_leverage

@@ -106,6 +106,29 @@ async def test_deployed_profile_starts_with_market_account_and_order_access() ->
 
 
 @pytest.mark.asyncio
+async def test_spot_starts_when_internal_perpetual_context_is_blocked() -> None:
+    backend = FakeClient()
+    adapter = CCXTCryptoAdapter(
+        settings(perpetual_enabled=True),
+        backend=backend,
+        perpetual_backend=object(),
+    )
+    adapter._perpetual.start = AsyncMock(
+        side_effect=BrokerConnectionError(
+            "unsupported account mode",
+            details={"code": "perpetual_account_mode_unsupported"},
+        )
+    )
+    adapter._perpetual.close = AsyncMock()
+
+    await adapter.start()
+
+    assert adapter.connection_state_snapshot().state == "trading_ready"
+    adapter._perpetual.start.assert_awaited_once()
+    await adapter.close()
+
+
+@pytest.mark.asyncio
 async def test_spot_clock_skew_uses_the_successful_request_midpoint() -> None:
     backend = FakeClient()
     backend.fetch_time_sample = AsyncMock(

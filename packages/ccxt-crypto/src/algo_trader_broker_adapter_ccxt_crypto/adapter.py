@@ -276,7 +276,19 @@ class CCXTCryptoAdapter:
             if snapshot.get("orderUpdates") is None:
                 raise BrokerConnectionError("OKX initial reconciliation did not complete")
             if self._perpetual is not None:
-                await self._perpetual.start()
+                try:
+                    await self._perpetual.start()
+                except BrokerConnectionError as exc:
+                    details = exc.details if isinstance(exc.details, Mapping) else {}
+                    LOGGER.warning(
+                        "OKX Demo perpetual context remains blocked while Spot starts",
+                        extra={
+                            "event": "broker.crypto.perpetual_context_blocked",
+                            "broker.adapter_id": self.adapter_id,
+                            "broker.error_code": details.get("code"),
+                            "broker.error_type": type(exc).__name__,
+                        },
+                    )
             self._start_private_streams()
             next_state = "trading_ready"
             self._generation += 1
