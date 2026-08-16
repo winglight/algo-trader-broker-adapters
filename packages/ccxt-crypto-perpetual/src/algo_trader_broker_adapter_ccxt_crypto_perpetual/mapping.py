@@ -37,7 +37,15 @@ def timestamp(value: Any = None) -> str:
 
 
 def decimal(value: Any, default: str = "0") -> Decimal:
-    return Decimal(canonical(default if value in (None, "") else value))
+    candidate = default if value in (None, "") else value
+    # CCXT normalizes broker JSON numbers to Python floats. Convert only at this
+    # external adapter boundary through their shortest decimal string; command
+    # DTOs still pass through ``canonical`` and reject binary floats.
+    if isinstance(candidate, float):
+        if candidate != candidate or candidate in {float("inf"), float("-inf")}:
+            raise ValueError("Broker returned a non-finite Decimal value")
+        return Decimal(str(candidate))
+    return Decimal(canonical(candidate))
 
 
 def _info(row: Mapping[str, Any]) -> Mapping[str, Any]:

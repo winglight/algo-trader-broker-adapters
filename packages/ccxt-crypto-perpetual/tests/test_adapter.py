@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from unittest.mock import AsyncMock
 
 import pytest
@@ -16,7 +17,7 @@ from ati_shared_sdk.common.schemas.multi_asset_market_data import (
 from algo_trader_broker_sdk import BrokerConnectionError, BrokerContractError, BrokerOrderError
 from algo_trader_broker_adapter_ccxt_crypto_perpetual import PerpetualContext
 from algo_trader_broker_adapter_ccxt_crypto_perpetual.quantizer import PerpetualMarketRules
-from algo_trader_broker_adapter_ccxt_crypto_perpetual.mapping import position_payload
+from algo_trader_broker_adapter_ccxt_crypto_perpetual.mapping import decimal, position_payload
 from algo_trader_broker_adapter_ccxt_crypto_perpetual.settings import (
     CCXTCryptoPerpetualSettings,
 )
@@ -100,6 +101,12 @@ def test_market_metadata_requires_linear_usdt_swap_and_broker_contract_step() ->
     inverse["inverse"] = True
     with pytest.raises(BrokerContractError, match="linear"):
         PerpetualMarketRules.from_ccxt("BTC/USDT:USDT", inverse)
+
+
+def test_broker_float_is_converted_only_at_external_mapping_boundary() -> None:
+    assert decimal(0.01) == Decimal("0.01")
+    with pytest.raises(ValueError, match="non-finite"):
+        decimal(float("nan"))
 
 
 @pytest.mark.asyncio
