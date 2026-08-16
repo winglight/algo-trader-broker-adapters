@@ -193,7 +193,7 @@ async def test_perpetual_websocket_reset_isolated_from_rest_client() -> None:
     assert captured.value.details["websocketResetHandled"] is True
     assert captured.value.details["nextWebsocketGeneration"] == 1
     assert captured.value.details["websocketBoundary"] == "private_orders"
-    orders.close.assert_awaited_once_with()
+    orders.close.assert_not_awaited()
     client._private_ws_exchanges["positions"].close.assert_not_awaited()
     client._private_ws_exchanges["balance"].close.assert_not_awaited()
     client._public_ws_exchange.close.assert_not_awaited()

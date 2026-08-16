@@ -390,12 +390,14 @@ class OKXDemoPerpetualClient:
         async with self._websocket_reset_locks[boundary]:
             if failed_generation != self._websocket_generations[boundary]:
                 return False
-            await self._websocket_exchange(boundary).close()
+            # CCXT Pro owns reconnect after a failed watch. Explicitly closing
+            # here rejects its already-failed internal futures again and leaks
+            # noisy unhandled Future exceptions into the Runner event loop.
             self._websocket_generations[boundary] += 1
             LOGGER.warning(
-                "OKX Demo perpetual websocket reset after transient failure",
+                "OKX Demo perpetual websocket subscription will retry after transient failure",
                 extra={
-                    "event": "broker.crypto.perpetual_websocket_reset",
+                    "event": "broker.crypto.perpetual_websocket_retry",
                     "broker.adapter_id": "ccxt_crypto",
                     "broker.operation": operation,
                     "broker.websocket_boundary": boundary,

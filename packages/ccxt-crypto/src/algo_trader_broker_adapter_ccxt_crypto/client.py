@@ -444,24 +444,16 @@ class OKXDemoClient:
         async with self._websocket_reset_locks[boundary]:
             if failed_generation != self._websocket_generations[boundary]:
                 return False
-            try:
-                await self._websocket_exchanges()[boundary].close()
-            except Exception as close_error:
-                raise BrokerConnectionError(
-                    "OKX Demo websocket reset failed",
-                    details={
-                        "operation": operation,
-                        "websocketBoundary": boundary,
-                        "error_type": type(error).__name__,
-                        "close_error_type": type(close_error).__name__,
-                        "websocketGeneration": failed_generation,
-                    },
-                ) from close_error
+            # CCXT Pro has already retired the failed client future before it
+            # raises a transient watch error. Closing the whole exchange here
+            # rejects sibling/internal futures a second time and can emit
+            # "Future exception was never retrieved". The next watch call is
+            # the supported reconnect path.
             self._websocket_generations[boundary] += 1
             LOGGER.warning(
-                "OKX Demo websocket connection reset after transient failure",
+                "OKX Demo websocket subscription will retry after transient failure",
                 extra={
-                    "event": "broker.crypto.websocket_reset",
+                    "event": "broker.crypto.websocket_retry",
                     "broker.adapter_id": "ccxt_crypto",
                     "broker.operation": operation,
                     "broker.websocket_boundary": boundary,

@@ -181,7 +181,7 @@ async def test_websocket_resets_are_isolated_by_protocol_boundary() -> None:
     with pytest.raises(BrokerConnectionError):
         await client.watch_ohlcv("BTC/USDT", "1m")
 
-    assert bar_exchange.close_calls == 1
+    assert bar_exchange.close_calls == 0
     assert public_exchange.close_calls == 0
     assert private_exchange.close_calls == 0
 
@@ -251,14 +251,14 @@ async def test_transient_websocket_timeout_resets_connection_before_retry(
         "resetPerformed": True,
         "nextWebsocketGeneration": 1,
     }
-    assert websocket_exchange.close_calls == 1
+    assert websocket_exchange.close_calls == 0
     assert await client.watch_ohlcv("BTC/USDT", "1m") == [
         [1786262400000, "1", "2", "0.5", "1.5", "10"]
     ]
     reset_records = [
         record
         for record in caplog.records
-        if getattr(record, "event", None) == "broker.crypto.websocket_reset"
+        if getattr(record, "event", None) == "broker.crypto.websocket_retry"
     ]
     assert len(reset_records) == 1
 
@@ -283,7 +283,7 @@ async def test_concurrent_websocket_timeouts_reset_failed_generation_once() -> N
         bool(item.details["resetPerformed"])  # type: ignore[union-attr]
         for item in failures
     ) == [False, True]
-    assert websocket_exchange.close_calls == 1
+    assert websocket_exchange.close_calls == 0
     assert await client.watch_ohlcv("BTC/USDT", "1m")
 
 
