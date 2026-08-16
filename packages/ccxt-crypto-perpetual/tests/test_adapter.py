@@ -308,6 +308,7 @@ async def test_index_price_uses_okx_index_ticker_contract() -> None:
     "field",
     [
         "indexPrice",
+        "liquidationPrice",
         "initialMargin",
         "maintenanceMargin",
         "marginRatio",
@@ -356,6 +357,25 @@ async def test_connect_reads_back_mode_leverage_and_reconciles() -> None:
     assert funding[0]["amountDecimal"] == "-0.06"
     PerpetualPositionRiskV1.model_validate(risks[0])
     FundingLedgerEntryV1.model_validate(funding[0])
+
+
+@pytest.mark.asyncio
+async def test_duplicate_funding_rows_reconcile_to_one_ledger_entry() -> None:
+    backend = FakeBackend()
+    original = backend.fetch_funding_history
+
+    async def duplicated(symbol: str) -> list[dict[str, object]]:
+        rows = await original(symbol)
+        return [*rows, *(dict(row) for row in rows)]
+
+    backend.fetch_funding_history = duplicated
+    adapter = PerpetualContext(_settings(), backend=backend)
+
+    await adapter.connect()
+
+    ledger = await adapter.funding_ledger_v1()
+    assert len(ledger) == 1
+    assert ledger[0]["brokerLedgerId"] == "funding-bill-1"
 
 
 @pytest.mark.asyncio
@@ -509,6 +529,26 @@ async def test_clock_skew_is_measured_at_time_response_boundary() -> None:
     await adapter.connect()
 
     assert adapter.connection_state_snapshot().state == "trading_ready"
+
+
+@pytest.mark.asyncio
+async def test_clock_skew_above_stop_threshold_blocks_startup() -> None:
+    backend = FakeBackend()
+
+    async def skewed_time() -> int:
+        return int(datetime.now(UTC).timestamp() * 1000) + 2_000
+
+    backend.fetch_time = skewed_time
+    adapter = PerpetualContext(
+        _settings(clock_skew_block_ms=1_000),
+        backend=backend,
+    )
+
+    with pytest.raises(BrokerConnectionError, match="clock skew"):
+        await adapter.connect()
+
+    assert adapter.connection_state_snapshot().state == "blocked"
+    await adapter.close()
 
 
 @pytest.mark.asyncio
