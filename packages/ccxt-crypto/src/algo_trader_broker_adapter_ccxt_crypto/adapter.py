@@ -250,7 +250,7 @@ class CCXTCryptoAdapter:
                 return
             self._closing = False
             await self._load_and_validate_markets()
-            skew = clock_skew_ms(await self._client.fetch_time())
+            skew = await self._clock_skew_ms()
             if skew > self._settings.clock_skew_block_ms:
                 raise BrokerConnectionError(
                     "OKX clock skew exceeds the configured block threshold",
@@ -293,6 +293,14 @@ class CCXTCryptoAdapter:
                     **self._spot_target_identity(),
                 },
             )
+
+    async def _clock_skew_ms(self) -> int:
+        sampler = getattr(self._client, "fetch_time_sample", None)
+        if callable(sampler):
+            remote_time, started_at_ms, completed_at_ms = await sampler()
+            midpoint_ms = (int(started_at_ms) + int(completed_at_ms)) // 2
+            return abs(midpoint_ms - int(remote_time))
+        return clock_skew_ms(await self._client.fetch_time())
 
     async def close(self) -> None:
         async with self._lifecycle_lock:

@@ -106,6 +106,20 @@ async def test_deployed_profile_starts_with_market_account_and_order_access() ->
 
 
 @pytest.mark.asyncio
+async def test_spot_clock_skew_uses_the_successful_request_midpoint() -> None:
+    backend = FakeClient()
+    backend.fetch_time_sample = AsyncMock(
+        return_value=(1_786_867_200_000, 1_786_867_199_900, 1_786_867_200_100)
+    )
+    adapter = CCXTCryptoAdapter(
+        settings(clock_skew_block_ms=250),
+        backend=backend,
+    )
+
+    assert await adapter._clock_skew_ms() == 0
+
+
+@pytest.mark.asyncio
 async def test_legacy_order_reads_reuse_atomic_reconciliation_snapshot() -> None:
     class ReconciledHistoryClient(FakeClient):
         async def fetch_closed_orders(self, symbol):

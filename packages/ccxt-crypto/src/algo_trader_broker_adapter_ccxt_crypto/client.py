@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urlparse
@@ -280,7 +281,37 @@ class OKXDemoClient:
         return result
 
     async def fetch_time(self) -> int:
-        return int(await self._read("fetch_time"))
+        remote_time, _, _ = await self.fetch_time_sample()
+        return remote_time
+
+    async def fetch_time_sample(self) -> tuple[int, int, int]:
+        for attempt in range(3):
+            started_at_ms = time.time_ns() // 1_000_000
+            try:
+                remote_time = int(await self._call("fetch_time"))
+                completed_at_ms = time.time_ns() // 1_000_000
+                return remote_time, started_at_ms, completed_at_ms
+            except Exception as exc:
+                rate_limited = self._is_rate_limited(exc)
+                transient = self._is_transient_read_failure(exc)
+                if (not rate_limited and not transient) or attempt == 2:
+                    raise
+                LOGGER.warning(
+                    "OKX Demo read request will be retried",
+                    extra={
+                        "event": (
+                            "broker.crypto.rate_limited"
+                            if rate_limited
+                            else "broker.crypto.read_retry"
+                        ),
+                        "broker.adapter_id": "ccxt_crypto",
+                        "broker.operation": "fetch_time",
+                        "broker.retry_attempt": attempt + 1,
+                        "broker.error_type": self._error_type(exc),
+                    },
+                )
+                await asyncio.sleep((0.25 if rate_limited else 1.0) * (2**attempt))
+        raise AssertionError("unreachable")
 
     async def fetch_balance(self) -> Mapping[str, Any]:
         return await self._read("fetch_balance", {"type": "spot"})

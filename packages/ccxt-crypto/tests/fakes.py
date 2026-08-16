@@ -94,6 +94,10 @@ class FakeClient:
     async def fetch_time(self):
         return int(datetime.now(UTC).timestamp() * 1000)
 
+    async def fetch_time_sample(self):
+        now_ms = int(datetime.now(UTC).timestamp() * 1000)
+        return now_ms, now_ms, now_ms
+
     async def fetch_balance(self):
         self.calls.append(("fetch_balance", None))
         return BALANCE
