@@ -739,9 +739,12 @@ class PerpetualContext:
                 return
 
     async def _watch_orders(self) -> None:
+        retry_delay = 1.0
         while True:
             try:
-                for row in await self._client.watch_orders():
+                rows = await self._client.watch_orders()
+                retry_delay = 1.0
+                for row in rows:
                     if self._trade_update_handler is not None:
                         await self._trade_update_handler(
                             self._legacy_update(
@@ -758,7 +761,8 @@ class PerpetualContext:
                 raise
             except Exception as exc:  # noqa: BLE001 - fail closed on stream loss
                 if self._websocket_was_reset(exc):
-                    await asyncio.sleep(0)
+                    await asyncio.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 2, 30.0)
                     continue
                 await self._stream_failed("orders", exc)
                 return
@@ -782,9 +786,11 @@ class PerpetualContext:
         )
 
     async def _watch_positions(self) -> None:
+        retry_delay = 1.0
         while True:
             try:
                 await self._client.watch_positions(list(self._settings.allowed_symbols))
+                retry_delay = 1.0
                 await self._reconcile_if_due()
                 if self._position_update_handler is not None:
                     await self._position_update_handler(await self.get_positions())
@@ -792,15 +798,18 @@ class PerpetualContext:
                 raise
             except Exception as exc:  # noqa: BLE001 - fail closed on stream loss
                 if self._websocket_was_reset(exc):
-                    await asyncio.sleep(0)
+                    await asyncio.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 2, 30.0)
                     continue
                 await self._stream_failed("positions", exc)
                 return
 
     async def _watch_balance(self) -> None:
+        retry_delay = 1.0
         while True:
             try:
                 await self._client.watch_balance()
+                retry_delay = 1.0
                 await self._reconcile_if_due()
                 if self._account_update_handler is not None:
                     await self._account_update_handler(await self.get_account_summary())
@@ -808,7 +817,8 @@ class PerpetualContext:
                 raise
             except Exception as exc:  # noqa: BLE001 - fail closed on stream loss
                 if self._websocket_was_reset(exc):
-                    await asyncio.sleep(0)
+                    await asyncio.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 2, 30.0)
                     continue
                 await self._stream_failed("balance", exc)
                 return
@@ -823,6 +833,7 @@ class PerpetualContext:
         ]
 
     async def _watch_market_data(self, symbol: str, object_type: str) -> None:
+        retry_delay = 1.0
         while True:
             try:
                 if object_type == "mark":
@@ -838,6 +849,7 @@ class PerpetualContext:
                     row = await self._client.fetch_funding_rate(symbol)
                 else:
                     raise ValueError("Unsupported perpetual market-data stream")
+                retry_delay = 1.0
                 self._sequence += 1
                 item = market_data_object(
                     row,
@@ -861,7 +873,8 @@ class PerpetualContext:
                 raise
             except Exception as exc:  # noqa: BLE001 - fail closed on stream loss
                 if self._websocket_was_reset(exc):
-                    await asyncio.sleep(0)
+                    await asyncio.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 2, 30.0)
                     continue
                 await self._stream_failed(f"{object_type}_market_data", exc)
                 return

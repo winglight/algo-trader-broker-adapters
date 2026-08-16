@@ -909,9 +909,11 @@ class CCXTCryptoAdapter:
                 return
 
     async def _watch_orders(self) -> None:
+        retry_delay = 1.0
         while True:
             try:
                 orders = await self._client.watch_orders()
+                retry_delay = 1.0
                 self._mark_private_stream_ready("orders")
                 for order in orders:
                     self._reconciler.record_order(order)
@@ -921,15 +923,18 @@ class CCXTCryptoAdapter:
                 raise
             except Exception as exc:  # noqa: BLE001 - supervisor must fail closed
                 if self._private_websocket_was_reset(exc):
-                    await asyncio.sleep(0)
+                    await asyncio.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 2, 30.0)
                     continue
                 await self._stream_failed("orders", exc)
                 return
 
     async def _watch_balance(self) -> None:
+        retry_delay = 1.0
         while True:
             try:
                 self._balance = await self._client.watch_balance()
+                retry_delay = 1.0
                 self._mark_private_stream_ready("balance")
                 if self._account_update_handler is not None:
                     await self._account_update_handler(
@@ -943,15 +948,18 @@ class CCXTCryptoAdapter:
                 raise
             except Exception as exc:  # noqa: BLE001 - supervisor must fail closed
                 if self._private_websocket_was_reset(exc):
-                    await asyncio.sleep(0)
+                    await asyncio.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 2, 30.0)
                     continue
                 await self._stream_failed("balance", exc)
                 return
 
     async def _watch_my_trades(self) -> None:
+        retry_delay = 1.0
         while True:
             try:
                 trades = await self._client.watch_my_trades()
+                retry_delay = 1.0
                 self._mark_private_stream_ready("trades")
                 for trade in trades:
                     self._reconciler.record_trade(trade)
@@ -961,7 +969,8 @@ class CCXTCryptoAdapter:
                 raise
             except Exception as exc:  # noqa: BLE001 - supervisor must fail closed
                 if self._private_websocket_was_reset(exc):
-                    await asyncio.sleep(0)
+                    await asyncio.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 2, 30.0)
                     continue
                 await self._stream_failed("trades", exc)
                 return

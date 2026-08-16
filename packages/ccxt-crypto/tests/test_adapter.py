@@ -71,6 +71,31 @@ async def test_unified_adapter_exposes_and_routes_both_target_isolated_domains()
     adapter._perpetual.set_market_data_update_handler.assert_called_once_with(market_handler)
 
 
+@pytest.mark.asyncio
+async def test_spot_stream_reconnect_uses_bounded_backoff(monkeypatch) -> None:
+    adapter = CCXTCryptoAdapter(settings(), backend=FakeClient())
+    reset = BrokerConnectionError(
+        "temporary websocket failure",
+        details={
+            "websocketBoundary": "private",
+            "nextWebsocketGeneration": 1,
+        },
+    )
+    adapter._client.watch_orders = AsyncMock(
+        side_effect=[reset, reset, asyncio.CancelledError()]
+    )
+    sleep = AsyncMock()
+    monkeypatch.setattr(
+        "algo_trader_broker_adapter_ccxt_crypto.adapter.asyncio.sleep",
+        sleep,
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await adapter._watch_orders()
+
+    assert [item.args[0] for item in sleep.await_args_list] == [1.0, 2.0]
+
+
 def order_payload(**overrides):
     payload = {
         "schemaVersion": "broker-order-request.v2",

@@ -198,6 +198,28 @@ async def test_perpetual_client_retries_reads_but_not_mutations(monkeypatch) -> 
 
 
 @pytest.mark.asyncio
+async def test_perpetual_stream_reconnect_uses_bounded_backoff(monkeypatch) -> None:
+    adapter = PerpetualContext(_settings(), backend=FakeBackend())
+    reset = BrokerConnectionError(
+        "temporary websocket failure",
+        details={"websocketResetHandled": True},
+    )
+    adapter._client.watch_orders = AsyncMock(
+        side_effect=[reset, reset, asyncio.CancelledError()]
+    )
+    sleep = AsyncMock()
+    monkeypatch.setattr(
+        "algo_trader_broker_adapter_ccxt_crypto_perpetual.adapter.asyncio.sleep",
+        sleep,
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await adapter._watch_orders()
+
+    assert [item.args[0] for item in sleep.await_args_list] == [1.0, 2.0]
+
+
+@pytest.mark.asyncio
 async def test_perpetual_websocket_reset_isolated_from_rest_client() -> None:
     client = object.__new__(OKXDemoPerpetualClient)
     client._websocket_reset_locks = {
