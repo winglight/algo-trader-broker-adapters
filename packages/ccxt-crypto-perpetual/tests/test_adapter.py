@@ -174,37 +174,44 @@ async def test_perpetual_websocket_reset_isolated_from_rest_client() -> None:
     client = object.__new__(OKXDemoPerpetualClient)
     client._websocket_reset_locks = {
         "public": asyncio.Lock(),
-        "private": asyncio.Lock(),
+        "private_orders": asyncio.Lock(),
     }
-    client._websocket_generations = {"public": 0, "private": 0}
+    client._websocket_generations = {"public": 0, "private_orders": 0}
     client._exchange = AsyncMock()
     client._public_ws_exchange = AsyncMock()
-    client._private_ws_exchange = AsyncMock()
-    client._private_ws_exchange.watch_orders.side_effect = TimeoutError("ping-pong timed out")
+    client._private_ws_exchanges = {
+        "orders": AsyncMock(),
+        "positions": AsyncMock(),
+        "balance": AsyncMock(),
+    }
+    orders = client._private_ws_exchanges["orders"]
+    orders.watch_orders.side_effect = TimeoutError("ping-pong timed out")
 
     with pytest.raises(BrokerConnectionError) as captured:
         await client.watch_orders()
 
     assert captured.value.details["websocketResetHandled"] is True
     assert captured.value.details["nextWebsocketGeneration"] == 1
-    assert captured.value.details["websocketBoundary"] == "private"
-    client._private_ws_exchange.close.assert_awaited_once_with()
+    assert captured.value.details["websocketBoundary"] == "private_orders"
+    orders.close.assert_awaited_once_with()
+    client._private_ws_exchanges["positions"].close.assert_not_awaited()
+    client._private_ws_exchanges["balance"].close.assert_not_awaited()
     client._public_ws_exchange.close.assert_not_awaited()
     client._exchange.close.assert_not_awaited()
 
-    client._private_ws_exchange.reset_mock()
-    client._websocket_generations["private"] = 2
+    orders.reset_mock()
+    client._websocket_generations["private_orders"] = 2
 
     async def sibling_reset() -> None:
-        client._websocket_generations["private"] = 3
+        client._websocket_generations["private_orders"] = 3
         raise RuntimeError("closed by sibling")
 
-    client._private_ws_exchange.watch_orders.side_effect = sibling_reset
+    orders.watch_orders.side_effect = sibling_reset
     with pytest.raises(BrokerConnectionError) as sibling:
         await client._watch("watch_orders")
     assert sibling.value.details["websocketResetHandled"] is True
     assert sibling.value.details["resetPerformed"] is False
-    client._private_ws_exchange.close.assert_not_awaited()
+    orders.close.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -37,15 +37,22 @@ class OKXDemoPerpetualClient:
         }
         self._exchange = ccxtasync.okx(config)
         self._public_ws_exchange = ccxtpro.okx(config)
-        self._private_ws_exchange = ccxtpro.okx(config)
+        self._private_ws_exchanges = {
+            stream: ccxtpro.okx(config) for stream in ("orders", "positions", "balance")
+        }
         self._exchange.set_sandbox_mode(True)
         self._public_ws_exchange.set_sandbox_mode(True)
-        self._private_ws_exchange.set_sandbox_mode(True)
+        for websocket in self._private_ws_exchanges.values():
+            websocket.set_sandbox_mode(True)
         self._semaphore = asyncio.Semaphore(4)
-        self._websocket_reset_locks = {
-            boundary: asyncio.Lock() for boundary in ("public", "private")
-        }
-        self._websocket_generations = {boundary: 0 for boundary in ("public", "private")}
+        boundaries = (
+            "public",
+            "private_orders",
+            "private_positions",
+            "private_balance",
+        )
+        self._websocket_reset_locks = {boundary: asyncio.Lock() for boundary in boundaries}
+        self._websocket_generations = {boundary: 0 for boundary in boundaries}
         required_streams = (
             "watchMarkPrice",
             "watchFundingRate",
@@ -54,19 +61,16 @@ class OKXDemoPerpetualClient:
             "watchPositions",
             "watchBalance",
         )
-        private_streams = {
-            "watchOrders",
-            "watchMyTrades",
-            "watchPositions",
-            "watchBalance",
+        stream_exchange = {
+            "watchOrders": self._private_ws_exchanges["orders"],
+            "watchMyTrades": self._private_ws_exchanges["orders"],
+            "watchPositions": self._private_ws_exchanges["positions"],
+            "watchBalance": self._private_ws_exchanges["balance"],
         }
         missing = [
             name
             for name in required_streams
-            if (
-                self._private_ws_exchange if name in private_streams else self._public_ws_exchange
-            ).has.get(name)
-            is not True
+            if stream_exchange.get(name, self._public_ws_exchange).has.get(name) is not True
         ]
         if missing:
             raise RuntimeError(
@@ -77,7 +81,7 @@ class OKXDemoPerpetualClient:
         await asyncio.gather(
             self._exchange.close(),
             self._public_ws_exchange.close(),
-            self._private_ws_exchange.close(),
+            *(websocket.close() for websocket in self._private_ws_exchanges.values()),
             return_exceptions=True,
         )
 
@@ -95,7 +99,7 @@ class OKXDemoPerpetualClient:
             item
             for item in (
                 getattr(self, "_public_ws_exchange", None),
-                getattr(self, "_private_ws_exchange", None),
+                *getattr(self, "_private_ws_exchanges", {}).values(),
                 getattr(self, "_ws_exchange", None),
             )
             if item is not None
@@ -205,7 +209,7 @@ class OKXDemoPerpetualClient:
         info = order.get("info") if isinstance(order.get("info"), Mapping) else {}
         if not info.get("tradeId"):
             return None
-        trade = self._private_ws_exchange.order_to_trade(dict(order))
+        trade = self._private_ws_exchanges["orders"].order_to_trade(dict(order))
         return dict(trade) if isinstance(trade, Mapping) else None
 
     async def watch_positions(self, symbols: list[str]) -> list[dict[str, Any]]:
@@ -358,16 +362,19 @@ class OKXDemoPerpetualClient:
 
     @staticmethod
     def _websocket_boundary(method: str) -> str:
-        if method in {
-            "watch_orders",
-            "watch_my_trades",
-            "watch_positions",
-            "watch_balance",
-        }:
-            return "private"
+        if method in {"watch_orders", "watch_my_trades"}:
+            return "private_orders"
+        if method == "watch_positions":
+            return "private_positions"
+        if method == "watch_balance":
+            return "private_balance"
         return "public"
 
     def _websocket_exchange(self, boundary: str) -> Any:
+        if boundary.startswith("private_"):
+            exchanges = getattr(self, "_private_ws_exchanges", None)
+            if exchanges is not None:
+                return exchanges[boundary.removeprefix("private_")]
         exchange = getattr(self, f"_{boundary}_ws_exchange", None)
         if exchange is not None:
             return exchange
