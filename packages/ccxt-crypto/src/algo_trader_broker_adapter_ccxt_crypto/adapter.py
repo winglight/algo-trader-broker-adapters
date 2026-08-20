@@ -9,7 +9,7 @@ import random
 from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
 from contextlib import suppress
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -55,10 +55,54 @@ _SYMBOL_BY_INSTRUMENT = {
     "crypto-spot:BTC-USDT:OKX": "BTC/USDT",
     "crypto-spot:ETH-USDT:OKX": "ETH/USDT",
 }
+
+
+def _perpetual_instrument_id(symbol: str) -> str:
+    return f"crypto-perpetual:{symbol.replace('/', '-')}:OKX"
 LOGGER = logging.getLogger(__name__)
 _PUBLIC_TICKER_MAX_AGE_MS = 120_000
 _PUBLIC_TRADE_MAX_AGE_MS = 120_000
 _PUBLIC_TRADE_DEDUP_WINDOW = 4_096
+_HISTORICAL_PAGE_SIZE = 100
+_HISTORICAL_INTERVAL_MS = {
+    "1m": 60_000,
+    "5m": 300_000,
+    "1h": 3_600_000,
+    "1d": 86_400_000,
+}
+
+
+def _historical_end(value: datetime | str | None) -> datetime:
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        token = str(value or "").strip()
+        if not token:
+            return datetime.now(UTC)
+        parsed = datetime.fromisoformat(token.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _historical_duration(value: str) -> timedelta:
+    parts = str(value or "1 D").strip().split()
+    if len(parts) != 2 or not parts[0].isdigit():
+        raise unsupported(f"historical duration {value}")
+    amount = max(int(parts[0]), 1)
+    unit = parts[1]
+    if unit == "M":
+        return timedelta(days=amount * 30)
+    if unit == "Y":
+        return timedelta(days=amount * 365)
+    seconds = {
+        "S": 1,
+        "D": 86_400,
+        "W": 7 * 86_400,
+    }.get(unit.upper())
+    if seconds is None:
+        raise unsupported(f"historical duration {value}")
+    return timedelta(seconds=amount * seconds)
 
 
 def _field(payload: Mapping[str, Any], camel: str, snake: str | None = None) -> Any:
@@ -1160,6 +1204,29 @@ class CCXTCryptoAdapter:
     async def qualify_contract(self, contract: Mapping[str, Any]) -> dict[str, Any]:
         await self.ensure_connected()
         symbol = str(contract.get("symbol") or "").upper()
+        if (
+            self._perpetual is not None
+            and symbol in self._settings.perpetual_allowed_symbols
+        ):
+            await self._perpetual.ensure_connected()
+            metadata = next(
+                (
+                    item
+                    for item in await self._perpetual.market_metadata_v2()
+                    if str(item.get("symbol") or "").upper() == symbol
+                ),
+                None,
+            )
+            if metadata is None:
+                raise unsupported("non-allowlisted instruments")
+            return {
+                "symbol": symbol,
+                "secType": "CRYPTO_PERPETUAL",
+                "exchange": "OKX",
+                "currency": "USDT",
+                "localSymbol": metadata.get("nativeInstrumentId"),
+                "instrumentId": metadata.get("instrumentId"),
+            }
         if symbol not in self._settings.allowed_symbols:
             raise unsupported("non-allowlisted instruments")
         if not self._rules:
@@ -1186,6 +1253,33 @@ class CCXTCryptoAdapter:
     ) -> dict[str, Any]:
         await self.ensure_connected()
         symbol = str(contract.get("symbol") or "").upper()
+        if (
+            self._perpetual is not None
+            and symbol in self._settings.perpetual_allowed_symbols
+        ):
+            await self._perpetual.ensure_connected()
+            instrument_id = _perpetual_instrument_id(symbol)
+            mark = next(
+                (
+                    item
+                    for item in await self._perpetual.market_data_objects_v1()
+                    if item.get("instrumentId") == instrument_id
+                    and item.get("objectType") == "mark"
+                ),
+                None,
+            )
+            payload = mark.get("payload") if isinstance(mark, Mapping) else None
+            price = payload.get("markPriceDecimal") if isinstance(payload, Mapping) else None
+            if price in (None, ""):
+                raise BrokerConnectionError("Perpetual mark price is unavailable")
+            return {
+                "symbol": symbol,
+                "bid": None,
+                "ask": None,
+                "last": float(price),
+                "close": float(price),
+                "timestamp": mark.get("eventTime") or mark.get("observedAt"),
+            }
         if symbol not in self._settings.allowed_symbols:
             raise unsupported("non-allowlisted instruments")
         ticker = await self._client.fetch_ticker(symbol)
@@ -1215,8 +1309,45 @@ class CCXTCryptoAdapter:
         timeframe = {"1 min": "1m", "5 mins": "5m", "1 hour": "1h", "1 day": "1d"}.get(bar_size)
         if timeframe is None:
             raise unsupported(f"bar size {bar_size}")
-        rows = await self._client.fetch_ohlcv(symbol, timeframe)
-        return [self._bar(row) for row in rows]
+        end_at = _historical_end(end_datetime)
+        start_at = end_at - _historical_duration(duration)
+        start_ms = int(start_at.timestamp() * 1000)
+        end_ms = int(end_at.timestamp() * 1000)
+        interval_ms = _HISTORICAL_INTERVAL_MS[timeframe]
+        requested_bars = max(1, ((end_ms - start_ms) // interval_ms) + 1)
+        max_pages = min(200, max(2, (requested_bars // _HISTORICAL_PAGE_SIZE) + 2))
+        cursor_ms = start_ms
+        rows_by_timestamp: dict[int, list[Any]] = {}
+        for _ in range(max_pages):
+            page = await self._client.fetch_ohlcv(
+                symbol,
+                timeframe,
+                since=cursor_ms,
+                limit=_HISTORICAL_PAGE_SIZE,
+            )
+            if not page:
+                break
+            page_timestamps: list[int] = []
+            for row in page:
+                if not row:
+                    continue
+                try:
+                    timestamp_ms = int(row[0])
+                except (TypeError, ValueError):
+                    continue
+                page_timestamps.append(timestamp_ms)
+                if start_ms <= timestamp_ms <= end_ms:
+                    rows_by_timestamp[timestamp_ms] = list(row)
+            if not page_timestamps:
+                break
+            next_cursor_ms = max(page_timestamps) + interval_ms
+            if next_cursor_ms <= cursor_ms or next_cursor_ms > end_ms:
+                break
+            cursor_ms = next_cursor_ms
+        return [
+            self._bar(rows_by_timestamp[timestamp_ms])
+            for timestamp_ms in sorted(rows_by_timestamp)
+        ]
 
     async def stream_historical_bars(
         self,

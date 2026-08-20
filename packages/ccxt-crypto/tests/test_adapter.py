@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from copy import deepcopy
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from unittest.mock import AsyncMock, Mock
@@ -11,6 +11,48 @@ from algo_trader_broker_adapter_ccxt_crypto import CCXTCryptoAdapter
 from algo_trader_broker_sdk import BrokerConnectionError, BrokerOrderError
 
 from .fakes import BALANCE, ORDER, FakeClient, settings
+
+
+@pytest.mark.asyncio
+async def test_historical_bars_paginate_across_ccxt_default_page_limit() -> None:
+    start = datetime(2026, 8, 17, tzinfo=UTC)
+    interval = timedelta(minutes=5)
+    rows = [
+        [
+            int((start + index * interval).timestamp() * 1000),
+            "1",
+            "2",
+            "0.5",
+            "1.5",
+            "10",
+        ]
+        for index in range(250)
+    ]
+
+    class _PagedClient(FakeClient):
+        async def fetch_ohlcv(self, symbol, timeframe, since=None, limit=None):
+            self.calls.append(("fetch_ohlcv", (symbol, timeframe, since, limit)))
+            eligible = [row for row in rows if since is None or row[0] >= since]
+            return eligible[: limit or 100]
+
+    backend = _PagedClient()
+    adapter = CCXTCryptoAdapter(settings(), backend=backend)
+    adapter._connected = True
+    end = start + 249 * interval
+
+    bars = await adapter.get_historical_data(
+        {"symbol": "BTC/USDT"},
+        end_datetime=end.isoformat(),
+        duration="2 D",
+        bar_size="5 mins",
+    )
+
+    assert len(bars) == 250
+    assert bars[0].time == start
+    assert bars[-1].time == end
+    fetch_calls = [call for call in backend.calls if call[0] == "fetch_ohlcv"]
+    assert len(fetch_calls) == 3
+    assert all(call[1][3] == 100 for call in fetch_calls)
 
 
 @pytest.mark.asyncio
@@ -148,6 +190,56 @@ async def test_deployed_profile_starts_with_market_account_and_order_access() ->
     assert await adapter.request_market_snapshot({"symbol": "BTC/USDT"})
     assert await adapter.request_open_orders()
     await adapter.close()
+
+
+@pytest.mark.asyncio
+async def test_perpetual_contract_qualification_and_market_snapshot() -> None:
+    adapter = CCXTCryptoAdapter(
+        settings(perpetual_enabled=True),
+        backend=FakeClient(),
+        perpetual_backend=object(),
+    )
+    adapter._connected = True
+    adapter._perpetual.ensure_connected = AsyncMock()
+    adapter._perpetual.market_metadata_v2 = AsyncMock(
+        return_value=[
+            {
+                "symbol": "BTC/USDT:USDT",
+                "instrumentId": "crypto-perpetual:BTC-USDT:USDT:OKX",
+                "nativeInstrumentId": "BTC-USDT-SWAP",
+            }
+        ]
+    )
+    adapter._perpetual.market_data_objects_v1 = AsyncMock(
+        return_value=[
+            {
+                "instrumentId": "crypto-perpetual:BTC-USDT:USDT:OKX",
+                "objectType": "mark",
+                "eventTime": "2026-08-20T01:00:00Z",
+                "payload": {"markPriceDecimal": "120000.1"},
+            }
+        ]
+    )
+
+    qualified = await adapter.qualify_contract({"symbol": "BTC/USDT:USDT"})
+    snapshot = await adapter.request_market_snapshot({"symbol": "BTC/USDT:USDT"})
+
+    assert qualified == {
+        "symbol": "BTC/USDT:USDT",
+        "secType": "CRYPTO_PERPETUAL",
+        "exchange": "OKX",
+        "currency": "USDT",
+        "localSymbol": "BTC-USDT-SWAP",
+        "instrumentId": "crypto-perpetual:BTC-USDT:USDT:OKX",
+    }
+    assert snapshot == {
+        "symbol": "BTC/USDT:USDT",
+        "bid": None,
+        "ask": None,
+        "last": 120000.1,
+        "close": 120000.1,
+        "timestamp": "2026-08-20T01:00:00Z",
+    }
 
 
 @pytest.mark.asyncio
