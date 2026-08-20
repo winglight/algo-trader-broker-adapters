@@ -220,9 +220,18 @@ async def test_perpetual_contract_qualification_and_market_snapshot() -> None:
             }
         ]
     )
+    adapter._perpetual.fetch_ohlcv = AsyncMock(
+        return_value=[[1787184000000, "119900", "120100", "119800", "120000", "12.5"]]
+    )
 
     qualified = await adapter.qualify_contract({"symbol": "BTC/USDT:USDT"})
     snapshot = await adapter.request_market_snapshot({"symbol": "BTC/USDT:USDT"})
+    bars = await adapter.get_historical_data(
+        {"symbol": "BTC/USDT:USDT"},
+        end_datetime="2026-08-20T00:00:00+00:00",
+        duration="1 D",
+        bar_size="5 mins",
+    )
 
     assert qualified == {
         "symbol": "BTC/USDT:USDT",
@@ -240,6 +249,14 @@ async def test_perpetual_contract_qualification_and_market_snapshot() -> None:
         "close": 120000.1,
         "timestamp": "2026-08-20T01:00:00Z",
     }
+    assert len(bars) == 1
+    assert bars[0].close == 120000.0
+    adapter._perpetual.fetch_ohlcv.assert_awaited_once_with(
+        "BTC/USDT:USDT",
+        "5m",
+        since=1787097600000,
+        limit=100,
+    )
 
 
 @pytest.mark.asyncio

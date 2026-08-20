@@ -208,6 +208,16 @@ class OKXDemoPerpetualClient:
             "timestamp": row.get("ts"),
         }
 
+    async def fetch_ohlcv(
+        self,
+        symbol: str,
+        timeframe: str,
+        *,
+        since: int | None = None,
+        limit: int | None = None,
+    ) -> list[list[Any]]:
+        return list(await self._read("fetch_ohlcv", symbol, timeframe, since, limit))
+
     async def watch_orders(self) -> list[dict[str, Any]]:
         return list(await self._watch("watch_orders"))
 

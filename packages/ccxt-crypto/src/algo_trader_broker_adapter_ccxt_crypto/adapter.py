@@ -1304,8 +1304,13 @@ class CCXTCryptoAdapter:
     ) -> list[HistoricalBar]:
         await self.ensure_connected()
         symbol = str(contract.get("symbol") or "").upper()
-        if symbol not in self._settings.allowed_symbols:
+        is_perpetual = (
+            self._perpetual is not None
+            and symbol in self._settings.perpetual_allowed_symbols
+        )
+        if symbol not in self._settings.allowed_symbols and not is_perpetual:
             raise unsupported("non-allowlisted instruments")
+        historical_client = self._perpetual if is_perpetual else self._client
         timeframe = {"1 min": "1m", "5 mins": "5m", "1 hour": "1h", "1 day": "1d"}.get(bar_size)
         if timeframe is None:
             raise unsupported(f"bar size {bar_size}")
@@ -1319,7 +1324,7 @@ class CCXTCryptoAdapter:
         cursor_ms = start_ms
         rows_by_timestamp: dict[int, list[Any]] = {}
         for _ in range(max_pages):
-            page = await self._client.fetch_ohlcv(
+            page = await historical_client.fetch_ohlcv(
                 symbol,
                 timeframe,
                 since=cursor_ms,

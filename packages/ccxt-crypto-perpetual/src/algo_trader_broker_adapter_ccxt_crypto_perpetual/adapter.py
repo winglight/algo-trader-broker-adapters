@@ -398,6 +398,24 @@ class PerpetualContext:
             result.extend(cached)
         return result
 
+    async def fetch_ohlcv(
+        self,
+        symbol: str,
+        timeframe: str,
+        *,
+        since: int | None = None,
+        limit: int | None = None,
+    ) -> list[list[Any]]:
+        await self.ensure_connected()
+        if symbol not in self._settings.allowed_symbols:
+            raise BrokerConnectionError("Perpetual instrument is not allowlisted")
+        return await self._client.fetch_ohlcv(
+            symbol,
+            timeframe,
+            since=since,
+            limit=limit,
+        )
+
     async def _refresh_market_data_cache(self) -> None:
         rows = await asyncio.gather(
             *(
