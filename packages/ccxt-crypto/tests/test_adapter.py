@@ -72,6 +72,25 @@ async def test_unified_adapter_exposes_and_routes_both_target_isolated_domains()
 
 
 @pytest.mark.asyncio
+async def test_spot_outage_does_not_block_perpetual_cached_reconciliation() -> None:
+    adapter = CCXTCryptoAdapter(
+        settings(perpetual_enabled=True),
+        backend=FakeClient(),
+        perpetual_backend=object(),
+    )
+    assert adapter._perpetual is not None
+    adapter._connected = False
+    adapter._perpetual.cached_reconciliation_v2 = Mock(
+        return_value={"executionTargetId": "okx-perpetual-demo-paper-1"}
+    )
+
+    result = await adapter.reconcile_v2("okx-perpetual-demo-paper-1")
+
+    assert result["executionTargetId"] == "okx-perpetual-demo-paper-1"
+    adapter._perpetual.cached_reconciliation_v2.assert_called_once_with()
+
+
+@pytest.mark.asyncio
 async def test_spot_stream_reconnect_uses_bounded_backoff(monkeypatch) -> None:
     adapter = CCXTCryptoAdapter(settings(), backend=FakeClient())
     reset = BrokerConnectionError(

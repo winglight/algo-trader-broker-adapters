@@ -670,11 +670,14 @@ class CCXTCryptoAdapter:
         )
 
     async def reconcile_v2(self, execution_target_id: str | None = None) -> dict[str, Any]:
-        await self.ensure_connected()
         if execution_target_id == self._settings.perpetual_execution_target_id:
             if self._perpetual is None:
                 raise BrokerConnectionError("Perpetual execution context is disabled")
+            # Spot and perpetual share one adapter process, but their readiness
+            # domains are independent. A recoverable Spot private-stream outage
+            # must not turn a fresh Perpetual reconciliation snapshot into 503.
             return self._perpetual.cached_reconciliation_v2()
+        await self.ensure_connected()
         if execution_target_id is None and self._perpetual is not None:
             raise BrokerConnectionError(
                 "executionTargetId is required for multi-target reconciliation"

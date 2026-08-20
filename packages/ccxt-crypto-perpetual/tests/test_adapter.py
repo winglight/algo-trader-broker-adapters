@@ -412,6 +412,55 @@ async def test_cached_reconciliation_and_order_path_do_not_repeat_provider_reads
 
 
 @pytest.mark.asyncio
+async def test_fresh_cached_reconciliation_remains_readable_during_stream_recovery() -> None:
+    adapter = PerpetualContext(_settings(), backend=FakeBackend())
+    await adapter.connect()
+    adapter._state = "blocked"
+
+    snapshot = adapter.cached_reconciliation_v2()
+
+    assert snapshot["executionTargetId"] == "okx-perpetual-demo-paper-1"
+
+
+@pytest.mark.asyncio
+async def test_market_data_heartbeat_keeps_successful_target_refreshes() -> None:
+    backend = FakeBackend()
+    adapter = PerpetualContext(_settings(), backend=backend)
+    await adapter.connect()
+    observed_at = datetime.now(UTC)
+    stale_at = (observed_at - timedelta(seconds=3)).isoformat().replace("+00:00", "Z")
+    for rows in adapter._market_data_cache.values():
+        for row in rows:
+            if row["objectType"] in {"mark", "index"}:
+                row["availableAt"] = stale_at
+
+    original_mark = backend.fetch_mark_price
+
+    async def partially_unavailable(symbol: str):
+        if symbol == "ETH/USDT:USDT":
+            raise TimeoutError("one target timed out")
+        return await original_mark(symbol)
+
+    backend.fetch_mark_price = AsyncMock(side_effect=partially_unavailable)
+
+    refreshed = await adapter._refresh_stale_mark_index(observed_at=observed_at)
+
+    assert refreshed == 3
+    btc = {
+        row["objectType"]: row
+        for row in adapter._market_data_cache["BTC/USDT:USDT"]
+    }
+    eth = {
+        row["objectType"]: row
+        for row in adapter._market_data_cache["ETH/USDT:USDT"]
+    }
+    assert btc["mark"]["availableAt"] != stale_at
+    assert btc["index"]["availableAt"] != stale_at
+    assert eth["index"]["availableAt"] != stale_at
+    assert eth["mark"]["availableAt"] == stale_at
+
+
+@pytest.mark.asyncio
 async def test_fast_reconciliation_reuses_runtime_policy_until_full_interval() -> None:
     backend = FakeBackend()
     backend.load_markets = AsyncMock(wraps=backend.load_markets)

@@ -381,7 +381,11 @@ class PerpetualContext:
         ]
 
     async def market_data_objects_v1(self) -> list[dict[str, Any]]:
-        await self.ensure_connected()
+        # Market-data cache freshness is validated by every consumer. Do not
+        # couple a target-scoped read to private trading-stream readiness: the
+        # cached data can remain current while private recovery is in progress.
+        if not self._connected:
+            raise BrokerConnectionError("Perpetual context is disconnected")
         result: list[dict[str, Any]] = []
         for symbol in self._settings.allowed_symbols:
             cached = self._market_data_cache.get(symbol)
@@ -684,8 +688,8 @@ class PerpetualContext:
     def cached_reconciliation_v2(self) -> dict[str, Any]:
         """Return the authoritative snapshot without starting provider I/O."""
 
-        if not self._connected or self._state != "trading_ready":
-            raise BrokerConnectionError("Perpetual reconciliation is not trading ready")
+        if not self._connected:
+            raise BrokerConnectionError("Perpetual context is disconnected")
         if self._snapshot is None or self._last_reconciliation_monotonic is None:
             raise BrokerConnectionError("Perpetual reconciliation snapshot is unavailable")
         age = time.monotonic() - self._last_reconciliation_monotonic
@@ -795,9 +799,15 @@ class PerpetualContext:
                 if object_type == "mark"
                 else self._client.fetch_index_price(symbol)
                 for symbol, object_type in due
-            )
+            ),
+            return_exceptions=True,
         )
+        refreshed = 0
+        failures: list[BaseException] = []
         for (symbol, object_type), row in zip(due, rows, strict=True):
+            if isinstance(row, BaseException):
+                failures.append(row)
+                continue
             self._sequence += 1
             item = market_data_object(
                 row,
@@ -810,7 +820,10 @@ class PerpetualContext:
             self._cache_market_object(symbol, item)
             if self._market_data_update_handler is not None:
                 await self._market_data_update_handler([item])
-        return len(rows)
+            refreshed += 1
+        if failures and refreshed == 0:
+            raise failures[0]
+        return refreshed
 
     async def _watch_orders(self) -> None:
         retry_delay = 1.0
