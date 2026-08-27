@@ -99,7 +99,7 @@ class AlpacaPaperAdapter:
             supports_shorting=True,
             supports_replace=False,
             supports_partial_fills=True,
-            supports_scanner=False,
+            supports_screener=False,
             supports_options=False,
             supports_futures=False,
             default_asset_class="STK",

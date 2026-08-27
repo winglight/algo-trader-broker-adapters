@@ -225,7 +225,7 @@ class CCXTCryptoAdapter:
             supports_shorting=self._perpetual is not None,
             supports_replace=False,
             supports_partial_fills=True,
-            supports_scanner=False,
+            supports_screener=False,
             supports_options=False,
             supports_futures=self._perpetual is not None,
             default_asset_class="CRYPTO_SPOT",

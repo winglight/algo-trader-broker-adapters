@@ -299,7 +299,6 @@ class IBKRPaperAdapter:
             supports_shorting=True,
             supports_replace=False,
             supports_partial_fills=True,
-            supports_scanner=True,
             supports_screener=True,
             supports_options=False,
             supports_futures=True,

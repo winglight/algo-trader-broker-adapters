@@ -2,7 +2,7 @@
 
 | Package | Adapter version | Broker SDK | Vendor client | Environment | Asset classes |
 | --- | --- | --- | --- | --- | --- |
-| `algo-trader-broker-adapter-ibkr-paper` | 0.1.0 | `>=1,<2` | `ib_async>=2.0.1,<3` | Paper | STK, FUT |
+| `algo-trader-broker-adapter-ibkr-paper` | 0.2.0 | `>=1,<2` | `ib_async>=2.0.1,<3` | Paper | STK, FUT |
 | `algo-trader-broker-adapter-alpaca-paper` | 0.1.0 | `>=1,<2` | `alpaca-py==0.43.5` | Paper | STK, ETF |
 | `algo-trader-broker-adapter-ccxt-crypto` | 0.1.0 | `>=1,<2` | `ccxt==4.5.56` | OKX Demo/Paper | CRYPTO_SPOT, CRYPTO_PERPETUAL |
 
