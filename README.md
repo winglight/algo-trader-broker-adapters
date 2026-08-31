@@ -1,9 +1,12 @@
 # algo-trader broker adapters
 
 Independent, open-source broker adapter packages for the algo-trader Broker SDK
-1.x. Each adapter is installed, activated, and versioned separately. This
-repository contains no broker credentials and must not depend on the main
-application's private `src` package.
+1.x, plus the compatibility index for selectable ATI Local Runtime profiles.
+Packages in this repository are installed and versioned separately. Built-in
+profiles such as `sim` and `projectx_topstep` are listed for discoverability but
+their source remains in the main application repository. This repository
+contains no broker credentials and must not depend on the main application's
+private `src` package.
 
 - Public repository:
   [winglight/algo-trader-broker-adapters](https://github.com/winglight/algo-trader-broker-adapters)
@@ -16,6 +19,7 @@ application's private `src` package.
 | Adapter | Package and entry point | Intended use | Supported trading products | Main capabilities | Limits |
 | --- | --- | --- | --- | --- | --- |
 | Sim | Built into the official Broker Runner image; `sim` | Run deterministic local development, demonstrations, strategy validation, and end-to-end tests without a broker account or external market-data connection | Stocks: `AAPL`, `MSFT`, `NVDA`, `AMZN`, `META`, `GOOGL`, `TSLA`, `AMD`, `JPM`, `SPY`; index futures: `ES`, `MES`, `NQ`, `MNQ`, `YM`, `MYM`, `RTY`, `M2K` | Simulated account, positions, PnL, orders, historical bars, real-time prices, and tick-by-tick data; `MKT`, `LMT`, `STP`, and `STP LMT`; `DAY` and `GTC`; configurable seed, initial cash, commission, and slippage | Simulation only; fixed instrument set and generated market data; no broker connectivity, options, DOM, fractional quantities, partial fills, scanners, or order replacement; results do not represent broker execution or live-market performance |
+| ProjectX / Topstep | Built into the official Broker Runner image and maintained in [`winglight/algo-trader`](https://github.com/winglight/algo-trader); `projectx_topstep` | Run a Topstep-style MNQ dry-run locally, or observe one explicitly selected TopstepX / ProjectX account in provider read-only mode | MNQ futures only in the public installer path | Local dry-run account/order/fill/fee/risk state; provider REST reconciliation and real-time account/market observation in read-only mode; fail-closed mode and identity checks | Public installation supports only `dry_run` and `read_only`; provider mutation, live execution, remote execution, automatic mode fallback, and local simulated fills in read-only mode are disabled. Provider API credentials are still sensitive trading credentials even when the local adapter is read-only |
 | IBKR Paper | `packages/ibkr-paper`; `ibkr_paper` | Develop and validate workflows against an Interactive Brokers Paper account through IB Gateway | Stocks and futures | Account, positions and PnL; order submission/cancellation and reconciliation; historical and real-time market data; tick-by-tick data; scanner support; `MKT`, `LMT`, `STP`, and `STP LMT`; `DAY` and `GTC` | Paper only; no live trading, options, DOM, fractional quantities, or order replacement; requires an IBKR Paper account, IB Gateway, and any applicable market-data subscriptions |
 | Alpaca Paper | `packages/alpaca-paper`; `alpaca_paper` | Develop and validate workflows against Alpaca Paper | Whole-share US stocks and ETFs | Account, positions and orders; fill reconciliation; historical bars, snapshots, and live stock bars/trades/quotes; `MKT`, `LMT`, `STP`, and `STP LMT`; `DAY` and `GTC` | Paper only; no futures, options, crypto, fractional shares, extended-hours orders, order replacement, scanners, or market depth; data feed must be explicitly set to `iex` or `sip` and requires the corresponding entitlement |
 | OKX Demo Spot + Perpetual | `packages/ccxt-crypto`; `ccxt_crypto` | Validate Spot and USDT-linear perpetual workflows through one OKX Demo adapter | BTC/USDT and ETH/USDT Spot; BTC/USDT:USDT and ETH/USDT:USDT perpetual | Target-isolated Spot and perpetual orders/reconciliation; mark/index/funding and risk snapshots; one-way isolated fixed 2x perpetual policy | Demo only; Production, transfer/withdrawal, runtime mode/leverage changes, stop orders, replace, scanners, and depth are disabled; all runtime gates default off |
@@ -26,12 +30,14 @@ hours, exchange rules, and vendor outages still apply. See the
 [compatibility matrix](docs/compatibility-matrix.md) and each package README for
 the current version-specific details.
 
-`sim` is part of the official Broker Runner image and is always installed; it is
-listed here because it is a selectable adapter, but its source package is not
-published from this repository. Installing an IBKR Paper or Alpaca Paper package
-does not activate it. The host application must explicitly select the matching
-entry point and configuration. There is no automatic provider or market-data
-fallback.
+`sim` and `projectx_topstep` are part of the official Broker Runner image and
+are selectable by the public installer, but their source packages are not
+published from this repository. ProjectX defaults to `dry_run`; `read_only`
+must be selected explicitly and configured with protected credential files or
+interactive secret input. Installing an IBKR Paper, Alpaca Paper, or CCXT
+package does not activate it. The host application must explicitly select the
+matching entry point and configuration. There is no automatic provider,
+execution-mode, or market-data fallback.
 
 ## Development
 

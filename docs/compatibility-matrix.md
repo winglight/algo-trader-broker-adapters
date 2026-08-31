@@ -2,9 +2,30 @@
 
 | Package | Adapter version | Broker SDK | Vendor client | Environment | Asset classes |
 | --- | --- | --- | --- | --- | --- |
+| Built-in `projectx_topstep` profile ([main repository](https://github.com/winglight/algo-trader/tree/main/src/broker_adapters/projectx_topstep)) | 0.1.0 dry-run; 0.2.0 read-only | Built into the matching Local Runtime release | ProjectX REST + SignalR protocol | Local dry-run or provider read-only in public installations | FUT (MNQ only) |
 | `algo-trader-broker-adapter-ibkr-paper` | 0.2.0 | `>=1,<2` | `ib_async>=2.0.1,<3` | Paper | STK, FUT |
 | `algo-trader-broker-adapter-alpaca-paper` | 0.1.0 | `>=1,<2` | `alpaca-py==0.43.5` | Paper | STK, ETF |
 | `algo-trader-broker-adapter-ccxt-crypto` | 0.1.0 | `>=1,<2` | `ccxt==4.5.56` | OKX Demo/Paper | CRYPTO_SPOT, CRYPTO_PERPETUAL |
+
+## ProjectX / Topstep public constraints
+
+- `projectx_topstep` is a built-in controlled profile in the main
+  `winglight/algo-trader` repository, not an independently installable package
+  from this adapter repository.
+- The public installer in
+  [`winglight/algo-trader-ib`](https://github.com/winglight/algo-trader-ib)
+  exposes only `dry_run` and provider `read_only`.
+- `dry_run` keeps account, order, fill, fee, and Topstep-style risk state local
+  and does not call provider Order, Position, or Account APIs.
+- `read_only` authenticates to one exact ProjectX account, reconciles provider
+  state, and observes the active MNQ contract. All place, cancel, modify, close,
+  and other mutation requests fail with a stable read-only error; it creates no
+  local simulated fills.
+- Public configuration forces live execution, provider mutation activation,
+  remote execution, and local-device-attestation bypass off. Mode or connection
+  failure is terminal and never falls back to dry-run or another adapter.
+- Username, API key, account identity, tokens, and full provider responses must
+  not appear in Git, manifests, reports, logs, screenshots, or support tickets.
 
 ## OKX Demo Phase 4/5 constraints
 
