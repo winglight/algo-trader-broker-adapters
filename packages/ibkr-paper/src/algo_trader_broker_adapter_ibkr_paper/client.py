@@ -4442,7 +4442,24 @@ def _ticker_to_snapshot(
         "bidGreeks": _option_greeks_to_dict(getattr(ticker, "bidGreeks", None)),
         "askGreeks": _option_greeks_to_dict(getattr(ticker, "askGreeks", None)),
         "lastGreeks": _option_greeks_to_dict(getattr(ticker, "lastGreeks", None)),
+        "fundamentalRatios": _fundamental_ratios_to_dict(
+            getattr(ticker, "fundamentalRatios", None)
+        ),
     }
+
+
+def _fundamental_ratios_to_dict(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    raw = value if isinstance(value, Mapping) else getattr(value, "__dict__", None)
+    if not isinstance(raw, Mapping):
+        return None
+    payload = {
+        str(key): parsed
+        for key, item in raw.items()
+        if (parsed := _optional_float(item)) is not None
+    }
+    return payload or None
 
 
 def _snapshot_has_market_data(snapshot: Mapping[str, Any]) -> bool:
