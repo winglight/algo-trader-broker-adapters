@@ -64,8 +64,15 @@ class AlpacaClients:
                     asyncio.to_thread(function, *args, **kwargs),
                     timeout=self.settings.request_timeout_seconds,
                 )
-            except asyncio.TimeoutError:
-                raise
+            except asyncio.TimeoutError as exc:
+                # Submission timeouts must retain the adapter's client-order-id
+                # reconciliation path; a blind retry could duplicate an order.
+                if operation == "submit_order":
+                    raise
+                raise BrokerConnectionError(
+                    f"Alpaca request timed out during {operation}",
+                    details={"operation": operation, "error_type": "TimeoutError"},
+                ) from exc
             except BrokerOrderError:
                 raise
             except Exception as exc:
