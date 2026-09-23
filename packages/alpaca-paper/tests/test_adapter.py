@@ -386,6 +386,28 @@ async def test_market_snapshot_history_and_live_bar_preserve_utc() -> None:
 
 
 @pytest.mark.asyncio
+async def test_quote_freshness_is_independent_of_latest_trade_and_price_bands_are_explicit():
+    backend = FakeBackend()
+    original = backend.get_snapshot
+
+    async def snapshot(symbol):
+        result = await original(symbol)
+        result['latest_quote']['timestamp'] = '2026-07-15T14:00:00Z'
+        return result
+
+    backend.get_snapshot = snapshot
+    adapter, _ = await connected(backend)
+    contract = {'symbol': 'AAPL', 'secType': 'STK', 'currency': 'USD'}
+    quote = await adapter.request_market_snapshot(contract)
+    assert quote['timestamp'] == '2026-07-15T14:31:00+00:00'
+    assert quote['quoteTimestamp'] == '2026-07-15T14:00:00+00:00'
+    details = await adapter.request_contract_details(contract)
+    assert details[0]['priceIncrements'] == [
+        {'lowEdge': '0', 'increment': '0.0001'}, {'lowEdge': '1', 'increment': '0.01'},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_historical_data_accepts_broker_protocol_blank_end_datetime() -> None:
     adapter, _ = await connected()
     contract = {"symbol": "AAPL", "secType": "STK", "currency": "USD"}

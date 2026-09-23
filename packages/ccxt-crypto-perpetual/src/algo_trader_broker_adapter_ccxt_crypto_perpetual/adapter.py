@@ -398,6 +398,12 @@ class PerpetualContext:
             result.extend(cached)
         return result
 
+    async def fetch_ticker(self, symbol: str) -> dict[str, Any]:
+        await self.ensure_connected()
+        if symbol not in self._settings.allowed_symbols:
+            raise BrokerConnectionError("Perpetual instrument is not allowlisted")
+        return await self._client.fetch_ticker(symbol)
+
     async def fetch_ohlcv(
         self,
         symbol: str,

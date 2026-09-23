@@ -194,6 +194,7 @@ class CCXTCryptoAdapter:
 
     def capabilities(self) -> BrokerCapabilities:
         return BrokerCapabilities(
+            default_time_in_force="GTC",
             adapter_name=self.adapter_id,
             environment="PAPER",
             asset_classes=(
@@ -1226,6 +1227,7 @@ class CCXTCryptoAdapter:
                 "currency": "USDT",
                 "localSymbol": metadata.get("nativeInstrumentId"),
                 "instrumentId": metadata.get("instrumentId"),
+                "minTick": metadata.get("tickSize"),
             }
         if symbol not in self._settings.allowed_symbols:
             raise unsupported("non-allowlisted instruments")
@@ -1239,6 +1241,7 @@ class CCXTCryptoAdapter:
             "currency": "USDT",
             "localSymbol": rule.native_instrument_id,
             "instrumentId": rule.instrument_id,
+            "minTick": canonical(rule.tick_size),
         }
 
     async def request_contract_details(self, contract: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -1257,28 +1260,14 @@ class CCXTCryptoAdapter:
             self._perpetual is not None
             and symbol in self._settings.perpetual_allowed_symbols
         ):
-            await self._perpetual.ensure_connected()
-            instrument_id = _perpetual_instrument_id(symbol)
-            mark = next(
-                (
-                    item
-                    for item in await self._perpetual.market_data_objects_v1()
-                    if item.get("instrumentId") == instrument_id
-                    and item.get("objectType") == "mark"
-                ),
-                None,
-            )
-            payload = mark.get("payload") if isinstance(mark, Mapping) else None
-            price = payload.get("markPriceDecimal") if isinstance(payload, Mapping) else None
-            if price in (None, ""):
-                raise BrokerConnectionError("Perpetual mark price is unavailable")
+            ticker = await self._perpetual.fetch_ticker(symbol)
             return {
                 "symbol": symbol,
-                "bid": None,
-                "ask": None,
-                "last": float(price),
-                "close": float(price),
-                "timestamp": mark.get("eventTime") or mark.get("observedAt"),
+                "bid": ticker.get("bid"),
+                "ask": ticker.get("ask"),
+                "last": ticker.get("last"),
+                "timestamp": timestamp(ticker.get("timestamp")) if ticker.get("timestamp") is not None else None,
+                "quoteTimestamp": timestamp(ticker.get("timestamp")) if ticker.get("timestamp") is not None else None,
             }
         if symbol not in self._settings.allowed_symbols:
             raise unsupported("non-allowlisted instruments")
@@ -1290,6 +1279,7 @@ class CCXTCryptoAdapter:
             "ask": ticker.get("ask"),
             "last": ticker.get("last"),
             "timestamp": timestamp(ticker.get("timestamp")),
+            "quoteTimestamp": timestamp(ticker.get("timestamp")) if ticker.get("timestamp") is not None else None,
         }
 
     async def get_historical_data(

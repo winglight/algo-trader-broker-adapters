@@ -207,19 +207,14 @@ async def test_perpetual_contract_qualification_and_market_snapshot() -> None:
                 "symbol": "BTC/USDT:USDT",
                 "instrumentId": "crypto-perpetual:BTC-USDT:USDT:OKX",
                 "nativeInstrumentId": "BTC-USDT-SWAP",
+                "tickSize": "0.1",
             }
         ]
     )
-    adapter._perpetual.market_data_objects_v1 = AsyncMock(
-        return_value=[
-            {
-                "instrumentId": "crypto-perpetual:BTC-USDT:USDT:OKX",
-                "objectType": "mark",
-                "eventTime": "2026-08-20T01:00:00Z",
-                "payload": {"markPriceDecimal": "120000.1"},
-            }
-        ]
-    )
+    adapter._perpetual.fetch_ticker = AsyncMock(return_value={
+        "bid": 120000.0, "ask": 120000.2, "last": 120000.1,
+        "timestamp": int(datetime(2026, 8, 20, 1, tzinfo=UTC).timestamp() * 1000),
+    })
     adapter._perpetual.fetch_ohlcv = AsyncMock(
         return_value=[[1787184000000, "119900", "120100", "119800", "120000", "12.5"]]
     )
@@ -240,14 +235,15 @@ async def test_perpetual_contract_qualification_and_market_snapshot() -> None:
         "currency": "USDT",
         "localSymbol": "BTC-USDT-SWAP",
         "instrumentId": "crypto-perpetual:BTC-USDT:USDT:OKX",
+        "minTick": "0.1",
     }
     assert snapshot == {
         "symbol": "BTC/USDT:USDT",
-        "bid": None,
-        "ask": None,
+        "bid": 120000.0,
+        "ask": 120000.2,
         "last": 120000.1,
-        "close": 120000.1,
         "timestamp": "2026-08-20T01:00:00Z",
+        "quoteTimestamp": "2026-08-20T01:00:00Z",
     }
     assert len(bars) == 1
     assert bars[0].close == 120000.0

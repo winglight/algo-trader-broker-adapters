@@ -288,6 +288,7 @@ class IBKRPaperAdapter:
 
     def capabilities(self) -> BrokerCapabilities:
         return BrokerCapabilities(
+            default_time_in_force="DAY",
             adapter_name=self.adapter_id,
             environment="PAPER",
             asset_classes={"STK", "FUT"},

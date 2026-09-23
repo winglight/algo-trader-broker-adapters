@@ -88,6 +88,7 @@ class AlpacaPaperAdapter:
 
     def capabilities(self) -> BrokerCapabilities:
         return BrokerCapabilities(
+            default_time_in_force="DAY",
             adapter_name=self.adapter_id,
             environment="PAPER",
             asset_classes={"STK", "ETF"},
@@ -503,7 +504,13 @@ class AlpacaPaperAdapter:
     async def request_contract_details(
         self, contract: Mapping[str, Any]
     ) -> list[dict[str, Any]]:
-        return [await self.qualify_contract(contract)]
+        qualified = await self.qualify_contract(contract)
+        # Broker limit-price precision, including the $1 boundary:
+        # https://docs.alpaca.markets/us/docs/orders-at-alpaca#sub-penny-increments-for-limit-orders
+        return [{**qualified, "priceIncrements": [
+            {"lowEdge": "0", "increment": "0.0001"},
+            {"lowEdge": "1", "increment": "0.01"},
+        ]}]
 
     async def request_option_parameters(
         self, *, symbol: str, con_id: int, sec_type: str = "STK", exchange: str = ""
@@ -555,6 +562,7 @@ class AlpacaPaperAdapter:
                 value(trade, "timestamp") or value(quote, "timestamp")
             ).isoformat(),
             "dataFeed": self._settings.data_feed,
+            "quoteTimestamp": utc_datetime(value(quote, "timestamp")).isoformat() if quote is not None and value(quote, "timestamp") else None,
         }
 
     async def request_option_snapshot(

@@ -192,6 +192,9 @@ class OKXDemoPerpetualClient:
     async def fetch_mark_price(self, symbol: str) -> dict[str, Any]:
         return dict(await self._read("fetch_mark_price", symbol))
 
+    async def fetch_ticker(self, symbol: str) -> dict[str, Any]:
+        return dict(await self._read("fetch_ticker", symbol))
+
     async def fetch_index_price(self, symbol: str) -> dict[str, Any]:
         index_instrument_id = symbol.split("/", 1)[0] + "-USDT"
         response = await self._read(
