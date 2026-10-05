@@ -13,6 +13,7 @@ from algo_trader_broker_sdk import BrokerConnectionError, BrokerOrderError
 
 from .mapping import value
 from .settings import AlpacaPaperSettings
+from .raw_stream import create_trading_stream
 from .streams import (
     AlpacaStockSubscription,
     MultiplexedAlpacaStockStream,
@@ -35,6 +36,10 @@ class AlpacaClients:
         self._trade_stream: TradeUpdateStream | None = None
         self._stock_stream: MultiplexedAlpacaStockStream | None = None
         self._stock_stream_lock = asyncio.Lock()
+        self._raw_trade_handler = None
+
+    def set_raw_trade_handler(self, handler) -> None:
+        self._raw_trade_handler = handler
 
     def _load(self) -> None:
         if self._trading is not None:
@@ -307,13 +312,7 @@ class AlpacaClients:
     ) -> None:
         if self._trade_stream is not None:
             return
-        from alpaca.trading.stream import TradingStream
-
-        stream = TradingStream(
-            self.settings.api_key_id,
-            self.settings.secret_key,
-            paper=True,
-        )
+        stream = create_trading_stream(self.settings, lambda: self._raw_trade_handler)
         threaded = ThreadedAlpacaStream(
             stream,
             lambda callback: stream.subscribe_trade_updates(callback),

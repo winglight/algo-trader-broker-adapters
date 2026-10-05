@@ -30,6 +30,8 @@ from algo_trader_broker_sdk import (
     TickByTickMidPoint,
     TradeUpdate,
 )
+from algo_trader_broker_sdk.options import OptionVerifiedAccount
+from algo_trader_broker_sdk.options_events import OptionEventHandler, OptionRawEvent
 
 from .clients import AlpacaClients, duration_window
 from .errors import outcome_unknown, unsupported
@@ -48,11 +50,33 @@ from .mapping import (
     value,
 )
 from .settings import AlpacaPaperSettings
+from .raw_stream import CapturedTradeFrame, decode_native
 
 
 _TERMINAL = {"Filled", "Cancelled", "Rejected", "Inactive"}
 _ORDER_TYPES = {"MKT", "LMT", "STP", "STP LMT"}
 _TIFS = {"DAY", "GTC"}
+
+
+def _option_order(order):
+    return (text(value(order, "asset_class")).lower() == "us_option"
+            or text(value(order, "order_class")).lower() == "mleg"
+            or text(value(order, "client_order_id")).startswith("atiopt_")
+            or any(_option_order(leg) for leg in (value(order, "legs") or ())))
+
+
+def _legacy_activity(activity, orders):
+    order = orders.get(text(value(activity, "order_id")))
+    if _option_order(activity) or (order is not None and _option_order(order)):
+        return False
+    # A fill activity often omits asset_class. A missing order is not proof
+    # that its symbol is a stock, even if it resembles an equity ticker.
+    return (_equity_order(order) if order is not None
+            else text(value(activity, "asset_class")) == "us_equity")
+
+
+def _equity_order(order):
+    return text(value(order, "asset_class")) == "us_equity" and not _option_order(order)
 
 
 class AlpacaPaperAdapter:
@@ -74,6 +98,40 @@ class AlpacaPaperAdapter:
         self._resub_tasks: list[Callable[[], Awaitable[None]]] = []
         self._lifecycle_lock = asyncio.Lock()
         self._stream_reconnect_task: asyncio.Task[None] | None = None
+        self._option_event_binding: OptionVerifiedAccount | None = None
+
+    def set_option_event_handler(self, context: OptionVerifiedAccount, handler: OptionEventHandler | None) -> None:
+        if type(context) is not OptionVerifiedAccount:
+            raise BrokerContractError("Raw option events require a verified account binding")
+        if handler is None:
+            if self._option_event_binding == context:
+                self._backend.set_raw_trade_handler(None)
+                self._option_event_binding = None
+            return
+        if (context.broker != "ALPACA" or context.scope.environment != "paper"
+                or context.native_account_ref != self._account_id or not self._connected):
+            raise BrokerContractError("Raw option event account does not match the connected Alpaca account")
+        if not callable(getattr(self._backend, "set_raw_trade_handler", None)):
+            raise unsupported("raw_option_events")
+
+        async def retain(raw):
+            native_id = None
+            try:
+                message = decode_native(raw)
+                data = message.get("data", {})
+                candidate = data.get("event_id") or data.get("execution_id")
+                if type(candidate) is str and 0 < len(candidate) <= 128 and candidate.strip() == candidate:
+                    native_id = candidate
+            except (ValueError, AttributeError, UnicodeError, RecursionError):
+                pass  # The original malformed bytes still need a receipt.
+            await handler(OptionRawEvent(context.scope, "ALPACA_TRADE_UPDATES", raw, native_id))
+
+        self._option_event_binding = context
+        self._backend.set_raw_trade_handler(retain)
+
+    def _clear_option_event_handler(self):
+        if self._option_event_binding is not None:
+            self.set_option_event_handler(self._option_event_binding, None)
 
     def manifest(self) -> BrokerAdapterManifest:
         return BrokerAdapterManifest(
@@ -120,6 +178,7 @@ class AlpacaPaperAdapter:
         await self.connect()
 
     async def close(self) -> None:
+        self._clear_option_event_handler()
         async with self._lifecycle_lock:
             reconnect_task = self._stream_reconnect_task
             self._stream_reconnect_task = None
@@ -144,6 +203,7 @@ class AlpacaPaperAdapter:
             await self._publish_positions()
 
     async def disconnect(self, reason: str | None = None) -> None:
+        self._clear_option_event_handler()
         async with self._lifecycle_lock:
             self._reconnect_reason = reason
             if hasattr(self._backend, "stop_trade_updates"):
@@ -228,8 +288,29 @@ class AlpacaPaperAdapter:
         return positions
 
     async def _handle_native_trade_update(self, payload: Any) -> None:
+        if isinstance(payload, CapturedTradeFrame):
+            frame = payload
+            try:
+                message = decode_native(frame.raw)
+                payload = message.get("data") if isinstance(message, dict) else None
+                order = payload.get("order") if isinstance(payload, dict) else None
+                legacy = (isinstance(order, dict) and order.get("asset_class") == "us_equity"
+                          and not _option_order(order))
+            except (ValueError, UnicodeError, RecursionError):
+                payload, legacy = None, False
+            if not legacy:
+                if frame.sink is None:
+                    raise BrokerConnectionError("Option or unclassified trade update has no verified durable event sink")
+                await frame.sink(frame.raw)
+                if not isinstance(payload, dict) or not isinstance(payload.get("order"), dict):
+                    raise BrokerConnectionError("Alpaca trade update is malformed; raw evidence retained")
+                return
         event = text(value(payload, "event")).strip().lower()
         order = value(payload, "order") or payload
+        if _option_order(order):
+            # Never serialize an already-cast SDK model to pretend it is the
+            # exact original option payload, or forward it to the stock writer.
+            raise BrokerConnectionError("Option trade update requires an original native frame")
         if event in {"order_cancel_rejected", "order_replace_rejected"}:
             order_id = text(value(order, "id")).strip()
             refreshed = await self._backend.get_order_by_id(order_id) if order_id else None
@@ -261,6 +342,7 @@ class AlpacaPaperAdapter:
         )
 
     async def _handle_trade_stream_failure(self, exc: BaseException) -> None:
+        self._clear_option_event_handler()
         self._connected = False
         await self._notify_connection(
             "disconnected",
@@ -292,7 +374,7 @@ class AlpacaPaperAdapter:
             self._connected_since = datetime.now(UTC)
             await self._notify_connection(
                 "connected",
-                {"reason": "trade_stream_recovered", "reconciled": True},
+                {"reason": "trade_stream_recovered", "reconciled": True, "options_reconciliation_required": True},
             )
             if self._trade_update_handler is not None:
                 for update in open_updates:
@@ -300,7 +382,7 @@ class AlpacaPaperAdapter:
             return
 
     async def request_open_orders_unchecked(self) -> list[TradeUpdate]:
-        return [map_trade_update(order) for order in await self._backend.get_orders(status="open")]
+        return [map_trade_update(order) for order in await self._backend.get_orders(status="open") if _equity_order(order)]
 
     async def request_executions_unchecked(self) -> list[TradeUpdate]:
         since_at = datetime.now(UTC) - timedelta(
@@ -312,6 +394,7 @@ class AlpacaPaperAdapter:
         updates = [
             map_fill_activity(item, orders.get(text(value(item, "order_id"))))
             for item in activities
+            if _legacy_activity(item, orders)
         ]
         if self._trade_update_handler is not None:
             for update in updates:
@@ -459,6 +542,7 @@ class AlpacaPaperAdapter:
         return [
             map_trade_update(order)
             for order in await self._backend.get_orders(status="closed", after=since)
+            if _equity_order(order)
         ]
 
     async def request_executions(
@@ -474,7 +558,8 @@ class AlpacaPaperAdapter:
         activities = await self._backend.get_fill_activities(since_at)
         closed = await self._backend.get_orders(status="closed", after=since_at)
         orders = {text(value(item, "id")): item for item in closed}
-        return [map_fill_activity(item, orders.get(text(value(item, "order_id")))) for item in activities]
+        return [map_fill_activity(item, orders.get(text(value(item, "order_id"))))
+                for item in activities if _legacy_activity(item, orders)]
 
     async def qualify_contract(self, contract: Mapping[str, Any]) -> dict[str, Any]:
         sec_type = text(contract.get("secType") or contract.get("sec_type") or "STK").upper()

@@ -70,6 +70,7 @@ class FakeBackend:
         }
         self.order = {
             "id": "order-uuid",
+            "asset_class": "us_equity",
             "client_order_id": "client-123",
             "symbol": "AAPL",
             "qty": "2",
