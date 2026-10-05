@@ -1,5 +1,13 @@
 # Changelog
 
+## V9.2 development — qualified event interpretation
+
+- Decode supported native option statuses and actual leg executions against
+  exact retained contract qualifications, preserving full execution IDs.
+- Separate parent and child states; ignore cumulative/net prices as financial
+  evidence. Reject unknown, ambiguous, fractional or lossy event fields.
+- Keep corrections, fees, lifecycle, REST backfill and certification pending.
+
 ## V9.2 development — raw event ingress
 
 - Preserve exact native trading frames and capture the verified account sink

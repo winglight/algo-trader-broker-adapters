@@ -34,7 +34,19 @@ Only explicit US-equity frames use the old stock callback. Option parents,
 children, and unclassified frames require the durable sink; they never become
 stock fills. Legacy order/activity reconciliation likewise excludes options and
 unclassified orders. This is **not** option backfill: REST pagination, source
-watermarks, gap recovery and financial normalization are still pending.
+watermarks and gap recovery are still pending.
+
+`decode_option_event` now interprets supported trade update statuses and exact
+single/multileg executions using Runner-retained qualifications. It cross-checks
+native asset UUID, symbol, economic identity, account and child order UUID;
+missing or ambiguous evidence stays unresolved. Parent net/cumulative prices
+and quantities never create fills. Child client labels do not replace the ATI
+parent reference; child status is separate from parent status. Full execution
+IDs and decimal premiums survive unchanged. Native nanoseconds are floored to
+the domain's microsecond timestamp; original timestamps remain in raw bytes.
+No fee, correction revision, trade bust or lifecycle activity is inferred by
+this codec. Those sources and the REST/WS execution cross-reference remain
+pending.
 
 The production adapter does not yet declare `options/1.0`. Runner still requires
 the complete extension handshake, so this producer is currently verified using

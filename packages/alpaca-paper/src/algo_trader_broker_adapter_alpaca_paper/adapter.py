@@ -133,6 +133,10 @@ class AlpacaPaperAdapter:
         if self._option_event_binding is not None:
             self.set_option_event_handler(self._option_event_binding, None)
 
+    async def decode_option_event(self, event, resolve_contract):
+        from .options_codec import decode_trade_update
+        return await decode_trade_update(event, resolve_contract)
+
     def manifest(self) -> BrokerAdapterManifest:
         return BrokerAdapterManifest(
             adapter_id=self.adapter_id,
