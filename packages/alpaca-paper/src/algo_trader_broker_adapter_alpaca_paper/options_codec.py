@@ -11,7 +11,7 @@ from uuid import UUID
 
 from algo_trader_broker_sdk import BrokerContractError
 from algo_trader_broker_sdk.options import check, decimal_wire
-from algo_trader_broker_sdk.options_events import OptionNativeExecution, OptionNativeInterpretation, OptionNativeLeg
+from algo_trader_broker_sdk.options_events import OptionNativeExecution, OptionNativeInterpretation, OptionNativeLeg, OptionExecutionOrigin, OptionNonOptionActivity
 
 from .raw_stream import decode_native
 
@@ -26,7 +26,11 @@ class _ResolutionFailure(Exception):
 
 
 def _uuid(value):
-    check(type(value) is str and str(UUID(value)) == value, "Native order/contract UUID is invalid")
+    try:
+        valid = type(value) is str and str(UUID(value)) == value
+    except (ValueError, AttributeError):
+        valid = False
+    check(valid, "Native order/contract UUID is invalid")
     return value
 
 
@@ -121,6 +125,76 @@ async def _decode(event, resolve_contract):
             price = _decimal(execution["price"])
             decimal_wire(price, nonnegative=True)
             executions.append(OptionNativeExecution(order_id, execution["execution_id"], int(quantity), price,
-                _time(execution["timestamp"])))
+                _time(execution["timestamp"]), execution_origin(event.source, native, execution["execution_id"])))
     return OptionNativeInterpretation(event.scope, root, client, "ALPACA_ORDER_UUID",
         _STATUS[data["event"]], effective, tuple(legs), tuple(executions), legs[0].contract_id if child else None)
+
+
+def execution_origin(source, native, execution_id):
+    # Opaque IDs remain preserved in the legacy observation contract. Only a
+    # canonical WS UUID participates in Alpaca cross-source UUID matching.
+    if source == "ALPACA_TRADE_UPDATES":
+        try:
+            if str(UUID(execution_id)) != execution_id: return None
+        except (ValueError, TypeError, AttributeError):
+            return None
+    return OptionExecutionOrigin(source, native["id"], native["asset_id"], native["symbol"])
+
+
+async def decode_fill_activity(event, resolve_contract, resolve_order):
+    try:
+        return await _decode_activity(event, resolve_contract, resolve_order)
+    except _ResolutionFailure as exc:
+        raise exc.error
+    except (ValueError, TypeError, AttributeError, KeyError, InvalidOperation, RecursionError) as exc:
+        raise BrokerContractError("Native FILL activity remains unresolved") from exc
+
+
+async def _decode_activity(event, resolve_contract, resolve_order):
+    check(event.source == "ALPACA_ACTIVITY_FILL" and event.scope.environment == "paper", "Unsupported activity source")
+    activity = decode_native(event.raw_payload)
+    check(type(activity) is dict and activity.get("activity_type") == "FILL" and activity.get("type") in ("fill", "partial_fill"), "Expected original FILL activity")
+    order_id = _uuid(activity["order_id"])
+    check(callable(resolve_order), "Activity needs independently retained native order evidence")
+    try:
+        proof = await resolve_order(order_id)
+    except Exception as exc:
+        raise _ResolutionFailure(exc) from exc
+    check(proof.source == "ALPACA_ORDER_DETAIL" and proof.native_event_id == order_id and (proof.scope.execution_target, proof.scope.account, proof.scope.environment) ==
+          (event.scope.execution_target, event.scope.account, event.scope.environment), "Order evidence changed stable account")
+    order = decode_native(proof.raw_payload)
+    check(type(order) is dict and _uuid(order["id"]) == order_id, "Order evidence differs from activity order")
+    parent = order.get("order_class") == "mleg" and order.get("asset_class") in ("", None)
+    if parent:
+        children = order.get("legs")
+        check(type(children) is list and 1 <= len(children) <= 4, "Parent needs exact native children")
+        matches = [item for item in children if type(item) is dict and item.get("symbol") == activity.get("symbol")]
+        check(len(matches) == 1, "Activity must identify one native child, not a parent net price")
+        native = matches[0]
+    else:
+        native = order
+    check(native.get("symbol") == activity.get("symbol") and native.get("side") == activity.get("side") and activity.get("side") in ("buy", "sell"), "Activity symbol or side differs from order")
+    native_id, asset_id = _uuid(native["id"]), _uuid(native["asset_id"])
+    check(not parent or native_id != order_id, "Parent cannot be a child fill")
+    if native.get("asset_class") == "us_equity":
+        return OptionNonOptionActivity(event.scope, native_id, native["symbol"], "us_equity")
+    check(native.get("asset_class") == "us_option", "Activity asset class is not proven")
+    try:
+        qualified = await resolve_contract(asset_id, native["symbol"])
+    except Exception as exc:
+        raise _ResolutionFailure(exc) from exc
+    binding, contract = qualified.binding, qualified.contract
+    check(qualified.status == "EXACT" and binding is not None and contract is not None and
+        (binding.adapter_id, binding.environment, binding.account_scope, binding.broker_contract_id, binding.local_symbol) ==
+        ("alpaca_paper", event.scope.environment, event.scope.account, asset_id, native["symbol"]) and
+        binding.canonical_id == contract.canonical_id == qualified.canonical_id, "Activity contract qualification differs")
+    identity = activity["id"]
+    check(type(identity) is str and identity.count("::") == 1 and identity.split("::")[0], "Activity execution candidate is not proven")
+    _uuid(identity.split("::")[1])  # Candidate only; preserve the full ID below.
+    quantity = Decimal(_decimal(activity["qty"]))
+    check(quantity == quantity.to_integral_value() and 0 < quantity <= 2**53 - 1, "Activity quantity must be positive whole contracts")
+    effective, price = _time(activity["transaction_time"]), _decimal(activity["price"])
+    client = order.get("client_order_id") if parent or order.get("order_class") != "mleg" else None
+    leg = OptionNativeLeg(native_id, contract.canonical_id, activity["side"].upper(), contract.key.multiplier)
+    execution = OptionNativeExecution(native_id, identity, int(quantity), price, effective, execution_origin(event.source, native, identity))
+    return OptionNativeInterpretation(event.scope, order_id, client, "ALPACA_ORDER_UUID", None, effective, (leg,), (execution,))

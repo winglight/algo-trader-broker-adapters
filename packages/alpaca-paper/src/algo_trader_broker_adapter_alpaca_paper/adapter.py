@@ -133,9 +133,26 @@ class AlpacaPaperAdapter:
         if self._option_event_binding is not None:
             self.set_option_event_handler(self._option_event_binding, None)
 
-    async def decode_option_event(self, event, resolve_contract):
-        from .options_codec import decode_trade_update
+    async def decode_option_event(self, event, resolve_contract, resolve_order=None):
+        from .options_codec import decode_trade_update, decode_fill_activity
+        if event.source == "ALPACA_ACTIVITY_FILL":
+            return await decode_fill_activity(event, resolve_contract, resolve_order)
         return await decode_trade_update(event, resolve_contract)
+
+    async def read_option_order_evidence(self, request):
+        from algo_trader_broker_sdk.options import OptionScope
+        from algo_trader_broker_sdk.options_events import OptionNativeOrderQuery
+        from .options_codec import _uuid
+        if type(request) is not OptionNativeOrderQuery:
+            raise BrokerContractError("Native order evidence needs a scoped query")
+        _uuid(request.order_id)
+        scope = OptionScope(**{name: getattr(request, name) for name in OptionScope.__dataclass_fields__})
+        bound = self._option_event_binding
+        if (bound is None or bound.scope != scope or bound.broker != "ALPACA" or scope.environment != "paper"
+                or not self._connected or bound.native_account_ref != self._account_id):
+            raise BrokerContractError("Native order query differs from verified account")
+        raw = await self._backend.get_option_order_evidence(request)
+        return OptionRawEvent(scope, "ALPACA_ORDER_DETAIL", raw, request.order_id)
 
     async def read_option_activity_page(self, request):
         from algo_trader_broker_sdk.options import OptionScope

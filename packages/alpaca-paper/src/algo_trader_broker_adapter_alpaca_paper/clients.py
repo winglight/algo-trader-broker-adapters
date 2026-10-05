@@ -245,17 +245,24 @@ class AlpacaClients:
         Never use response.json(), the legacy FILL-only scanner, redirects, or
         a new credential/base-URL setting for this acquisition path.
         """
-        import httpx
-
         params = {"after": request.range_start, "until": request.range_end,
                   "direction": "asc", "page_size": 100}
         if request.cursor is not None: params["page_token"] = request.cursor
+        return await self._get_option_raw("/v2/account/activities", params)
+
+    async def get_option_order_evidence(self, request) -> bytes:
+        from .options_codec import _uuid
+        return await self._get_option_raw("/v2/orders/" + _uuid(request.order_id), {"nested": "true"})
+
+    async def _get_option_raw(self, path, params) -> bytes:
+        import httpx
+
         try:
             async with self._semaphore, asyncio.timeout(self.settings.request_timeout_seconds):
                 async with httpx.AsyncClient(base_url=PAPER_TRADING_BASE_URL, follow_redirects=False,
                     headers={"APCA-API-KEY-ID": self.settings.api_key_id, "APCA-API-SECRET-KEY": self.settings.secret_key},
                     timeout=self.settings.request_timeout_seconds) as client:
-                    async with client.stream("GET", "/v2/account/activities", params=params) as response:
+                    async with client.stream("GET", path, params=params) as response:
                         if response.status_code != 200:
                             raise BrokerConnectionError("Alpaca activity page request failed", details={"status_code": response.status_code})
                         raw = bytearray()

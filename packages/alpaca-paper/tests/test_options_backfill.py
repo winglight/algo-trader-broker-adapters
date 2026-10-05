@@ -9,6 +9,7 @@ import pytest
 
 from algo_trader_broker_sdk import BrokerConnectionError, BrokerContractError, dataclass_to_payload
 from algo_trader_broker_sdk.options_backfill import OptionActivityScanPage, OptionRawActivityPage
+from algo_trader_broker_sdk.options_events import OptionNativeOrderQuery
 from algo_trader_broker_adapter_alpaca_paper.clients import AlpacaClients
 from algo_trader_broker_adapter_alpaca_paper.options_backfill import SOURCE, index_activity_page
 from algo_trader_broker_adapter_alpaca_paper.raw_stream import decode_native
@@ -107,3 +108,20 @@ async def test_adapter_rejects_wrong_scope_but_keeps_captured_scope_if_connectio
     page = await adapter.read_option_activity_page(query())
     assert page.request == query() and page.raw_payload == b"[]" and adapter.index_option_activity_page(page).items == ()
     assert adapter._option_event_binding is None
+
+
+@pytest.mark.asyncio
+async def test_native_order_http_uses_exact_uuid_and_retains_original_response_before_parsing(monkeypatch):
+    requests = []
+    raw = b'{"id":"00000000-0000-4000-8000-000000000001","filled_avg_price":1.123456789012}'
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, content=raw)
+    original = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: original(**kwargs, transport=httpx.MockTransport(handler)))
+    client = AlpacaClients(AlpacaPaperSettings.from_mapping(SETTINGS))
+    request = OptionNativeOrderQuery(**dataclass_to_payload(SCOPE), order_id="00000000-0000-4000-8000-000000000001")
+    assert await client.get_option_order_evidence(request) == raw
+    assert str(requests[0].url) == "https://paper-api.alpaca.markets/v2/orders/00000000-0000-4000-8000-000000000001?nested=true"
+    with pytest.raises(BrokerContractError): await client.get_option_order_evidence(replace(request, order_id="../account?secret"))
+    assert len(requests) == 1

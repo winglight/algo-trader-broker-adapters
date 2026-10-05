@@ -45,8 +45,8 @@ parent reference; child status is separate from parent status. Full execution
 IDs and decimal premiums survive unchanged. Native nanoseconds are floored to
 the domain's microsecond timestamp; original timestamps remain in raw bytes.
 No fee, correction revision, trade bust or lifecycle activity is inferred by
-this codec. Those sources and the REST/WS execution cross-reference remain
-pending.
+this codec. Those sources remain pending; original REST/WS execution evidence
+and the Orders cross-reference path are described below.
 
 The production adapter does not yet declare `options/1.0`. Runner still requires
 the complete extension handshake, so this producer is currently verified using
@@ -81,8 +81,26 @@ pagination is not financial completeness. The [activity object/pagination
 reference](https://docs.alpaca.markets/us/docs/account-activities) does not by
 itself prove that a FILL ID suffix is the WS execution UUID. This acquisition
 path preserves the entire ID and creates no financial aliases or fills.
-REST financial/lifecycle codecs, WS matching and runtime scheduling remain in
-development; this stage does not enable the full production option extension.
+Original REST FILL interpretation is implemented below. Revisions, fees,
+lifecycle and runtime scheduling remain in development; these stages do not
+enable the full production option extension.
+
+`read_option_order_evidence` retrieves bounded original bytes from the official
+[order-by-ID endpoint](https://docs.alpaca.markets/us/reference/getorderbyorderid-1)
+with `nested=true`, using the same verified Paper scope. The FILL codec receives
+that retained order through a Runner resolver, checks order/child UUID, native
+asset UUID, symbol and side, then resolves independent EXACT qualification.
+The native activity supplies actual quantity/premium/time; parent net price,
+cumulative fields and current order status do not produce activity fills or
+statuses. Explicit stock order evidence yields non-option classification.
+
+The native execution keeps its full REST ID. Canonical WS UUID executions and
+REST FILLs additionally carry source and exact native leg evidence. Orders uses
+that evidence with its frozen plan to verify cross-source aliases inside the
+existing financial transaction; the adapter does not unconditionally strip ID
+suffixes. Missing/ambiguous proof remains unresolved. REST-first, WS-first,
+legacy WS and overlapping scans are covered by synthetic MariaDB integration;
+they are not real account certification.
 
 ## Configuration
 
