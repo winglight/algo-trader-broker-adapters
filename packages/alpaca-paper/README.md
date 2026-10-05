@@ -33,8 +33,8 @@ remain unresolved evidence. Authentication frames are not journaled.
 Only explicit US-equity frames use the old stock callback. Option parents,
 children, and unclassified frames require the durable sink; they never become
 stock fills. Legacy order/activity reconciliation likewise excludes options and
-unclassified orders. This is **not** option backfill: REST pagination, source
-watermarks and gap recovery are still pending.
+unclassified orders. This legacy filtering does not provide option backfill;
+the independent raw activity acquisition path is described below.
 
 `decode_option_event` now interprets supported trade update statuses and exact
 single/multileg executions using Runner-retained qualifications. It cross-checks
@@ -56,6 +56,33 @@ extension methods and their scope checks; do not bypass that handshake.
 
 Vendor references: [TradingStream](https://alpaca.markets/sdks/python/api_reference/trading/stream.html)
 and [native trade update/option leg fields](https://docs.alpaca.markets/docs/websocket-streaming).
+
+## V9.2 original activity acquisition (development)
+
+`read_option_activity_page` requires the currently verified account scope and
+returns one original response from `/v2/account/activities`, without filtering
+activity types or converting numeric fields to floats. It reuses the adapter's
+Paper credentials and fixed host, with `after`, `until`, `direction=asc`,
+`page_size=100` and the complete `page_token`. Windows span at most 31 days.
+The HTTP client enforces the request deadline and an 8 MiB response ceiling,
+does not follow redirects, and makes no automatic retry.
+
+After Runner persistence, `index_option_activity_page` indexes all records by
+original UTF-8 byte spans and full activity type/ID. Unknown types are retained;
+the same ID under different types is not collapsed. Invalid JSON, duplicate
+keys, missing IDs, oversized pages or an echoed exclusive cursor are rejected.
+A short page still has a continuation; only `[]` exhausts acquisition. Runner
+owns the durable cursor, cross-page cycle detection and incomplete source marks.
+
+The vendor's current [activities API](https://docs.alpaca.markets/us/reference/getaccountactivities-2)
+defines the date bounds using creation time, which can differ from settlement
+or trade time. New overlapping scans are required for late postings; finished
+pagination is not financial completeness. The [activity object/pagination
+reference](https://docs.alpaca.markets/us/docs/account-activities) does not by
+itself prove that a FILL ID suffix is the WS execution UUID. This acquisition
+path preserves the entire ID and creates no financial aliases or fills.
+REST financial/lifecycle codecs, WS matching and runtime scheduling remain in
+development; this stage does not enable the full production option extension.
 
 ## Configuration
 

@@ -239,6 +239,35 @@ class AlpacaClients:
                 params["page_token"] = str(token)
         return activities
 
+    async def get_option_activity_page(self, request) -> bytes:
+        """One bounded, unfiltered native page; the Runner owns continuation.
+
+        Never use response.json(), the legacy FILL-only scanner, redirects, or
+        a new credential/base-URL setting for this acquisition path.
+        """
+        import httpx
+
+        params = {"after": request.range_start, "until": request.range_end,
+                  "direction": "asc", "page_size": 100}
+        if request.cursor is not None: params["page_token"] = request.cursor
+        try:
+            async with self._semaphore, asyncio.timeout(self.settings.request_timeout_seconds):
+                async with httpx.AsyncClient(base_url=PAPER_TRADING_BASE_URL, follow_redirects=False,
+                    headers={"APCA-API-KEY-ID": self.settings.api_key_id, "APCA-API-SECRET-KEY": self.settings.secret_key},
+                    timeout=self.settings.request_timeout_seconds) as client:
+                    async with client.stream("GET", "/v2/account/activities", params=params) as response:
+                        if response.status_code != 200:
+                            raise BrokerConnectionError("Alpaca activity page request failed", details={"status_code": response.status_code})
+                        raw = bytearray()
+                        async for chunk in response.aiter_bytes(chunk_size=65536):
+                            if len(raw) + len(chunk) > 8 * 1024 * 1024:
+                                raise BrokerConnectionError("Alpaca activity page exceeds native evidence limit")
+                            raw.extend(chunk)
+                        if not raw: raise BrokerConnectionError("Alpaca activity page is empty, not an empty JSON array")
+                        return bytes(raw)
+        except (httpx.HTTPError, TimeoutError):
+            raise BrokerConnectionError("Alpaca activity page transport failed") from None
+
     async def get_bars(
         self,
         symbol: str,

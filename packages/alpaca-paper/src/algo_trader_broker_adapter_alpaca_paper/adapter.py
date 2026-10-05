@@ -137,6 +137,26 @@ class AlpacaPaperAdapter:
         from .options_codec import decode_trade_update
         return await decode_trade_update(event, resolve_contract)
 
+    async def read_option_activity_page(self, request):
+        from algo_trader_broker_sdk.options import OptionScope
+        from algo_trader_broker_sdk.options_backfill import OptionActivityScanPage, OptionRawActivityPage
+        from .options_backfill import SOURCE
+        if type(request) is not OptionActivityScanPage:
+            raise BrokerContractError("Activity acquisition requires a typed scoped query")
+        scope = OptionScope(**{name: getattr(request, name) for name in OptionScope.__dataclass_fields__})
+        bound = self._option_event_binding
+        if (bound is None or bound.scope != scope or bound.broker != "ALPACA" or scope.environment != "paper"
+                or not self._connected or bound.native_account_ref != self._account_id):
+            raise BrokerContractError("Activity query does not match the verified Alpaca account")
+        # Return the captured query even if the connection changes in flight.
+        # Runner retains historical raw proof, then fences cursor advancement.
+        raw = await self._backend.get_option_activity_page(request)
+        return OptionRawActivityPage(request, SOURCE, raw)
+
+    def index_option_activity_page(self, page):
+        from .options_backfill import index_activity_page
+        return index_activity_page(page)
+
     def manifest(self) -> BrokerAdapterManifest:
         return BrokerAdapterManifest(
             adapter_id=self.adapter_id,
