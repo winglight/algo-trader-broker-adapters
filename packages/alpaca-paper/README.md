@@ -309,3 +309,11 @@ cleanup. The acceptance driver must reject any symbol, side, quantity, live
 endpoint, extended-hours request, or unapproved cancellation outside that
 allowlist; an unknown submit outcome is reconciled by client order ID and is
 never blindly retried.
+
+## V9.2 native account fees (development)
+
+Scoped account collection reads USD `FEE` activities from the existing Trading API, with full-ID pagination and durable retention of original pages/objects before decoding. Fee cash is the exact sign-reversal of `net_amount`; refunds retain their sign. Native date-only records keep their date without invented timestamps. Optional `execution_id` is preserved, but does not by itself prove an option fill association. All fees enter Account's unallocated fee ledger; none is averaged across legs or deducted again from broker balances. Unknown records report fee-only quality reasons, and page exhaustion does not claim source completeness. CFEE and other unproven currency/type semantics are not converted into USD fees.
+
+The existing Guardian main flow exercises HTTP acquisition, raw archive, Account storage and the typed fee query after closing positions. External broker responses remain synthetic; production certification, exact allocation and financial corrections remain separate work.
+
+References: [Account activity fields](https://docs.alpaca.markets/us/docs/account-activities), [Trading activity pagination](https://docs.alpaca.markets/us/reference/getaccountactivities-2).

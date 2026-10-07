@@ -283,6 +283,7 @@ class AlpacaOptionReads:
 
     async def option_account_state(self, request, *, retain_lifecycle=None):
         activities, lifecycle_events, unresolved, cursor = None, [], [], None
+        fees, fee_reasons = (), ()
         if retain_lifecycle is not None:
             seen = set()
             for _ in range(100):
@@ -294,12 +295,15 @@ class AlpacaOptionReads:
                 if cursor is None: break
                 check(cursor not in seen, "Lifecycle pagination did not advance")
                 seen.add(cursor)
+            from .options_fees import read
+            fees, fee_reasons = await read(self, request, retain_evidence=retain_lifecycle)
         state, _, _ = await self._option_account_snapshot(request)
         if activities is not None:
             reasons = state.quality_reasons
             if cursor is not None: reasons += ("LIFECYCLE_PAGE_INCOMPLETE",)
             if unresolved: reasons += ("LIFECYCLE_RECORDS_UNRESOLVED",)
-            state = replace(state, activities=tuple(lifecycle_events), quality_reasons=reasons)
+            state = replace(state, activities=tuple(lifecycle_events), quality_reasons=reasons,
+                fees=fees, fee_quality_reasons=fee_reasons)
         return state
 
     async def _option_account_snapshot(self, request):
