@@ -191,6 +191,10 @@ class AlpacaOptionReads:
         from .options_history import read_history
         return await read_history(self, request)
 
+    def stream_option_quotes(self, request):
+        from .options_stream import stream_quotes
+        return stream_quotes(self, request)
+
     async def option_snapshot(self, request):
         check(type(request) is SnapshotRequest, "Expected an exact snapshot request")
         bound, _, _ = await self._option_bound(request)

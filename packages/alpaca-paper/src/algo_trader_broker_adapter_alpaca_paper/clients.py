@@ -39,6 +39,8 @@ class AlpacaClients:
         self._stock_stream_lock = asyncio.Lock()
         self._raw_trade_handler = None
         self._option_http_transport = option_http_transport
+        self._option_streams = {}
+        self._option_stream_lock = asyncio.Lock()
 
     def set_raw_trade_handler(self, handler) -> None:
         self._raw_trade_handler = handler
@@ -422,6 +424,35 @@ class AlpacaClients:
             managed = self._stock_stream
         return await managed.subscribe(symbol, kind)
 
+    async def stream_option_quotes(self, symbols, feed):
+        from .options_stream import create_option_stream, SharedOptionStream, merge_quotes
+        from algo_trader_broker_sdk.options import check
+        check(feed in {"OPRA", "INDICATIVE"} and 1 <= len(symbols) <= 100 and "*" not in symbols, "Invalid option subscription")
+        subscriptions = []
+        async with self._option_stream_lock:
+            managed = self._option_streams.get(feed)
+            if managed is None or managed.failed:
+                if managed is not None: await managed.close()
+                managed = SharedOptionStream(create_option_stream(self.settings, feed), queue_size=self.settings.stream_queue_size,
+                    name="alpaca-paper.option-" + feed.lower())
+                self._option_streams[feed] = managed
+            try:
+                for symbol in symbols:
+                    subscriptions.append(await managed.subscribe(symbol, "quotes"))
+            except BaseException:
+                for subscription in subscriptions: await subscription.close()
+                raise
+        source = merge_quotes(subscriptions, self.settings.stream_queue_size)
+        try:
+            async for item in source:
+                yield item
+        finally:
+            await source.aclose()
+            async with self._option_stream_lock:
+                if managed.unused and self._option_streams.get(feed) is managed:
+                    self._option_streams.pop(feed)
+                    await managed.close()
+
     async def start_trade_updates(
         self,
         handler: Callable[[Any], Any],
@@ -452,6 +483,9 @@ class AlpacaClients:
         self._stock_stream = None
         if stock_stream is not None:
             await stock_stream.close()
+        streams, self._option_streams = tuple(self._option_streams.values()), {}
+        for stream in streams:
+            await stream.close()
 
 
 def duration_window(duration: str, end: datetime | str | None) -> tuple[datetime, datetime]:

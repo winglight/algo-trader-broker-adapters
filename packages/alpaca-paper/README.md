@@ -186,6 +186,30 @@ Trades/bars do not create historical executable quotes. QUOTE requests report
 References: [option bars](https://docs.alpaca.markets/us/reference/optionbars)
 and [option trades](https://docs.alpaca.markets/us/reference/optiontrades).
 
+## V9.2 realtime option quotes (development)
+
+`stream_option_quotes` uses the existing account credentials and official
+`OptionDataStream` authentication on a shared socket for each explicit OPRA or
+INDICATIVE feed. Exact bound symbols are reference counted using the existing
+stream multiplexer. Closing the last consumer releases the socket. Runner's
+owner lease controls subscription lifetime; no extra connection settings or
+automatic reconnect are introduced.
+
+Raw MsgPack frames are retained before quote normalization. Native prices are
+IEEE-754 values and use their shortest round-trip decimal representation at
+this boundary; REST monetary parsing continues to use exact JSON decimals.
+Quote timestamps, contract quantities, account entitlement scope and feed are
+preserved. Crossed/stale quotes remain flagged and INDICATIVE remains research
+only. Missing Greeks are not fabricated. Connection errors and queue overflow
+end the stream so the caller can identify the gap.
+
+The existing Local main-flow fixture now exercises SDK authentication,
+subscription, quote parsing, Runner publication and consumer cancellation with
+synthetic socket and Redis I/O. This does not certify an account or complete the
+remaining options extension handshake.
+
+Reference: [realtime option data](https://docs.alpaca.markets/us/docs/real-time-option-data).
+
 ## Configuration
 
 The broker runner passes the following settings to the package:
