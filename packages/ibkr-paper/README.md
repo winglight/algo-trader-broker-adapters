@@ -12,7 +12,8 @@ Only IBKR Paper accounts are in scope. Live trading is not enabled by this packa
 
 The existing adapter now has scoped `list_option_contracts`,
 `qualify_option_contracts`, `option_snapshot`, `option_capabilities`,
-`option_account_permissions`, and `option_account_state` ports.
+`option_account_permissions`, `option_account_state`, `stream_option_quotes`,
+`option_history` and `option_calendar` ports.
 They require Runner's verified Paper account and the current connection; reads
 never reconnect or replay themselves. Discovery uses bounded SPY/QQQ SMART
 parameters and exact ContractDetails qualification. Bindings retain conId,
@@ -25,8 +26,8 @@ and ask tick times separately, require a native market-data-type callback of 1
 for executable quote quality, and leave unverified Greeks empty. Tick times are
 socket receipt times, not exchange timestamps. Reading does not certify trading.
 
-The full `options/1.0` handshake remains disabled pending account certification, calendar,
-order/event and reconciliation ports. Legacy option endpoints still reject
+The full `options/1.0` handshake remains disabled pending the remaining original
+protocol ports and account/source certification. Legacy option endpoints still reject
 requests. Local's compatibility entrypoint now delegates to this package while
 preserving its existing manifest entrypoint. The synthetic read walkthrough uses
 `ib_async 2.0.1`; no Gateway connection or real order is part of that check.
@@ -79,3 +80,30 @@ ib_async would suppress duplicate execution events. Completed-order responses
 lack API client/order IDs; those missing IDs are not fabricated. Exact actual
 leg executions supply quantities; a filled BAG summary alone stays unresolved.
 History/manual visibility/fee/lifecycle coverage remains explicitly incomplete.
+
+## Option market data
+
+Live streams use the same bid/ask normalization as snapshots, with separate
+native reqIds per owner. Runner owns lease expiry/heartbeat; closing one iterator
+cancels only its tickers. Each stream stays on its verified connection and keeps
+only the latest sides per contract. A model/last tick cannot refresh their age.
+
+History requires `provider_native`, raw adjustment and exact qualified contracts.
+Native intraday bars (1/2/3/5/10/15/20/30 minutes; 1/2/3/4/8 hours), trade ticks
+and bid/ask ticks are supported. Requests are serialized and paced on the current
+adapter connection; one native chunk is read per page, with bounded five-minute
+cursors tied to the query and binding. Pages retain every tick in the native final
+second. `complete` ends pagination, while coverage remains PARTIAL/UNAVAILABLE.
+Expired options and option daily bars are unsupported by IB; this port is not an
+options archive. Historical quotes always have RESEARCH_ONLY quality.
+
+Calendars refresh the exact ContractDetails and use `liquidHours` in explicit
+Eastern time for RTH bounds and CLOSED dates. Both native hours fields and zone
+contribute to the revision hash. Missing dates/split sessions are not inferred;
+entry, close and exercise broker cutoffs remain unknown with reason codes.
+
+Sources: [IB historical limits](https://interactivebrokers.github.io/tws-api/historical_limitations.html),
+[historical ticks](https://interactivebrokers.github.io/tws-api/historical_time_and_sales.html),
+[ContractDetails](https://interactivebrokers.github.io/tws-api/classIBApi_1_1ContractDetails.html).
+The existing synthetic native walkthrough covers these reads alongside the same
+submission/cancel/recovery flow; it does not access a Gateway or place real orders.

@@ -62,8 +62,8 @@
 The existing IB package includes verified-account, bounded SPY/QQQ contract
 reads and `IBKR_LIVE` snapshots. The direct read flow is fixture-verified with
 `ib_async 2.0.1`; the declared trading asset classes above are unchanged. Full
-`options/1.0` activation, account/Greeks/calendar certification and native option
-orders/events/reconciliation remain pending. Local's legacy entrypoint delegates
+`options/1.0` activation and account/Greeks/calendar/source certification remain
+pending; implemented native order/read ports are detailed below. Local's legacy entrypoint delegates
 to the package and retains its manifest identity.
 
 The IB read foundation also maps fresh account funds, net option inventory and
@@ -73,15 +73,20 @@ visibility and execution/lifecycle/commission completeness are not inferred.
 
 IB native OPT/BAG preparation and guarded send are implemented with synthetic
 wire/database verification. Complete options activation remains disabled pending
-execution/commission callbacks, cancel/recovery and account/route certification.
+remaining original protocol ports and account/route/source certification.
 Initial ACKs produce permanent-parent and compound-leg links/status only.
 
 IB's same native walkthrough now continues through parent statuses, actual OPT
 executions and associated commissions. Original execution IDs remain whole and
-BAG aggregate executions stay nonfinancial. Native revisions/recovery and full
+BAG aggregate executions stay nonfinancial. Native revisions and full
 source certification are still pending; no account activation is implied.
 
 IB also supports scoped guarded cancellation and finite native recovery reads.
 Its native walkthrough continues through partial fill, cancel and cache-free
 order/execution downloads; it does not claim complete historical visibility or
 account certification.
+
+IB market data also supplies owner-isolated quote iterators, native intraday
+bar/trade/bid-ask history with query-bound pagination, and refreshed contract RTH
+calendars. Historical coverage stays partial and unknown broker cutoffs remain
+explicit; these implemented ports do not certify an account or trading shape.

@@ -91,6 +91,9 @@ class IBOptionReads:
         self._option_connection = None
         self._option_catalog = OrderedDict()
         self._option_pages = OrderedDict()
+        self._option_history_pages = OrderedDict()
+        self._option_history_lock = asyncio.Lock()
+        self._option_history_next = 0.0
         self._option_account_read_lock = asyncio.Lock()
         self._option_account_evidence = deque(maxlen=32)
         self._option_live_observed = None
@@ -105,6 +108,7 @@ class IBOptionReads:
         if self._option_account_binding != verified or self._option_connection != state["connected_since"]:
             self._option_catalog.clear()
             self._option_pages.clear()
+            self._option_history_pages.clear()
             self._option_live_observed = None
         self._option_account_binding = verified
         self._option_connection = state["connected_since"]
@@ -254,10 +258,10 @@ class IBOptionReads:
             observed = now_wire()
             implemented = OptionCapability("IMPLEMENTED", ("ACCOUNT_CERTIFICATION_REQUIRED",), ())
             unavailable = OptionCapability("UNSUPPORTED", ("NOT_IMPLEMENTED",), ())
-            return OptionCapabilities(bound.scope, self.adapter_id, VERSION, "ib-options-reads-2", observed,
+            return OptionCapabilities(bound.scope, self.adapter_id, VERSION, "ib-options-reads-3", observed,
                 (timestamp(observed) + timedelta(seconds=30)).isoformat().replace("+00:00", "Z"),
-                implemented, implemented, unavailable, unavailable, unavailable, unavailable, unavailable,
-                unavailable, unavailable, implemented, unavailable, (FEED,), ())
+                implemented, implemented, unavailable, implemented, implemented, implemented, unavailable,
+                unavailable, unavailable, implemented, implemented, (FEED, "provider_native"), ())
         return await self._option_read(request, read)
 
     async def option_account_permissions(self, request):
@@ -273,16 +277,39 @@ class IBOptionReads:
         from .options_quotes import read_snapshot
 
         async def read(ib, bound):
-            contracts = []
-            for binding in request.bindings:
-                current = self._option_catalog.get(binding.broker_contract_id)
-                check(current is not None and current[0] == binding
-                      and 0 <= (datetime.now(timezone.utc) - timestamp(binding.qualified_at)).total_seconds() < 30,
-                      "IB snapshot requires the current exact native qualification")
-                contracts.append(current[2].contract)
+            contracts = self._option_bound_contracts(request, fresh=True)
             result = await read_snapshot(ib, request, contracts, timeout=self._qualification_timeout)
             if result.complete and all(quote.quality == "EXECUTABLE" for quote in result.quotes):
                 self._option_live_observed = (bound.scope, result.observed_at)
             return result
 
         return await self._option_read(request, read)
+
+    def _option_bound_contracts(self, request, *, fresh=False):
+        contracts = []
+        for binding in request.bindings:
+            current = self._option_catalog.get(binding.broker_contract_id)
+            check(current is not None and current[0] == binding,
+                  "IB read requires the current exact native qualification")
+            if fresh:
+                check(0 <= (datetime.now(timezone.utc) - timestamp(binding.qualified_at)).total_seconds() < 30,
+                      "IB quote requires a fresh native qualification")
+            contracts.append(current[2].contract)
+        return contracts
+
+    async def stream_option_quotes(self, request):
+        from .options_stream import stream_quotes
+        source = stream_quotes(self, request)
+        try:
+            async for quote in source:
+                yield quote
+        finally:
+            await source.aclose()
+
+    async def option_history(self, request):
+        from .options_history import read_history
+        return await read_history(self, request)
+
+    async def option_calendar(self, request):
+        from .options_calendar import read_calendar
+        return await read_calendar(self, request)

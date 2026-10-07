@@ -33,3 +33,8 @@
 - Add finite open/completed-order and account execution recovery downloads,
   including completedOrder evidence; retain source-window limitations and
   deduplicate only in the existing financial authority.
+
+- Add owner-isolated live option quote iterators for Runner's existing leases.
+- Add paginated native intraday bars/trade/bid-ask history, retaining same-second
+  tick overflow and explicit partial archive coverage.
+- Add fresh native contract calendars with explicit unknown broker cutoffs.

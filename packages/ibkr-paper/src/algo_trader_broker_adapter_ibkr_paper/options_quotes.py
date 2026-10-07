@@ -73,25 +73,8 @@ async def read_snapshot(ib, request, contracts, *, timeout):
             if len(sides) != 2:
                 missing.append(binding.canonical_id)
                 continue
-            bid, bs, bid_time = sides["bid"]
-            ask, az, ask_time = sides["ask"]
-            at = min(bid_time, ask_time)
-            age = (timestamp(received) - at).total_seconds() * 1000
-            quality = "EXECUTABLE"
-            if None in (bid, ask, bs, az):
-                quality = "MISSING"
-            elif Decimal(bid) > Decimal(ask):
-                quality = "CROSSED"
-            elif age < 0 or age > request.max_age_ms:
-                quality = "STALE"
-            elif ticker.marketDataType != 1:
-                quality = "RESEARCH_ONLY"
-            all_side_times.extend((bid_time, ask_time))
-            # Greeks lack independent input-time/unit certification at this
-            # stage; ticker.modelGreeks is deliberately not promoted to it.
-            quotes.append(OptionQuote(binding.canonical_id, bid, ask, bs, az,
-                at.isoformat().replace("+00:00", "Z"), received, "IBKR", request.feed,
-                quality, request.account, None, None, None, None, None, None, None, None, None))
+            all_side_times.extend((sides["bid"][2], sides["ask"][2]))
+            quotes.append(quote_from_sides(binding, ticker, sides, request, received=received))
         skew = int((max(all_side_times) - min(all_side_times)).total_seconds() * 1000) if all_side_times else 0
         return OptionMarketSnapshot(str(uuid4()), tuple(quotes), tuple(missing), not missing, skew, received)
     finally:
@@ -108,3 +91,24 @@ async def read_snapshot(ib, request, contracts, *, timeout):
                 ib.wrapper.pendingTickers.discard(ticker)
         if cleanup_error is not None:
             raise cleanup_error
+
+
+def quote_from_sides(binding, ticker, sides, request, *, received=None):
+    received = received or now_wire()
+    bid, bs, bid_time = sides["bid"]
+    ask, az, ask_time = sides["ask"]
+    at = min(bid_time, ask_time)
+    age = (timestamp(received) - at).total_seconds() * 1000
+    quality = "EXECUTABLE"
+    if None in (bid, ask, bs, az):
+        quality = "MISSING"
+    elif Decimal(bid) > Decimal(ask):
+        quality = "CROSSED"
+    elif age < 0 or age > request.max_age_ms:
+        quality = "STALE"
+    elif ticker.marketDataType != 1:
+        quality = "RESEARCH_ONLY"
+    # Native model Greeks have no certified input timestamp/unit here.
+    return OptionQuote(binding.canonical_id, bid, ask, bs, az,
+        at.isoformat().replace("+00:00", "Z"), received, "IBKR", request.feed,
+        quality, request.account, None, None, None, None, None, None, None, None, None)

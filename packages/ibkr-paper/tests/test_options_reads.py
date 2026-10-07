@@ -48,7 +48,9 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, exercise_o
         native = Option("SPY", "20261016", strike, "C", "SMART", multiplier="100", currency="USD",
                         tradingClass="SPY", conId=1000 + strike, localSymbol=f"SPY   261016C{strike * 1000:08d}")
         return [ContractDetails(contract=native, underConId=100, underSymbol="SPY", underSecType="STK",
-                                validExchanges="SMART,CBOE", minTick=0.01, marketRuleIds="26,26")]
+                                validExchanges="SMART,CBOE", minTick=0.01, marketRuleIds="26,26",
+                                timeZoneId="US/Eastern", tradingHours="20261008:0930-20261008:1615",
+                                liquidHours="20261008:0930-20261008:1615;20261010:CLOSED")]
 
     async def parameters(*args):
         assert args == ("SPY", "", "STK", 100)
@@ -107,6 +109,8 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, exercise_o
         assert option_from_payload(type(snapshot), dataclass_to_payload(snapshot)) == snapshot
         assert canceled == [1, 2] and ib.wrapper.reqId2Ticker == {900: existing}
         assert ib.wrapper.ticker2ReqId["mktData"][existing] == 900
+
+        await market_data_flow(adapter, ib, request, monkeypatch)
 
         canceled_accounts, canceled_positions, retained = [], [], {}
         def account_values(req_id, account, model, ledger_only):
@@ -178,6 +182,82 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, exercise_o
         client._connected.clear()
         client._ib = None
         await client._shutdown_sync_executor()
+
+
+async def market_data_flow(adapter, ib, snapshot_request, monkeypatch):
+    from ib_async import BarData, HistoricalTickLast, HistoricalTickBidAsk, TickAttribLast, TickAttribBidAsk
+    from algo_trader_broker_sdk.options import QuoteSubscription, OptionHistoryRequest
+    from algo_trader_broker_sdk.options_calendar import OptionCalendarQuery
+
+    base = asdict(snapshot_request)
+    base["bindings"] = snapshot_request.bindings[:1]
+    first = adapter.stream_option_quotes(QuoteSubscription(**base, owner_id="owner-one", lease_seconds=30))
+    second = adapter.stream_option_quotes(QuoteSubscription(**base, owner_id="owner-two", lease_seconds=30))
+    try:
+        q1, q2 = await asyncio.gather(anext(first), anext(second))
+        assert q1.canonical_id == q2.canonical_id == base["bindings"][0].canonical_id
+        assert q1.quality == q2.quality == "EXECUTABLE"
+        await first.aclose()
+        assert len(ib.wrapper.reqId2Ticker) == 2  # Owner two plus pre-existing 900.
+        remaining = next(key for key in ib.wrapper.reqId2Ticker if key != 900)
+        ib.wrapper.tcpDataArrived()
+        ib.wrapper.priceSizeTick(remaining, 1, 1.26, 6)
+        ib.wrapper.tcpDataProcessed()
+        update = await asyncio.wait_for(anext(second), 2)
+        assert (update.bid, update.bid_size) == ("1.26", 6)
+    finally:
+        await first.aclose()
+        await second.aclose()
+    assert set(ib.wrapper.reqId2Ticker) == {900}
+
+    start = datetime(2026, 10, 8, 13, 30, tzinfo=timezone.utc)
+    calls = []
+    def bars(req_id, contract, end, duration, bar_size, what, rth, fmt, keep, options):
+        assert (contract.conId, duration, bar_size, what, rth, fmt, keep) == (1590, "1 D", "1 min", "TRADES", False, 2, False)
+        calls.append("BAR")
+        def receive():
+            for offset in (0, 60):
+                ib.wrapper.historicalData(req_id, BarData(date=str(int(start.timestamp()) + offset),
+                    open=1.25, high=1.3, low=1.2, close=1.26, volume=3))
+            ib.wrapper.historicalDataEnd(req_id, "", "")
+        asyncio.get_running_loop().call_soon(receive)
+
+    def ticks(req_id, contract, begin, end, count, what, rth, ignore, options):
+        assert (contract.conId, begin, end, count, rth, ignore) == (1590, "20261008-13:30:00", "", 1000, False, False)
+        calls.append(what)
+        if what == "TRADES":
+            rows = [HistoricalTickLast(start, TickAttribLast(), 1.25, qty, "CBOE", "") for qty in (1, 2, 3)]
+            callback = ib.wrapper.historicalTicksLast
+        else:
+            rows = [HistoricalTickBidAsk(start, TickAttribBidAsk(), 1.25, 1.3, qty, 7) for qty in (5, 6)]
+            callback = ib.wrapper.historicalTicksBidAsk
+        asyncio.get_running_loop().call_soon(callback, req_id, rows, True)
+    monkeypatch.setattr(ib.client, "reqHistoricalData", bars)
+    monkeypatch.setattr(ib.client, "reqHistoricalTicks", ticks)
+    for kind, count in (("BAR", 2), ("TRADE", 3), ("QUOTE", 2)):
+        request = OptionHistoryRequest(**{**base, "feed": "provider_native"}, data_kind=kind,
+            time_from=start.isoformat().replace("+00:00", "Z"), time_to=(start + timedelta(seconds=120 if kind == "BAR" else 1)).isoformat().replace("+00:00", "Z"),
+            adjustment="raw", cursor=None, limit=1)
+        output = []
+        for _ in range(count):
+            page = await adapter.option_history(request)
+            assert page.coverage == "PARTIAL"
+            assert option_from_payload(type(page), dataclass_to_payload(page)) == page
+            output.extend(page.bars + page.trades + page.quotes)
+            request = replace(request, cursor=page.next_cursor)
+        assert page.complete and page.next_cursor is None and len(output) == count
+        if kind == "TRADE":
+            assert [row.contracts for row in output] == [1, 2, 3]  # Same second survives pagination.
+    assert calls == ["BAR", "TRADES", "BID_ASK"] and not ib.wrapper._futures
+
+    scope = {name: getattr(snapshot_request, name) for name in OptionScope.__dataclass_fields__}
+    request = OptionCalendarQuery(**scope, bindings=snapshot_request.bindings, trade_date="2026-10-08")
+    calendar = await adapter.option_calendar(request)
+    assert all((row.session_open_at, row.session_close_at) == ("2026-10-08T13:30:00Z", "2026-10-08T20:15:00Z")
+               for row in calendar.sessions)
+    assert all(row.broker_entry_cutoff_at is None and row.reason_codes for row in calendar.sessions)
+    closed = await adapter.option_calendar(replace(request, trade_date="2026-10-10"))
+    assert all(not row.is_trading_day and row.session_close_at is None for row in closed.sessions)
 
 
 async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None, consume_event=None, cancel_sender=None):
