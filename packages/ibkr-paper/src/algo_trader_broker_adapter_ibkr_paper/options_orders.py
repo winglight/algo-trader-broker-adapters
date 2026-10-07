@@ -20,22 +20,25 @@ from .options_account_native import observe_callbacks, raw_bytes, raw_value
 from .options_reads import now_wire
 
 
-def build_order(request, contracts, account, client_id, order_id, shape):
+def build_order(request, contracts, account, client_id, order_id, shape, *, preview=False):
     from ib_async import ComboLeg, Contract, Order
     check(type(request) is OptionExecutionRequest and request.environment == "paper"
           and request.max_slippage == "0", "IB needs an exact authorized Paper limit request")
-    check(type(shape) is OptionShapeCapability and shape.route == "NATIVE"
-          and shape.capability.status == "PAPER_CERTIFIED" and shape.net_tick is not None,
-          "IB requires the Runner-selected certified execution shape")
-    check(len(contracts) == len(request.legs) <= shape.max_legs
-          and all(leg.ratio <= shape.max_ratio for leg in request.legs), "IB shape quantity limits exceeded")
+    check(len(contracts) == len(request.legs), "IB contract vector differs from order legs")
+    if not preview:
+        check(type(shape) is OptionShapeCapability and shape.route == "NATIVE"
+              and shape.capability.status == "PAPER_CERTIFIED" and shape.net_tick is not None,
+              "IB requires the Runner-selected certified execution shape")
+        check(len(contracts) <= shape.max_legs and all(leg.ratio <= shape.max_ratio for leg in request.legs),
+              "IB shape quantity limits exceeded")
     check(request.groups <= 2**53 - 1 and all(request.groups * leg.ratio <= 2**53 - 1 for leg in request.legs),
           "IB order quantity loses integer precision")
     price = Decimal(request.signed_limit)
-    with localcontext() as context:
-        context.prec = 80
-        check(price % Decimal(shape.net_tick) == 0, "IB net price is off its certified route tick")
-    check(price != 0 or shape.zero_net_price, "IB route has no zero-price certification")
+    if not preview:
+        with localcontext() as context:
+            context.prec = 80
+            check(price % Decimal(shape.net_tick) == 0, "IB net price is off its certified route tick")
+        check(price != 0 or shape.zero_net_price, "IB route has no zero-price certification")
     check(type(order_id) is int and order_id > 0 and type(client_id) is int and client_id >= 0,
           "IB native order/client ID must come from the current client")
     check(len({c.symbol for c in contracts}) == 1 and all(c.secType == "OPT" and c.currency == "USD" for c in contracts),
@@ -46,7 +49,7 @@ def build_order(request, contracts, account, client_id, order_id, shape):
               "IB native contract differs from exact qualification")
     combo = len(contracts) > 1
     if combo:
-        check(shape.native_combo, "IB route has no native combo certification")
+        check(preview or shape.native_combo, "IB route has no native combo certification")
         contract = Contract(secType="BAG", symbol=contracts[0].symbol, currency="USD", exchange="SMART",
             comboLegs=[ComboLeg(conId=c.conId, ratio=leg.ratio, action=leg.side, exchange="SMART", openClose=0)
                        for c, leg in zip(contracts, request.legs)])
@@ -58,7 +61,7 @@ def build_order(request, contracts, account, client_id, order_id, shape):
     check(Decimal(str(native_price)) == price, "IB native double loses limit-price precision")
     order = Order(orderId=order_id, clientId=client_id, account=account, orderRef=request.client_order_id,
         action=action, totalQuantity=request.groups, orderType="LMT", lmtPrice=native_price, tif="DAY",
-        openClose="O" if request.legs[0].position_effect == "OPEN" else "C", outsideRth=False, transmit=True,
+        openClose="O" if request.legs[0].position_effect == "OPEN" else "C", outsideRth=False, transmit=True, whatIf=preview,
         smartComboRoutingParams=[], orderComboLegs=[])
     return contract, order
 
@@ -87,6 +90,10 @@ async def wait_transport(client, request):
 class IBOptionOrders:
     option_native_preparation_version = 1
     option_native_cancel_preparation_version = 1
+
+    async def preview_option_order(self, request):
+        from .options_preview import preview_order
+        return await preview_order(self, request)
 
     async def reconcile_options(self, request, *, resolve_order=None):
         from .options_reconciliation import reconcile

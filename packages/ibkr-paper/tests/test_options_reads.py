@@ -28,7 +28,7 @@ async def test_standard_contract_discovery_qualification_and_live_snapshot(monke
     await read_flow(monkeypatch, exercise_orders=True)
 
 
-async def read_flow(monkeypatch, *, scope=None, consume_account=None, exercise_orders=False, gate_factory=None, consume_event=None, cancel_sender=None, reconcile_reader=None):
+async def read_flow(monkeypatch, *, scope=None, consume_account=None, exercise_orders=False, gate_factory=None, consume_event=None, cancel_sender=None, reconcile_reader=None, preview_reader=None):
     ib = IB()
     monkeypatch.setattr(ib, "isConnected", lambda: True)
     monkeypatch.setattr(ib, "managedAccounts", lambda: ["DU-OPTIONS-FIXTURE"])
@@ -175,7 +175,7 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, exercise_o
         if exercise_orders:
             await submission_flow(adapter, ib, scope, monkeypatch, gate_factory=gate_factory,
                                   consume_event=consume_event, cancel_sender=cancel_sender,
-                                  reconcile_reader=reconcile_reader)
+                                  reconcile_reader=reconcile_reader, preview_reader=preview_reader)
         client._connected_since = datetime.now(timezone.utc)
         with pytest.raises(BrokerContractError, match="connection changed"):
             await adapter.option_snapshot(request)
@@ -261,11 +261,12 @@ async def market_data_flow(adapter, ib, snapshot_request, monkeypatch):
     assert all(not row.is_trading_day and row.session_close_at is None for row in closed.sessions)
 
 
-async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None, consume_event=None, cancel_sender=None, reconcile_reader=None):
+async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None, consume_event=None, cancel_sender=None, reconcile_reader=None, preview_reader=None):
     from algo_trader_broker_sdk.options_capabilities import OptionCapability, OptionShapeCapability
     from algo_trader_broker_sdk.submission_gate import order_fingerprint
     from algo_trader_broker_adapter_ibkr_paper.options_orders import build_order
     stored, sockets, evidence = [], [], []
+    preview_sockets, previewing = [], False
     native_orders, native_fills, native_fees, originals = {}, [], {}, {}
     ib.client.connState = ib.client.CONNECTED
     ib.client._serverVersion = 178
@@ -278,6 +279,9 @@ async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None,
     adapter.set_option_event_handler(OptionVerifiedAccount(scope, "IBKR", "DU-OPTIONS-FIXTURE"), sink)
 
     def socket_send(raw):
+        if previewing:
+            preview_sockets.append(raw)
+            return
         assert len(stored) == len(sockets) + 1  # Durable callback preceded socket I/O.
         sockets.append(raw)
         fields = raw[4:].split(b"\0")
@@ -294,6 +298,19 @@ async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None,
         native_orders[native.orderId] = [deepcopy(trade.contract), native, OrderState(status="Submitted")]
         asyncio.get_running_loop().call_soon(ib.wrapper.openOrder, native.orderId,
             deepcopy(trade.contract), native, OrderState(status="Submitted"))
+
+    native_place = ib.client.placeOrder
+    def place(order_id, contract, order):
+        nonlocal previewing
+        previewing = order.whatIf
+        try:
+            native_place(order_id, contract, order)
+        finally:
+            previewing = False
+        if order.whatIf:
+            state = OrderState(status="PreSubmitted", initMarginChange="310.25", commission=1.30, commissionCurrency="USD")
+            asyncio.get_running_loop().call_soon(ib.wrapper.openOrder, order_id,
+                deepcopy(contract), deepcopy(order), state)
 
     def open_orders():
         def receive():
@@ -325,6 +342,7 @@ async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None,
         asyncio.get_running_loop().call_soon(receive)
 
     monkeypatch.setattr(ib.client.conn, "sendMsg", socket_send)
+    monkeypatch.setattr(ib.client, "placeOrder", place)
     monkeypatch.setattr(ib.client, "reqAllOpenOrders", open_orders)
     monkeypatch.setattr(ib.client, "reqCompletedOrders", completed_orders)
     monkeypatch.setattr(ib.client, "reqExecutions", executions)
@@ -344,6 +362,11 @@ async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None,
                 tif="DAY", max_slippage="0", legs=(
                     (OptionLegIntent("L1", bindings[0], "SELL", "CLOSE", 1), OptionLegIntent("L2", bindings[1], "BUY", "CLOSE", 1))
                     if combo else (OptionLegIntent("L1", bindings[0], "BUY", "OPEN", 1),)))
+            preview = (await adapter.preview_option_order(request) if preview_reader is None
+                       else await preview_reader(adapter, request))
+            assert (preview.source, preview.required_buying_power_cash, preview.estimated_fee_cash, preview.currency) == (
+                "BROKER_WHAT_IF", "310.25", "1.3", "USD")
+            assert "EMERGENCY_CLOSE_FEES_NOT_INCLUDED" in preview.warnings
             if gate_factory:
                 request, extra_retain = await gate_factory(request, shape)
             else:
@@ -416,6 +439,7 @@ async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None,
                 await asyncio.sleep(0)
                 await adapter._option_events.flush()
         assert len(sockets) == 3 and [raw[4:].split(b"\0")[0] for raw in sockets] == [b"3", b"3", b"4"]
+        assert len(preview_sockets) == 2 and all(raw[4:].split(b"\0")[0] == b"3" for raw in preview_sockets)
         # Continue the same execution through IB's native correction version.
         # The full .02 ID is retained; it must revise, not add to, the .01 fill.
         original_contract, original_execution = native_fills[0]
