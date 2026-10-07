@@ -624,6 +624,32 @@ class AlpacaPaperAdapter(AlpacaOptionReads):
             await sink(OptionRawEvent(scope, "ALPACA_ORDER_DETAIL", raw))
         return order_state(request, raw)
 
+    async def cancel_option_order_guarded(self, request, gate, *, original):
+        from datetime import datetime, timezone
+        from algo_trader_broker_sdk.options import OptionCancelRequest, OptionCancelAcknowledgement, OptionExecutionRequest, OptionScope
+        from .options_codec import _uuid
+        from .options_orders import order_state
+        if type(request) is not OptionCancelRequest or type(original) is not OptionExecutionRequest:
+            raise BrokerContractError("Cancellation requires the typed request and retained original option command")
+        scope = OptionScope(**{name: getattr(request, name) for name in OptionScope.__dataclass_fields__})
+        bound, sink = self._option_account_binding, self._option_evidence_handler
+        if bound is None or bound.scope != scope or bound.native_account_ref != self._account_id or not self._connected:
+            raise BrokerContractError("Cancellation requires the current verified account")
+        if any(getattr(original, field) != getattr(scope, field) for field in OptionScope.__dataclass_fields__):
+            raise BrokerContractError("Original option order belongs to another connection")
+        parent = _uuid(request.parent_order_ref)
+        await self.ensure_connected()
+        account = await self._backend.get_account()
+        if text(value(account, "id") or value(account, "account_number")) != bound.native_account_ref:
+            raise BrokerContractError("Alpaca native account changed before cancellation")
+        raw = await self._backend.get_option_resource("/v2/orders/" + parent, params={"nested": "true"})
+        if sink is not None:
+            await sink(OptionRawEvent(scope, "ALPACA_ORDER_DETAIL", raw))
+        if order_state(original, raw).parent_order_ref != parent:
+            raise BrokerContractError("Cancellation parent differs from the original exact order")
+        status = await self._backend.cancel_option_order_raw(parent, submission_gate=gate)
+        return OptionCancelAcknowledgement(request.command_id, parent, status, datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
+
     async def cancel_order(self, order_id: int | str) -> None:
         await self.ensure_connected()
         identifier = str(order_id or "").strip()

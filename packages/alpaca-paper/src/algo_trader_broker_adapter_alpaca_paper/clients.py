@@ -215,6 +215,29 @@ class AlpacaClients:
                 finally:
                     submission_gate.cancel()
 
+    async def cancel_option_order_raw(self, order_id, *, submission_gate):
+        """A single DELETE acceptance; order status still comes from evidence reads."""
+        import httpx
+        from .options_codec import _uuid
+        order_id = _uuid(order_id)
+        async with self._semaphore:
+            async with httpx.AsyncClient(base_url=PAPER_TRADING_BASE_URL, follow_redirects=False,
+                headers={"APCA-API-KEY-ID": self.settings.api_key_id, "APCA-API-SECRET-KEY": self.settings.secret_key},
+                timeout=self.settings.request_timeout_seconds, transport=self._option_http_transport) as client:
+                try:
+                    await submission_gate.prepare()
+                    submission_gate.consume()
+                    async with client.stream("DELETE", "/v2/orders/" + order_id) as response:
+                        if response.status_code == 204:
+                            return "REQUESTED"
+                        if response.status_code == 422:
+                            return "NOT_CANCELABLE"
+                        raise BrokerOrderError("Option cancellation needs reconciliation", code="broker_order_outcome_unknown")
+                except (httpx.HTTPError, TimeoutError):
+                    raise BrokerOrderError("Option cancellation outcome is unknown", code="broker_order_outcome_unknown") from None
+                finally:
+                    submission_gate.cancel()
+
     async def get_option_resource(self, path, *, params=None, data=False):
         """Bounded original-byte reads; options never use stock feeds/models."""
         import httpx
