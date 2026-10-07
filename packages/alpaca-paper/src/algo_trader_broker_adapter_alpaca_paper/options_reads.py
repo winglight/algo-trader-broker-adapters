@@ -177,18 +177,25 @@ class AlpacaOptionReads:
         self._option_still_bound(bound)
         return QualificationBatch(tuple(results), now_wire())
 
-    async def option_snapshot(self, request):
-        check(type(request) is SnapshotRequest, "Expected an exact snapshot request")
-        bound, _, _ = await self._option_bound(request)
-        check(request.feed in {"OPRA", "INDICATIVE"}, "Options require an explicit OPRA or indicative feed")
+    def _validate_option_bindings(self, bound, bindings):
         catalog = getattr(self, "_option_catalog", {})
-        for binding in request.bindings:
+        for binding in bindings:
             current = catalog.get(binding.broker_contract_id)
             check(current is not None and (current[0].canonical_id, current[0].local_symbol, current[0].adapter_id,
                   current[0].adapter_version, current[0].account_scope, current[0].environment) ==
                   (binding.canonical_id, binding.local_symbol, binding.adapter_id, binding.adapter_version, bound.scope.account, bound.scope.environment)
                   and 0 <= (datetime.now(timezone.utc) - timestamp(binding.qualified_at)).total_seconds() < 30,
-                  "Snapshot requires the current exact native qualification")
+                  "Option data requires the current exact native qualification")
+
+    async def option_history(self, request):
+        from .options_history import read_history
+        return await read_history(self, request)
+
+    async def option_snapshot(self, request):
+        check(type(request) is SnapshotRequest, "Expected an exact snapshot request")
+        bound, _, _ = await self._option_bound(request)
+        check(request.feed in {"OPRA", "INDICATIVE"}, "Options require an explicit OPRA or indicative feed")
+        self._validate_option_bindings(bound, request.bindings)
         raw = await self._backend.get_option_resource("/v1beta1/options/snapshots", data=True,
             params=dict(symbols=",".join(binding.local_symbol for binding in request.bindings), feed=request.feed.lower(), limit=1000))
         data = decode_native(raw)
@@ -248,9 +255,10 @@ class AlpacaOptionReads:
         observed = now_wire()
         implemented = OptionCapability("IMPLEMENTED", ("ACCOUNT_CERTIFICATION_REQUIRED",), ())
         unavailable = OptionCapability("UNSUPPORTED", ("NOT_IMPLEMENTED",), ())
-        return OptionCapabilities(bound.scope, self.adapter_id, ADAPTER_VERSION, "alpaca-options-reads-1", observed,
+        no_history_quotes = OptionCapability("UNSUPPORTED", ("PROVIDER_HISTORY_QUOTES_UNAVAILABLE",), ())
+        return OptionCapabilities(bound.scope, self.adapter_id, ADAPTER_VERSION, "alpaca-options-reads-2", observed,
             (timestamp(observed) + timedelta(seconds=30)).isoformat().replace("+00:00", "Z"), implemented, implemented,
-            unavailable, unavailable, unavailable, unavailable, unavailable, unavailable, unavailable, implemented,
+            unavailable, implemented, no_history_quotes, implemented, unavailable, unavailable, unavailable, implemented,
             unavailable, ("OPRA", "INDICATIVE"), tuple(OptionShapeCapability(shape, "NATIVE", implemented,
                 1 if shape.startswith("LONG_") else 2, 1, None, False, not shape.startswith("LONG_"), False, False) for shape in STRUCTURES))
 

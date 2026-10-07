@@ -159,13 +159,32 @@ implementation status and actual Paper certification.
 The existing Guardian/Orders/Account/Market/Runner integration exercises these
 methods through their HTTP clients with synthetic broker responses. Its explicit
 certification and journal-completeness fixtures are not production evidence.
-History, subscriptions, Greeks/calendar certification, complete reconciliation,
+Subscriptions, Greeks/calendar certification, complete reconciliation,
 the full extension handshake and actual Paper certification remain pending.
 
 References: [contract and deliverable schemas](https://docs.alpaca.markets/us/reference/get-options-contracts),
 [snapshots and feeds](https://docs.alpaca.markets/us/reference/optionsnapshots),
 [account fields](https://docs.alpaca.markets/us/reference/getaccount-1),
 [position cost basis](https://alpaca.markets/sdks/python/api_reference/trading/models.html#position).
+
+## V9.2 historical option bars and trades (development)
+
+`option_history` now reads the native option bars/trades endpoints through the
+existing scoped client. It requires exact current bindings and explicit time
+bounds. The optional transport `timeframe` defaults to `1Min` and only affects
+bars. The source is `provider_native`; neither the stock feed nor stock
+adjustment parameters are sent. Decimal OHLC/prices and contract quantities stay
+exact, and results retain native pagination across symbols.
+
+The domain's exclusive end is converted to the vendor's inclusive nanosecond
+boundary. Every row is checked against the requested contracts and interval.
+`complete` means no next page; coverage stays PARTIAL (or UNAVAILABLE for an empty
+exhausted response) until an independent coverage manifest establishes more.
+Trades/bars do not create historical executable quotes. QUOTE requests report
+`UNSUPPORTED_CAPABILITY`, matching the current provider API.
+
+References: [option bars](https://docs.alpaca.markets/us/reference/optionbars)
+and [option trades](https://docs.alpaca.markets/us/reference/optiontrades).
 
 ## Configuration
 
