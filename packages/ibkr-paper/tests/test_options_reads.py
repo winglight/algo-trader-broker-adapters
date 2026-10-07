@@ -28,7 +28,7 @@ async def test_standard_contract_discovery_qualification_and_live_snapshot(monke
     await read_flow(monkeypatch, exercise_orders=True)
 
 
-async def read_flow(monkeypatch, *, scope=None, consume_account=None, exercise_orders=False, gate_factory=None, consume_event=None, cancel_sender=None):
+async def read_flow(monkeypatch, *, scope=None, consume_account=None, exercise_orders=False, gate_factory=None, consume_event=None, cancel_sender=None, reconcile_reader=None):
     ib = IB()
     monkeypatch.setattr(ib, "isConnected", lambda: True)
     monkeypatch.setattr(ib, "managedAccounts", lambda: ["DU-OPTIONS-FIXTURE"])
@@ -174,7 +174,8 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, exercise_o
             await consume_account(state)
         if exercise_orders:
             await submission_flow(adapter, ib, scope, monkeypatch, gate_factory=gate_factory,
-                                  consume_event=consume_event, cancel_sender=cancel_sender)
+                                  consume_event=consume_event, cancel_sender=cancel_sender,
+                                  reconcile_reader=reconcile_reader)
         client._connected_since = datetime.now(timezone.utc)
         with pytest.raises(BrokerContractError, match="connection changed"):
             await adapter.option_snapshot(request)
@@ -260,7 +261,7 @@ async def market_data_flow(adapter, ib, snapshot_request, monkeypatch):
     assert all(not row.is_trading_day and row.session_close_at is None for row in closed.sessions)
 
 
-async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None, consume_event=None, cancel_sender=None):
+async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None, consume_event=None, cancel_sender=None, reconcile_reader=None):
     from algo_trader_broker_sdk.options_capabilities import OptionCapability, OptionShapeCapability
     from algo_trader_broker_sdk.submission_gate import order_fingerprint
     from algo_trader_broker_adapter_ibkr_paper.options_orders import build_order
@@ -435,7 +436,9 @@ async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None,
         from algo_trader_broker_sdk.options_events import OptionNativeOrderQuery
         async def resolve_order(reference):
             return originals.get(reference)
-        reconciled = await adapter.reconcile_options(ReconcileOptionsRequest(**asdict(scope), since=None, cursor=None), resolve_order=resolve_order)
+        reconciliation_request = ReconcileOptionsRequest(**asdict(scope), since=None, cursor=None)
+        reconciled = (await adapter.reconcile_options(reconciliation_request, resolve_order=resolve_order)
+            if reconcile_reader is None else await reconcile_reader(adapter, reconciliation_request))
         assert [order.status for order in reconciled.orders] == ["FILLED", "CANCELED"]
         assert [order.filled_groups for order in reconciled.orders] == [2, 1]
         assert [order.remaining_groups for order in reconciled.orders] == [0, 1]
