@@ -43,6 +43,9 @@ from algo_trader_broker_sdk import (
 )
 
 
+from .options_reads import IBOptionReads
+
+
 def dom_not_supported() -> BrokerCapabilityError:
     return BrokerCapabilityError(
         "DOM strategies are deprecated and incompatible with broker runner v1",
@@ -169,7 +172,7 @@ def _is_transient_ib_disconnect(exc: BaseException) -> bool:
     return False
 
 
-class IBKRPaperAdapter:
+class IBKRPaperAdapter(IBOptionReads):
     adapter_id = "ibkr_paper"
 
     def __init__(
@@ -179,6 +182,7 @@ class IBKRPaperAdapter:
         client: Any | None = None,
         supervisor: Any | None = None,
     ) -> None:
+        self._init_option_reads()
         if client is not None:
             self._settings = settings
             self._client = client

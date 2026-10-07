@@ -3344,6 +3344,21 @@ class IBAsyncClient:
     async def _run_with_ib_async(self, func: Callable[[IB], Awaitable[T]]) -> T:
         return await self._execute_with_reconnect_async(func)
 
+    async def read_options(self, func: Callable[[IB], Awaitable[T]]) -> T:
+        """Read on the current connection without reconnecting or replaying it.
+
+        Runner must establish a new account generation after a connection change.
+        This port deliberately does not use the legacy reconnect/retry wrapper.
+        """
+        ib, connected_at = self._ib, self._connected_since
+        if ib is None or not self._connected.is_set() or not ib.isConnected():
+            raise IBConnectionError("Options require the current connected IB session")
+        result = await func(ib)
+        if (self._ib is not ib or self._connected_since != connected_at
+                or not self._connected.is_set() or not ib.isConnected()):
+            raise IBConnectionError("IB connection changed during option read")
+        return result
+
     def _ensure_sync_executor(self) -> ThreadPoolExecutor:
         executor = self._sync_executor
         if executor is None:

@@ -56,3 +56,12 @@
   are unsupported.
 - A non-empty persisted `client_order_id` is required before submission.
 - Vendor SDK upgrades require a new adapter patch version and contract tests.
+
+## IB V9.2 option foundation
+
+The existing IB package includes verified-account, bounded SPY/QQQ contract
+reads and `IBKR_LIVE` snapshots. The direct read flow is fixture-verified with
+`ib_async 2.0.1`; the declared trading asset classes above are unchanged. Full
+`options/1.0` activation, account/Greeks/calendar certification and native option
+orders/events/reconciliation remain pending. Local's legacy entrypoint delegates
+to the package and retains its manifest identity.
