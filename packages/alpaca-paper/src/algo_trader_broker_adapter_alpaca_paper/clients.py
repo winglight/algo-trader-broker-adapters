@@ -23,6 +23,7 @@ from .streams import (
 
 
 PAPER_TRADING_BASE_URL = "https://paper-api.alpaca.markets"
+OPTION_DATA_BASE_URL = "https://data.alpaca.markets"
 
 
 class AlpacaClients:
@@ -211,6 +212,30 @@ class AlpacaClients:
                     raise BrokerOrderError("Option order outcome requires reconciliation", code="broker_order_outcome_unknown") from None
                 finally:
                     submission_gate.cancel()
+
+    async def get_option_resource(self, path, *, params=None, data=False):
+        """Bounded original-byte reads; options never use stock feeds/models."""
+        import httpx
+        from algo_trader_broker_sdk import BrokerCapabilityError
+
+        async with self._semaphore:
+            async with httpx.AsyncClient(base_url=OPTION_DATA_BASE_URL if data else PAPER_TRADING_BASE_URL,
+                headers={"APCA-API-KEY-ID": self.settings.api_key_id, "APCA-API-SECRET-KEY": self.settings.secret_key},
+                timeout=self.settings.request_timeout_seconds, follow_redirects=False, transport=self._option_http_transport) as client:
+                try:
+                    async with asyncio.timeout(self.settings.request_timeout_seconds):
+                        async with client.stream("GET", path, params=params) as response:
+                            if response.status_code in {401, 403}:
+                                raise BrokerCapabilityError("Alpaca denied the requested option resource", code="OPTION_RESOURCE_DENIED")
+                            response.raise_for_status()
+                            raw = bytearray()
+                            async for chunk in response.aiter_bytes(chunk_size=65536):
+                                if len(raw) + len(chunk) > 8 * 1024 * 1024:
+                                    raise BrokerConnectionError("Option resource exceeds the native evidence limit")
+                                raw.extend(chunk)
+                            return bytes(raw)
+                except (httpx.HTTPError, TimeoutError):
+                    raise BrokerConnectionError("Alpaca option read failed") from None
 
     async def get_order_by_client_id(self, client_order_id: str) -> Any | None:
         self._load()

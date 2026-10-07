@@ -121,9 +121,51 @@ The unguarded option submission entry point is explicitly unavailable.
 
 The existing Guardian close integration now executes this adapter and HTTP
 client, with only the broker HTTP response and qualification/quote inputs supplied
-by fixtures. The complete option read/capability extension, IB writer, terminal
+by fixtures. The remaining option extension, IB writer, terminal
 reconciliation and actual account certification remain unfinished; this change
 does not enable production option contexts.
+
+## V9.2 native catalog, quotes and account reads (development)
+
+The existing adapter now implements catalog discovery, exact qualification,
+option snapshots, account permissions/state and implementation capability
+reports. Reads use the existing credentials and queue, fixed Paper/Data hosts,
+strict Decimal JSON and bounded original responses. They verify the currently
+bound native account and check the scope again after acquisition.
+
+The P0 catalog accepts standard SPY/QQQ American, physically delivered contracts.
+The native `multiplier` controls premium cash; `size` describes delivered shares.
+Qualification separately checks the one equity deliverable's asset UUID, symbol,
+amount and allocation. Missing or adjusted metadata never becomes an assumed
+100-share contract. Discovery follows explicit expiry/strike bounds and native
+page tokens; exact qualification reports absent, unsupported or ambiguous results.
+Native metadata hashes accompany the bindings. Raw read evidence is bounded in
+process; this is not a durable source-completeness archive.
+
+Snapshots request an explicit OPRA or indicative feed, retain exact bid/ask and
+native quote timestamps, report missing/crossed/stale data and leg skew, and keep
+indicative research-only. Provider Greeks without independent timing and unit
+evidence remain raw. Native last-trade/exercise cutoffs are not guessed.
+
+Account reads preserve equity/cash and separate buying-power fields, normalize
+only exact option holdings, and retain unsupported positions as unresolved.
+Cost basis uses the vendor's total-dollar field with its original sign; unknown
+units/direction are not converted into premium. All open parent order references
+are included; a full 500-row page is explicitly incomplete. Execution and
+lifecycle reconciliation remain incomplete until their independent sources are
+joined. Approval levels and trading restrictions are distinct from OPRA access,
+implementation status and actual Paper certification.
+
+The existing Guardian/Orders/Account/Market/Runner integration exercises these
+methods through their HTTP clients with synthetic broker responses. Its explicit
+certification and journal-completeness fixtures are not production evidence.
+History, subscriptions, Greeks/calendar certification, complete reconciliation,
+the full extension handshake and actual Paper certification remain pending.
+
+References: [contract and deliverable schemas](https://docs.alpaca.markets/us/reference/get-options-contracts),
+[snapshots and feeds](https://docs.alpaca.markets/us/reference/optionsnapshots),
+[account fields](https://docs.alpaca.markets/us/reference/getaccount-1),
+[position cost basis](https://alpaca.markets/sdks/python/api_reference/trading/models.html#position).
 
 ## Configuration
 

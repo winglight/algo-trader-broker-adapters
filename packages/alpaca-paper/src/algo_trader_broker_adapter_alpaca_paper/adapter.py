@@ -51,6 +51,7 @@ from .mapping import (
 )
 from .settings import AlpacaPaperSettings
 from .raw_stream import CapturedTradeFrame, decode_native
+from .options_reads import AlpacaOptionReads
 
 
 _TERMINAL = {"Filled", "Cancelled", "Rejected", "Inactive"}
@@ -79,7 +80,7 @@ def _equity_order(order):
     return text(value(order, "asset_class")) == "us_equity" and not _option_order(order)
 
 
-class AlpacaPaperAdapter:
+class AlpacaPaperAdapter(AlpacaOptionReads):
     adapter_id = "alpaca_paper"
 
     def __init__(self, settings: Mapping[str, Any], *, backend: Any | None = None) -> None:
@@ -106,6 +107,9 @@ class AlpacaPaperAdapter:
         if (type(verified) is not OptionVerifiedAccount or verified.broker != "ALPACA" or verified.scope.environment != "paper"
                 or not self._connected or verified.native_account_ref != self._account_id):
             raise BrokerContractError("Option request differs from the connected verified Alpaca account")
+        if self._option_account_binding != verified:
+            getattr(self, "_option_catalog", {}).clear()
+            self._option_opra_observed = None
         self._option_account_binding = verified
 
     def set_option_event_handler(self, context: OptionVerifiedAccount, handler: OptionEventHandler | None) -> None:
@@ -141,6 +145,8 @@ class AlpacaPaperAdapter:
 
     def _clear_option_event_handler(self):
         self._option_account_binding = None
+        getattr(self, "_option_catalog", {}).clear()
+        self._option_opra_observed = None
         if self._option_event_binding is not None:
             self.set_option_event_handler(self._option_event_binding, None)
 
