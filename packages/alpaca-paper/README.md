@@ -187,6 +187,26 @@ The existing synthetic main flow covers ACK/open positions and filled/flat
 reads through Runner HTTP and actual Orders evidence application.
 Reference: [native orders and pagination](https://docs.alpaca.markets/us/reference/getallorders-1).
 
+## V9.2 native option lifecycle reads (development)
+
+`option_lifecycle_events` reads exercise (OPEXC/OPXRC), assignment (OPASN) and
+expiry (OPEXP), retaining original pages through Runner's internal archive
+callback before interpreting them. OPTRD pages are queried separately; the full
+activity ID, broker date, qualified underlying, signed quantity and strike cash
+must match before delivery is attached. No OCC-symbol guess, truncated ID or
+description text supplies a financial association. Unmatched/unsupported
+records stay unresolved; no ordinary order fill is synthesized.
+
+The native date remains `effective_date` with no invented `effective_at`.
+Account reads include these events and obtain positions after activity reads.
+Source completeness and delivery ownership remain independent checks;
+pagination exhaustion does not certify either one. Original timestamp-based
+events remain supported by the transport. Lifecycle capability is IMPLEMENTED,
+with actual account certification still required.
+
+References: [option event records](https://docs.alpaca.markets/us/docs/non-trade-activities-for-option-events),
+[activities and creation-date pagination](https://docs.alpaca.markets/us/reference/getaccountactivities-2).
+
 ## V9.2 historical option bars and trades (development)
 
 `option_history` now reads the native option bars/trades endpoints through the

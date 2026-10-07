@@ -5,6 +5,7 @@ reads are evidence, not Paper certification or an execution authorization.
 """
 
 from collections import OrderedDict, deque
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from hashlib import sha256
@@ -12,7 +13,7 @@ from uuid import uuid4
 
 from algo_trader_broker_sdk import BrokerContractError
 from algo_trader_broker_sdk.options import (
-    BrokerOptionBinding, ContractPage, OptionContract, OptionContractKey, OptionContractQuery,
+    ActivityQuery, BrokerOptionBinding, ContractPage, OptionContract, OptionContractKey, OptionContractQuery,
     OptionMarketSnapshot, OptionQuote, OptionScope, QualificationBatch, QualificationRequest,
     QualificationResult, SnapshotRequest, check, option_contract_id, timestamp,
 )
@@ -253,8 +254,10 @@ class AlpacaOptionReads:
         entitled = opra is not None and opra[0] == bound.scope and 0 <= (timestamp(observed) - timestamp(opra[1])).total_seconds() < 30
         structures = STRUCTURES if level is not None and level >= 3 else STRUCTURES[:2] if level == 2 else ()
         bp = "OPTIONS_BUYING_POWER" if account.get("options_buying_power") is not None else "UNKNOWN"
+        lifecycle = getattr(self, "_option_lifecycle_observed", None)
+        lifecycle_read = lifecycle is not None and lifecycle[0] == bound.scope and 0 <= (timestamp(observed) - timestamp(lifecycle[1])).total_seconds() < 30
         return OptionAccountPermissions(bound.scope, approval, None if level is None else str(level), structures,
-            trading, "ALLOWED" if entitled else "UNKNOWN", "UNKNOWN", bp, observed,
+            trading, "ALLOWED" if entitled else "UNKNOWN", "SUPPORTED" if lifecycle_read else "UNKNOWN", bp, observed,
             (timestamp(observed) + timedelta(seconds=30)).isoformat().replace("+00:00", "Z"), sha256(raw).hexdigest(),
             ("LIFECYCLE_NOT_CERTIFIED",) + (() if entitled else ("OPRA_ENTITLEMENT_UNOBSERVED",)))
 
@@ -264,9 +267,9 @@ class AlpacaOptionReads:
         implemented = OptionCapability("IMPLEMENTED", ("ACCOUNT_CERTIFICATION_REQUIRED",), ())
         unavailable = OptionCapability("UNSUPPORTED", ("NOT_IMPLEMENTED",), ())
         no_history_quotes = OptionCapability("UNSUPPORTED", ("PROVIDER_HISTORY_QUOTES_UNAVAILABLE",), ())
-        return OptionCapabilities(bound.scope, self.adapter_id, ADAPTER_VERSION, "alpaca-options-reads-3", observed,
+        return OptionCapabilities(bound.scope, self.adapter_id, ADAPTER_VERSION, "alpaca-options-reads-4", observed,
             (timestamp(observed) + timedelta(seconds=30)).isoformat().replace("+00:00", "Z"), implemented, implemented,
-            unavailable, implemented, no_history_quotes, implemented, unavailable, unavailable, unavailable, implemented,
+            unavailable, implemented, no_history_quotes, implemented, implemented, unavailable, unavailable, implemented,
             implemented, ("OPRA", "INDICATIVE"), tuple(OptionShapeCapability(shape, "NATIVE", implemented,
                 1 if shape.startswith("LONG_") else 2, 1, None, False, not shape.startswith("LONG_"), False, False) for shape in STRUCTURES))
 
@@ -274,8 +277,29 @@ class AlpacaOptionReads:
         from .options_reconciliation import reconcile
         return await reconcile(self, request, resolve_order=resolve_order)
 
-    async def option_account_state(self, request):
+    async def option_lifecycle_events(self, request, *, retain_evidence=None):
+        from .options_lifecycle import read
+        return await read(self, request, retain_evidence=retain_evidence)
+
+    async def option_account_state(self, request, *, retain_lifecycle=None):
+        activities, lifecycle_events, unresolved, cursor = None, [], [], None
+        if retain_lifecycle is not None:
+            seen = set()
+            for _ in range(100):
+                activities = await self.option_lifecycle_events(ActivityQuery(**{name: getattr(request, name)
+                    for name in OptionScope.__dataclass_fields__}, since=None, cursor=cursor, limit=100), retain_evidence=retain_lifecycle)
+                lifecycle_events.extend(activities.events)
+                unresolved.extend(activities.unresolved_refs)
+                cursor = activities.next_cursor
+                if cursor is None: break
+                check(cursor not in seen, "Lifecycle pagination did not advance")
+                seen.add(cursor)
         state, _, _ = await self._option_account_snapshot(request)
+        if activities is not None:
+            reasons = state.quality_reasons
+            if cursor is not None: reasons += ("LIFECYCLE_PAGE_INCOMPLETE",)
+            if unresolved: reasons += ("LIFECYCLE_RECORDS_UNRESOLVED",)
+            state = replace(state, activities=tuple(lifecycle_events), quality_reasons=reasons)
         return state
 
     async def _option_account_snapshot(self, request):
