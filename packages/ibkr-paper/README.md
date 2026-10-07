@@ -11,7 +11,8 @@ Only IBKR Paper accounts are in scope. Live trading is not enabled by this packa
 ## V9.2 option read foundation
 
 The existing adapter now has scoped `list_option_contracts`,
-`qualify_option_contracts`, `option_snapshot`, and `option_capabilities` ports.
+`qualify_option_contracts`, `option_snapshot`, `option_capabilities`,
+`option_account_permissions`, and `option_account_state` ports.
 They require Runner's verified Paper account and the current connection; reads
 never reconnect or replay themselves. Discovery uses bounded SPY/QQQ SMART
 parameters and exact ContractDetails qualification. Bindings retain conId,
@@ -24,8 +25,18 @@ and ask tick times separately, require a native market-data-type callback of 1
 for executable quote quality, and leave unverified Greeks empty. Tick times are
 socket receipt times, not exchange timestamps. Reading does not certify trading.
 
-The full `options/1.0` handshake remains disabled pending the account, calendar,
+The full `options/1.0` handshake remains disabled pending account certification, calendar,
 order/event and reconciliation ports. Legacy option endpoints still reject
 requests. Local's compatibility entrypoint now delegates to this package while
 preserving its existing manifest entrypoint. The synthetic read walkthrough uses
 `ib_async 2.0.1`; no Gateway connection or real order is part of that check.
+
+Account observations use explicit-account `reqAccountUpdatesMulti` and
+`reqPositionsMulti` request IDs/end markers, then a bounded all-open-API-order
+download. Callback observations are retained through the existing evidence
+archive when supplied. USD `AvailableFunds` is kept separate from stock
+`BuyingPower`; position conIds are qualified again. Original `avgCost` stays in
+its unverified unit until source certification. Native permIds are stable order
+references; missing permIds preserve client/order/generation identity. Manual
+order visibility, executions, lifecycle and commission coverage remain explicitly
+incomplete. These reads do not grant option approval or enable trading.

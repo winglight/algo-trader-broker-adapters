@@ -4,9 +4,10 @@ import asyncio
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from itertools import count
+from hashlib import sha256
 
 import pytest
-from ib_async import IB, ContractDetails, Option, OptionChain, Stock
+from ib_async import IB, ContractDetails, Option, OptionChain, Stock, Order, OrderState
 
 from algo_trader_broker_adapter_ibkr_paper import IBKRPaperAdapter
 from algo_trader_broker_adapter_ibkr_paper.client import IBAsyncClient
@@ -21,6 +22,10 @@ from algo_trader_broker_sdk import dataclass_to_payload
 
 @pytest.mark.asyncio
 async def test_standard_contract_discovery_qualification_and_live_snapshot(monkeypatch):
+    await read_flow(monkeypatch)
+
+
+async def read_flow(monkeypatch, *, scope=None, consume_account=None):
     ib = IB()
     monkeypatch.setattr(ib, "isConnected", lambda: True)
     monkeypatch.setattr(ib, "managedAccounts", lambda: ["DU-OPTIONS-FIXTURE"])
@@ -32,8 +37,11 @@ async def test_standard_contract_discovery_qualification_and_live_snapshot(monke
         queries.append(contract)
         if contract.secType == "STK":
             return [ContractDetails(contract=Stock("SPY", "SMART", "USD", conId=100))]
-        assert (contract.symbol, contract.exchange, contract.tradingClass, contract.multiplier) == ("SPY", "SMART", "SPY", "100")
-        strike = int(contract.strike)
+        if contract.conId:
+            strike = contract.conId - 1000
+        else:
+            assert (contract.symbol, contract.exchange, contract.tradingClass, contract.multiplier) == ("SPY", "SMART", "SPY", "100")
+            strike = int(contract.strike)
         native = Option("SPY", "20261016", strike, "C", "SMART", multiplier="100", currency="USD",
                         tradingClass="SPY", conId=1000 + strike, localSymbol=f"SPY   261016C{strike * 1000:08d}")
         return [ContractDetails(contract=native, underConId=100, underSymbol="SPY", underSecType="STK",
@@ -62,7 +70,7 @@ async def test_standard_contract_discovery_qualification_and_live_snapshot(monke
     client._connected.set()
     client._connected_since = datetime.now(timezone.utc)
     adapter = IBKRPaperAdapter({}, client=client)
-    scope = OptionScope("options/1.0", "a" * 64, "fixture-profile", 1, "fixture-account", "paper")
+    scope = scope or OptionScope("options/1.0", "a" * 64, "fixture-profile", 1, "fixture-account", "paper")
     values = asdict(scope)
     adapter.bind_option_account(OptionVerifiedAccount(scope, "IBKR", "DU-OPTIONS-FIXTURE"))
     try:
@@ -96,6 +104,67 @@ async def test_standard_contract_discovery_qualification_and_live_snapshot(monke
         assert option_from_payload(type(snapshot), dataclass_to_payload(snapshot)) == snapshot
         assert canceled == [1, 2] and ib.wrapper.reqId2Ticker == {900: existing}
         assert ib.wrapper.ticker2ReqId["mktData"][existing] == 900
+
+        canceled_accounts, canceled_positions, retained = [], [], {}
+        def account_values(req_id, account, model, ledger_only):
+            assert (account, model, ledger_only) == ("DU-OPTIONS-FIXTURE", "", False)
+            def receive():
+                for tag, value, currency in (("Currency", "USD", "BASE"),
+                        ("NetLiquidation", "10000.123456789012", "USD"), ("TotalCashValue", "9000", "USD"),
+                        ("AvailableFunds", "8000", "USD"), ("BuyingPower", "32000", "USD"),
+                        ("accountReady", "true", "")):
+                    ib.client.decoder.interpret(["73", "1", str(req_id), account, "", tag, value, currency])
+                ib.client.decoder.interpret(["74", "1", str(req_id)])
+            asyncio.get_running_loop().call_soon(receive)
+
+        def positions(req_id, account, model):
+            assert (account, model) == ("DU-OPTIONS-FIXTURE", "")
+            def receive():
+                # Real decoder and wrapper callbacks, not a prebuilt Account DTO.
+                for strike, qty, cost in ((590, "2", "240"), (595, "-2", "90")):
+                    ib.client.decoder.interpret(["71", "1", str(req_id), account, str(1000 + strike),
+                        "SPY", "OPT", "20261016", str(strike), "C", "100", "", "USD",
+                        f"SPY   261016C{strike * 1000:08d}", "SPY", qty, cost, ""])
+                ib.client.decoder.interpret(["72", "1", str(req_id)])
+            asyncio.get_running_loop().call_soon(receive)
+
+        def orders():
+            def receive():
+                ib.wrapper.openOrder(17, native, Order(orderId=17, clientId=40, permId=19001,
+                    account="DU-OPTIONS-FIXTURE", totalQuantity=2, action="BUY", orderType="LMT", lmtPrice=1.25),
+                    OrderState(status="Submitted"))
+                ib.wrapper.openOrderEnd()
+            asyncio.get_running_loop().call_soon(receive)
+
+        async def retain(raw):
+            digest = sha256(raw).hexdigest()
+            retained[digest] = raw
+            return digest
+
+        monkeypatch.setattr(ib.client, "reqAccountUpdatesMulti", account_values)
+        monkeypatch.setattr(ib.client, "cancelAccountUpdatesMulti", canceled_accounts.append)
+        monkeypatch.setattr(ib.client, "reqPositionsMulti", positions)
+        monkeypatch.setattr(ib.client, "cancelPositionsMulti", canceled_positions.append)
+        monkeypatch.setattr(ib.client, "reqAllOpenOrders", orders)
+        permissions = await adapter.option_account_permissions(scope)
+        assert permissions.approval_status == "UNKNOWN" and permissions.permitted_structures == ()
+        assert permissions.data_entitlement == "ALLOWED" and permissions.bp_semantics == "AVAILABLE_FUNDS"
+        state = await adapter.option_account_state(scope, retain_lifecycle=retain)
+        assert (state.equity_cash, state.cash_available, state.option_buying_power) == ("10000.123456789012", "9000", "8000")
+        assert {v.name: v.value for v in state.raw_buying_power} == {"AvailableFunds": "8000", "BuyingPower": "32000"}
+        assert [p.signed_contracts for p in state.positions] == [2, -2]
+        assert [p.raw_cost_value for p in state.positions] == ["240", "90"]
+        assert all(p.raw_cost_unit == "UNKNOWN" and p.raw_ref in retained for p in state.positions)
+        assert state.positions_complete and not state.unresolved_positions
+        assert not state.orders_complete and not state.executions_complete and not state.lifecycle_complete
+        assert [(r.broker_order_session_key, r.broker_order_id) for r in state.open_order_refs] == [("IBKR_PERM_ID", "19001")]
+        assert state.source_checkpoint in retained
+        assert option_from_payload(type(state), dataclass_to_payload(state)) == state
+        assert len(canceled_accounts) == 2 and len(canceled_positions) == 1
+        assert not ib.wrapper._futures
+        assert "positionMulti" not in ib.wrapper.__dict__ and "openOrder" not in ib.wrapper.__dict__
+        if consume_account is not None:
+            await consume_account(state)
         client._connected_since = datetime.now(timezone.utc)
         with pytest.raises(BrokerContractError, match="connection changed"):
             await adapter.option_snapshot(request)

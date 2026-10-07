@@ -15,3 +15,7 @@
   bid/ask snapshots on the current IB connection, without reconnect/retry.
 - Isolate finite quote subscriptions from existing contract subscriptions.
 - Keep full options protocol activation and trading certification disabled.
+
+- Add request-scoped native account/position callbacks, exact USD funding fields,
+  qualified option inventory and stable open-order references. Preserve unknown
+  permission/cost-unit/source-completeness states and the evidence archive hook.

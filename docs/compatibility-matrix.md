@@ -65,3 +65,8 @@ reads and `IBKR_LIVE` snapshots. The direct read flow is fixture-verified with
 `options/1.0` activation, account/Greeks/calendar certification and native option
 orders/events/reconciliation remain pending. Local's legacy entrypoint delegates
 to the package and retains its manifest identity.
+
+The IB read foundation also maps fresh account funds, net option inventory and
+API open-order references into the public Account DTOs. AvailableFunds and stock
+BuyingPower stay distinct. Option approval, native cost units, manual-order
+visibility and execution/lifecycle/commission completeness are not inferred.

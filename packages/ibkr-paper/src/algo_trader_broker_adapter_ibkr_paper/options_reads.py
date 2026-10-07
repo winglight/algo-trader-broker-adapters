@@ -6,7 +6,7 @@ excluded. A read is not account permission, calendar or trading certification.
 """
 
 import asyncio
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -42,7 +42,9 @@ def native_decimal(value):
     try:
         number = Decimal(str(value))
         check(number.is_finite(), "Non-finite IB numeric value")
-        wire = format(number.normalize(), "f")
+        wire = format(number, "f")
+        if "." in wire:
+            wire = wire.rstrip("0").rstrip(".")
         decimal_wire(wire, nonnegative=True)
         return wire
     except (InvalidOperation, ValueError) as exc:
@@ -89,6 +91,9 @@ class IBOptionReads:
         self._option_connection = None
         self._option_catalog = OrderedDict()
         self._option_pages = OrderedDict()
+        self._option_account_read_lock = asyncio.Lock()
+        self._option_account_evidence = deque(maxlen=32)
+        self._option_live_observed = None
 
     def bind_option_account(self, verified):
         check(type(verified) is OptionVerifiedAccount and verified.broker == "IBKR"
@@ -100,6 +105,7 @@ class IBOptionReads:
         if self._option_account_binding != verified or self._option_connection != state["connected_since"]:
             self._option_catalog.clear()
             self._option_pages.clear()
+            self._option_live_observed = None
         self._option_account_binding = verified
         self._option_connection = state["connected_since"]
 
@@ -248,11 +254,19 @@ class IBOptionReads:
             observed = now_wire()
             implemented = OptionCapability("IMPLEMENTED", ("ACCOUNT_CERTIFICATION_REQUIRED",), ())
             unavailable = OptionCapability("UNSUPPORTED", ("NOT_IMPLEMENTED",), ())
-            return OptionCapabilities(bound.scope, self.adapter_id, VERSION, "ib-options-reads-1", observed,
+            return OptionCapabilities(bound.scope, self.adapter_id, VERSION, "ib-options-reads-2", observed,
                 (timestamp(observed) + timedelta(seconds=30)).isoformat().replace("+00:00", "Z"),
                 implemented, implemented, unavailable, unavailable, unavailable, unavailable, unavailable,
-                unavailable, unavailable, unavailable, unavailable, (FEED,), ())
+                unavailable, unavailable, implemented, unavailable, (FEED,), ())
         return await self._option_read(request, read)
+
+    async def option_account_permissions(self, request):
+        from .options_account import permissions
+        return await permissions(self, request)
+
+    async def option_account_state(self, request, *, retain_lifecycle=None):
+        from .options_account import account_state
+        return await account_state(self, request, retain_evidence=retain_lifecycle)
 
     async def option_snapshot(self, request):
         check(type(request) is SnapshotRequest and request.feed == FEED, "IB snapshot requires explicit IBKR_LIVE feed")
@@ -266,6 +280,9 @@ class IBOptionReads:
                       and 0 <= (datetime.now(timezone.utc) - timestamp(binding.qualified_at)).total_seconds() < 30,
                       "IB snapshot requires the current exact native qualification")
                 contracts.append(current[2].contract)
-            return await read_snapshot(ib, request, contracts, timeout=self._qualification_timeout)
+            result = await read_snapshot(ib, request, contracts, timeout=self._qualification_timeout)
+            if result.complete and all(quote.quality == "EXECUTABLE" for quote in result.quotes):
+                self._option_live_observed = (bound.scope, result.observed_at)
+            return result
 
         return await self._option_read(request, read)
