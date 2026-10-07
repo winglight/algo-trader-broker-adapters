@@ -537,12 +537,30 @@ class AlpacaPaperAdapter:
         return asset
 
     async def place_stock_order(self, request: StockOrderRequest) -> OrderResult:
+        return await self._place_stock_order(request)
+
+    submission_gate_version = 1
+
+    async def place_stock_order_guarded(self, request: StockOrderRequest, gate) -> OrderResult:
+        return await self._place_stock_order(request, gate=gate)
+
+    async def _place_stock_order(self, request: StockOrderRequest, *, gate=None) -> OrderResult:
         await self.ensure_connected()
+        if gate is not None:
+            account = await self._backend.get_account()
+            native = text(value(account, "id") or value(account, "account_number"))
+            if not request.account or native != request.account:
+                raise BrokerContractError("Guarded Alpaca order requires the verified native account")
         await self._validate_stock_order(request)
         native_request = self._backend.make_order_request(request)
         client_order_id = str(request.client_order_id)
         try:
-            order = await self._backend.submit_order(native_request)
+            if gate is None:
+                order = await self._backend.submit_order(native_request)
+            else:
+                # The backend checks after its concurrency queue, and consumes
+                # the gate in the native worker immediately before the SDK POST.
+                order = await self._backend.submit_order(native_request, submission_gate=gate)
         except asyncio.TimeoutError:
             try:
                 order = await self._backend.get_order_by_client_id(client_order_id)

@@ -46,30 +46,37 @@ class AlpacaClients:
             return
         try:
             from alpaca.data.historical import StockHistoricalDataClient
-            from alpaca.trading.client import TradingClient
+            from .trading_client import SingleAttemptTradingClient
         except ImportError as exc:
             raise BrokerConnectionError(
                 "alpaca-py is required for the Alpaca Paper adapter",
                 details={"dependency": "alpaca-py==0.43.5"},
             ) from exc
-        self._trading = TradingClient(
+        self._trading = SingleAttemptTradingClient(
             self.settings.api_key_id,
             self.settings.secret_key,
             paper=True,
+            request_timeout_seconds=self.settings.request_timeout_seconds,
         )
         self._historical = StockHistoricalDataClient(
             self.settings.api_key_id,
             self.settings.secret_key,
         )
 
-    async def _call(self, operation: str, function: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    async def _call(self, operation: str, function: Callable[..., Any], *args: Any, submission_gate=None, **kwargs: Any) -> Any:
         async with self._semaphore:
+            if submission_gate is not None:
+                await submission_gate.prepare()
+            def invoke():
+                if submission_gate is not None: submission_gate.consume()
+                return function(*args, **kwargs)
             try:
                 return await asyncio.wait_for(
-                    asyncio.to_thread(function, *args, **kwargs),
+                    asyncio.to_thread(invoke),
                     timeout=self.settings.request_timeout_seconds,
                 )
             except asyncio.TimeoutError as exc:
+                if submission_gate is not None: submission_gate.cancel()
                 # Submission timeouts must retain the adapter's client-order-id
                 # reconciliation path; a blind retry could duplicate an order.
                 if operation == "submit_order":
@@ -81,10 +88,25 @@ class AlpacaClients:
             except BrokerOrderError:
                 raise
             except Exception as exc:
+                if submission_gate is not None and not submission_gate.consumed:
+                    raise  # A failed final guard is proof that no native call occurred.
+                if operation == "submit_order":
+                    # A missing/malformed response or a server-side failure is
+                    # not proof of rejection. Retain the order for reconciliation.
+                    from alpaca.common.exceptions import APIError
+                    status = exc.status_code if isinstance(exc, APIError) else None
+                    rejected = isinstance(status, int) and 400 <= status < 500 and status != 408
+                    raise BrokerOrderError(
+                        "Alpaca rejected the order" if rejected else "Alpaca order outcome is unknown; reconcile before retrying",
+                        code="broker_order_error" if rejected else "broker_order_outcome_unknown",
+                        details={"operation": operation, "status_code": status},
+                    ) from exc
                 raise BrokerConnectionError(
                     f"Alpaca request failed during {operation}",
                     details={"operation": operation, "error_type": type(exc).__name__},
                 ) from exc
+            finally:
+                if submission_gate is not None: submission_gate.cancel()
 
     async def get_account(self) -> Any:
         self._load()
@@ -152,9 +174,9 @@ class AlpacaClients:
             return None
         return TimeFrame(*params)
 
-    async def submit_order(self, request: Any) -> Any:
+    async def submit_order(self, request: Any, *, submission_gate=None) -> Any:
         self._load()
-        return await self._call("submit_order", self._trading.submit_order, order_data=request)
+        return await self._call("submit_order", self._trading.submit_order, order_data=request, submission_gate=submission_gate)
 
     async def get_order_by_client_id(self, client_order_id: str) -> Any | None:
         self._load()

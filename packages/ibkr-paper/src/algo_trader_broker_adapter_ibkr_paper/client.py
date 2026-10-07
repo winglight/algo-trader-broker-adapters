@@ -1428,14 +1428,14 @@ class IBAsyncClient:
 
         return await self._run_with_ib_async(fetch)
 
-    async def place_stock_order(self, request: StockOrderRequest) -> OrderResult:
+    async def place_stock_order(self, request: StockOrderRequest, *, submission_gate=None) -> OrderResult:
         """Submit an order for a stock contract."""
 
         try:
             contract, order = request.build()
         except ValueError as exc:
             raise IBOrderError(str(exc)) from exc
-        return await self._submit_order(contract, order)
+        return await self._submit_order(contract, order, submission_gate=submission_gate)
 
     async def place_future_order(self, request: FutureOrderRequest) -> OrderResult:
         """Submit an order for a futures contract."""
@@ -2656,15 +2656,25 @@ class IBAsyncClient:
         except Exception as exc:  # pragma: no cover - network failure
             raise IBMarketDataError("Failed to qualify contract") from exc
 
-    async def _submit_order(self, contract: Any, order: Any) -> OrderResult:
+    async def _submit_order(self, contract: Any, order: Any, *, submission_gate=None) -> OrderResult:
+        # Connection establishment may retry reads. Once native submission is
+        # attempted, a reconnect must never repeat the order side effect.
+        ib = await self.ensure_connected()
+        if self._trade_update_handler is not None:
+            self._install_order_listeners(ib)
+        if self._account_update_handler is not None:
+            self._install_account_listeners(ib)
+        if submission_gate is not None:
+            await submission_gate.prepare()
+            if not ib.isConnected():
+                submission_gate.cancel()
+                raise IBConnectionError("IB disconnected before guarded submission")
+            submission_gate.consume()
         try:
-            return await self._run_with_ib_async(
-                lambda ib: self._place_order_async(ib, contract, order)
-            )
-        except ValueError as exc:
-            raise IBOrderError(str(exc)) from exc
+            return await self._place_order_async(ib, contract, order)
         except Exception as exc:  # pragma: no cover - runtime failure
-            raise IBOrderError("Failed to submit order") from exc
+            raise IBOrderError("IB order outcome is unknown; reconcile before retrying",
+                               code="broker_order_outcome_unknown") from exc
 
     async def _place_order_async(self, ib: IB, contract: Any, order: Any) -> OrderResult:
         place_order_async = getattr(ib, "placeOrderAsync", None)

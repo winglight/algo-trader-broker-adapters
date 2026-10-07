@@ -386,6 +386,14 @@ class IBKRPaperAdapter:
         return await self._client.get_positions()  # type: ignore[return-value]
 
     async def place_stock_order(self, request: StockOrderRequest) -> OrderResult:
+        return await self._place_stock_order(request)
+
+    submission_gate_version = 1
+
+    async def place_stock_order_guarded(self, request: StockOrderRequest, gate) -> OrderResult:
+        return await self._place_stock_order(request, gate=gate)
+
+    async def _place_stock_order(self, request: StockOrderRequest, *, gate=None) -> OrderResult:
         from .orders import StockOrderRequest as IBStockOrderRequest
 
         payload = asdict(request)
@@ -404,7 +412,8 @@ class IBKRPaperAdapter:
                 payload["order_id"] = int(native_order_id)
             except (TypeError, ValueError) as exc:
                 raise BrokerOrderError("IBKR order identifier must be numeric") from exc
-        result = await self._client.place_stock_order(IBStockOrderRequest(**payload))
+        kwargs = {} if gate is None else {"submission_gate": gate}
+        result = await self._client.place_stock_order(IBStockOrderRequest(**payload), **kwargs)
         return _map_ib_order_result(result, open_close=payload.get("open_close"))
 
     async def place_future_order(self, request: FutureOrderRequest) -> OrderResult:
