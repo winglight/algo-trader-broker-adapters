@@ -28,7 +28,7 @@ async def test_standard_contract_discovery_qualification_and_live_snapshot(monke
     await read_flow(monkeypatch, exercise_orders=True)
 
 
-async def read_flow(monkeypatch, *, scope=None, consume_account=None, exercise_orders=False, gate_factory=None, consume_event=None):
+async def read_flow(monkeypatch, *, scope=None, consume_account=None, exercise_orders=False, gate_factory=None, consume_event=None, cancel_sender=None):
     ib = IB()
     monkeypatch.setattr(ib, "isConnected", lambda: True)
     monkeypatch.setattr(ib, "managedAccounts", lambda: ["DU-OPTIONS-FIXTURE"])
@@ -169,7 +169,8 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, exercise_o
         if consume_account is not None:
             await consume_account(state)
         if exercise_orders:
-            await submission_flow(adapter, ib, scope, monkeypatch, gate_factory=gate_factory, consume_event=consume_event)
+            await submission_flow(adapter, ib, scope, monkeypatch, gate_factory=gate_factory,
+                                  consume_event=consume_event, cancel_sender=cancel_sender)
         client._connected_since = datetime.now(timezone.utc)
         with pytest.raises(BrokerContractError, match="connection changed"):
             await adapter.option_snapshot(request)
@@ -179,11 +180,12 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, exercise_o
         await client._shutdown_sync_executor()
 
 
-async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None, consume_event=None):
+async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None, consume_event=None, cancel_sender=None):
     from algo_trader_broker_sdk.options_capabilities import OptionCapability, OptionShapeCapability
     from algo_trader_broker_sdk.submission_gate import order_fingerprint
     from algo_trader_broker_adapter_ibkr_paper.options_orders import build_order
     stored, sockets, evidence = [], [], []
+    native_orders, native_fills, native_fees, originals = {}, [], {}, {}
     ib.client.connState = ib.client.CONNECTED
     ib.client._serverVersion = 178
     ib.client.clientId = ib.wrapper.clientId = 40
@@ -197,14 +199,54 @@ async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None,
     def socket_send(raw):
         assert len(stored) == len(sockets) + 1  # Durable callback preceded socket I/O.
         sockets.append(raw)
+        fields = raw[4:].split(b"\0")
+        if fields[0] == b"4":
+            native = native_orders[int(fields[2])]
+            native[2].status = "Cancelled"
+            order = native[1]
+            asyncio.get_running_loop().call_soon(ib.wrapper.orderStatus, order.orderId, "Cancelled",
+                1.0, 1.0, 999.0, order.permId, 0, 999.0, 40, "")
 
     def acknowledge(trade):
         native = deepcopy(trade.order)
         native.permId = 20000 + native.orderId
+        native_orders[native.orderId] = [deepcopy(trade.contract), native, OrderState(status="Submitted")]
         asyncio.get_running_loop().call_soon(ib.wrapper.openOrder, native.orderId,
             deepcopy(trade.contract), native, OrderState(status="Submitted"))
 
+    def open_orders():
+        def receive():
+            for contract, order, state in native_orders.values():
+                if state.status not in {"Filled", "Cancelled"}:
+                    ib.wrapper.openOrder(order.orderId, deepcopy(contract), deepcopy(order), deepcopy(state))
+            ib.wrapper.openOrderEnd()
+        asyncio.get_running_loop().call_soon(receive)
+
+    def completed_orders(api_only):
+        assert api_only is True
+        def receive():
+            for contract, order, state in native_orders.values():
+                if state.status in {"Filled", "Cancelled"}:
+                    # These fields are absent from the real completedOrder wire.
+                    native = replace(order, clientId=0, orderId=0)
+                    ib.wrapper.completedOrder(deepcopy(contract), native, deepcopy(state))
+            ib.wrapper.completedOrdersEnd()
+        asyncio.get_running_loop().call_soon(receive)
+
+    def executions(req_id, query):
+        assert query.acctCode == "DU-OPTIONS-FIXTURE" and query.time == ""
+        def receive():
+            for contract, execution in native_fills:
+                ib.wrapper.execDetails(req_id, deepcopy(contract), deepcopy(execution))
+                if execution.execId in native_fees:
+                    ib.wrapper.commissionReport(deepcopy(native_fees[execution.execId]))
+            ib.wrapper.execDetailsEnd(req_id)
+        asyncio.get_running_loop().call_soon(receive)
+
     monkeypatch.setattr(ib.client.conn, "sendMsg", socket_send)
+    monkeypatch.setattr(ib.client, "reqAllOpenOrders", open_orders)
+    monkeypatch.setattr(ib.client, "reqCompletedOrders", completed_orders)
+    monkeypatch.setattr(ib.client, "reqExecutions", executions)
     ib.newOrderEvent += acknowledge
     try:
         bindings = tuple(adapter._option_catalog[key][0] for key in ("1590", "1595"))
@@ -233,6 +275,7 @@ async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None,
                 stored.append(payload)
             gate = SubmissionGate(validate, lambda: None, retain_native=retain, option_shape=shape)
             result = await adapter.submit_option_order_guarded(request, gate)
+            originals[request.client_order_id] = request
             assert gate.consumed and result.status == "ACKNOWLEDGED"
             assert result.parent_order_ref and all(leg.filled_contracts == 0 for leg in result.legs)
             payload = json.loads(stored[-1])
@@ -255,17 +298,60 @@ async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None,
             for index, intent in enumerate(request.legs):
                 execution = Execution(execId=f"0001.abcdef.{payload['order_id']:02d}{index}.01",
                     time=datetime.now(timezone.utc), acctNumber="DU-OPTIONS-FIXTURE", exchange="CBOE",
-                    side="BOT" if intent.side == "BUY" else "SLD", shares=2.0, price=1.25 + index,
+                    side="BOT" if intent.side == "BUY" else "SLD", shares=1.0 if combo else 2.0, price=1.25 + index,
                     permId=int(result.parent_order_ref), clientId=40, orderId=payload["order_id"],
-                    cumQty=2.0, avgPrice=1.25 + index, orderRef=request.client_order_id)
+                    cumQty=1.0 if combo else 2.0, avgPrice=1.25 + index, orderRef=request.client_order_id)
+                native_fills.append((deepcopy(contracts[index]), deepcopy(execution)))
                 ib.wrapper.execDetails(-1, contracts[index], execution)
-                ib.wrapper.commissionReport(CommissionReport(execId=execution.execId, commission=0.65, currency="USD"))
+                report = CommissionReport(execId=execution.execId, commission=0.65, currency="USD")
+                native_fees[execution.execId] = deepcopy(report)
+                ib.wrapper.commissionReport(report)
             if combo:
                 aggregate = replace(execution, execId=f"0001.abcdef.{payload['order_id']:02d}P.01", side="BOT", price=-1.5)
+                native_fills.append((deepcopy(expected_contract), deepcopy(aggregate)))
                 ib.wrapper.execDetails(-1, expected_contract, aggregate)
-            ib.wrapper.orderStatus(payload["order_id"], "Filled", 2.0, 0.0, 999.0, int(result.parent_order_ref), 0, 999.0, 40, "")
+            state = "Submitted" if combo else "Filled"
+            native_orders[payload["order_id"]][2].status = state
+            native_orders[payload["order_id"]][1].filledQuantity = 1.0 if combo else 2.0
+            ib.wrapper.orderStatus(payload["order_id"], state, 1.0 if combo else 2.0, 1.0 if combo else 0.0,
+                999.0, int(result.parent_order_ref), 0, 999.0, 40, "")
             await adapter._option_events.flush()
-        assert len(sockets) == 2
+            if combo:
+                from algo_trader_broker_sdk.options import OptionCancelRequest
+                cancel_request = OptionCancelRequest(**asdict(scope), command_id="cancel-ib-bag",
+                    parent_order_ref=result.parent_order_ref, authorization_ref="fixture-cancel-authority", valid_until=request.valid_until)
+                async def retain_cancel(raw):
+                    stored.append(raw)
+                if cancel_sender is None:
+                    cancel_gate = SubmissionGate(validate, lambda: None, retain_native=retain_cancel)
+                    canceled = await adapter.cancel_option_order_guarded(cancel_request, cancel_gate, original=request)
+                    assert cancel_gate.consumed
+                else:
+                    canceled = await cancel_sender(adapter, request, cancel_request, retain_cancel)
+                assert canceled.status == "REQUESTED" and canceled.parent_order_ref == result.parent_order_ref
+                native_cancel = json.loads(stored[-1])
+                assert (native_cancel["client_id"], native_cancel["order_id"], native_cancel["parent_order_ref"]) == (
+                    40, payload["order_id"], result.parent_order_ref)
+                await asyncio.sleep(0)
+                await adapter._option_events.flush()
+        assert len(sockets) == 3 and [raw[4:].split(b"\0")[0] for raw in sockets] == [b"3", b"3", b"4"]
+        # Recover from provider downloads, without relying on ib_async's cache.
+        ib.wrapper.trades.clear()
+        ib.wrapper.permId2Trade.clear()
+        ib.wrapper.fills.clear()
+        adapter._option_events.executions.clear()
+        from algo_trader_broker_sdk.options import ReconcileOptionsRequest
+        from algo_trader_broker_sdk.options_events import OptionNativeOrderQuery
+        async def resolve_order(reference):
+            return originals.get(reference)
+        reconciled = await adapter.reconcile_options(ReconcileOptionsRequest(**asdict(scope), since=None, cursor=None), resolve_order=resolve_order)
+        assert [order.status for order in reconciled.orders] == ["FILLED", "CANCELED"]
+        assert [order.filled_groups for order in reconciled.orders] == [2, 1]
+        assert [order.remaining_groups for order in reconciled.orders] == [0, 1]
+        assert reconciled.positions_complete and not reconciled.complete and not reconciled.executions_complete
+        assert not reconciled.executions and not reconciled.activities
+        detail = await adapter.read_option_order_evidence(OptionNativeOrderQuery(**asdict(scope), order_id=reconciled.orders[1].parent_order_ref))
+        assert json.loads(detail.raw_payload)["order"]["orderId"] == 0
         assert sum(event.source == "IB_OPTION_SUBMISSION" for event in evidence) == 2
         async def resolve(native_id, symbol):
             from algo_trader_broker_sdk.options import QualificationResult
@@ -278,9 +364,11 @@ async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None,
             assert fact.session_key == "IBKR_PERM_ID"
             fills.extend(fact.executions)
             fees.extend(fact.fees)
-        assert len(fills) == len(fees) == 3
-        assert [fill.price for fill in fills] == ["1.25", "1.25", "2.25"]
-        assert all(fill.contracts == 2 and fill.execution_id.endswith(".01") for fill in fills)
+        assert len(fills) == len(fees) == 6  # Native recovery repeats the original evidence.
+        unique = {fill.execution_id: fill for fill in fills}
+        assert len(unique) == 3 and [fill.price for fill in unique.values()] == ["1.25", "1.25", "2.25"]
+        assert [fill.contracts for fill in unique.values()] == [2, 1, 1]
+        assert all(fill.execution_id.endswith(".01") for fill in fills)
         assert all(fee.fee_cash == "0.65" for fee in fees)
     finally:
         await adapter._option_events.flush()

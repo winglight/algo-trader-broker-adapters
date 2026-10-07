@@ -28,3 +28,8 @@
 - Retain ongoing scoped IB order/execution/commission callbacks before native
   wrapper deduplication; normalize original OPT fills and provisional USD fees.
   BAG summaries never generate financial legs; corrections remain unresolved.
+
+- Add one guarded native cancellation after exact client/order-ID persistence.
+- Add finite open/completed-order and account execution recovery downloads,
+  including completedOrder evidence; retain source-window limitations and
+  deduplicate only in the existing financial authority.

@@ -37,7 +37,8 @@ class IBOptionEventStream:
                     LOG.exception("IB native option callback needs recovery")
             return captured
         self.callbacks = observe_callbacks(ib.wrapper, {name: observe(callback) for name, callback in
-            dict(openOrder=self.opened, orderStatus=self.status, execDetails=self.executed, commissionReport=self.commission).items()})
+            dict(openOrder=self.opened, completedOrder=self.completed, orderStatus=self.status,
+                 execDetails=self.executed, commissionReport=self.commission).items()})
         self.callbacks.__enter__()
 
     def enqueue(self, kind, **payload):
@@ -87,6 +88,10 @@ class IBOptionEventStream:
     def opened(self, order_id, contract, order, state):
         if contract.secType in {"OPT", "BAG"} and order.account == self.bound.native_account_ref and not order.whatIf:
             self.enqueue("openOrder", order_id=order_id, contract=contract, order=order, state=state)
+
+    def completed(self, contract, order, state):
+        if contract.secType in {"OPT", "BAG"} and order.account == self.bound.native_account_ref and not order.whatIf:
+            self.enqueue("completedOrder", contract=contract, order=order, state=state)
 
     def status(self, order_id, status, filled, remaining, average, perm_id, parent_id, last_price, client_id, why_held, market_cap=0.0):
         native = self.order(order_id, client_id, perm_id)
@@ -145,7 +150,7 @@ async def interpret(event, resolve):
     native_account = raw["native_account_ref"]
     check(type(native_account) is str and native_account.startswith("DU"), "IB callback lacks its Paper account")
     kind = raw["kind"]
-    if kind in {"openOrder", "orderStatus"}:
+    if kind in {"openOrder", "completedOrder", "orderStatus"}:
         order, contract, state = raw["order"], raw["contract"], raw["state"]
         check(order["account"] == native_account and contract["secType"] in {"OPT", "BAG"}
               and not order["whatIf"] and type(order["permId"]) is int and order["permId"] > 0,
@@ -176,9 +181,14 @@ async def interpret(event, resolve):
         leg_id += ":" + str(contract["conId"])
     if native_parent is not None:
         order = native_parent["order"]
-        check((order["account"], order["permId"], order["orderRef"], order["clientId"], order["orderId"]) ==
-              (native_account, execution["permId"], execution["orderRef"], execution["clientId"], execution["orderId"]),
+        check((order["account"], order["permId"], order["orderRef"]) ==
+              (native_account, execution["permId"], execution["orderRef"]),
               "IB execution changed its native parent")
+        # completedOrder omits API client/order IDs; the execution itself
+        # retains them. Do not replace those IDs with completed-order zeros.
+        if order["orderId"] > 0:
+            check((order["clientId"], order["orderId"]) == (execution["clientId"], execution["orderId"]),
+                  "IB execution changed the observed API order identity")
     if contract["secType"] == "BAG":
         check(kind == "execDetails" and native_parent is not None
               and native_parent["contract"]["secType"] == "BAG", "IB BAG fee/allocation requires reconciliation")

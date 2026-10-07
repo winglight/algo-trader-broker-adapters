@@ -86,6 +86,67 @@ async def wait_transport(client, request):
 
 class IBOptionOrders:
     option_native_preparation_version = 1
+    option_native_cancel_preparation_version = 1
+
+    async def reconcile_options(self, request, *, resolve_order=None):
+        from .options_reconciliation import reconcile
+        return await reconcile(self, request, resolve_order=resolve_order)
+
+    async def read_option_order_evidence(self, request):
+        from .options_reconciliation import read_order
+        return await read_order(self, request)
+
+    async def cancel_option_order_guarded(self, request, gate, *, original):
+        from algo_trader_broker_sdk.options import OptionCancelRequest, OptionCancelAcknowledgement
+        from .options_account_native import open_orders
+        from .options_reconciliation import validate_order
+        check(type(request) is OptionCancelRequest and type(original) is OptionExecutionRequest
+              and type(gate) is SubmissionGate and gate.retain_native is not None,
+              "IB cancel requires the original command and durable native preparation gate")
+        check((original.execution_target, original.account, original.environment) ==
+              (request.execution_target, request.account, request.environment), "IB cancel changed original stable account")
+        async def cancel(ib, bound):
+            stream = getattr(self, "_option_events", None)
+            check(stream is not None and stream.ib is ib and stream.bound == bound and not stream.closed and stream.failure is None,
+                  "IB cancellation requires a current durable event sink")
+            async with self._option_account_read_lock:
+                page = await open_orders(ib, bound.native_account_ref, timeout=self._qualification_timeout)
+            await stream.flush()
+            matches = [row for row in page["orders"] if str(row["order"]["permId"]) == request.parent_order_ref]
+            check(len(matches) == 1, "IB cancel target is not a uniquely observed open order")
+            row = matches[0]
+            validate_order(original, row, bound.native_account_ref)
+            order = row["order"]
+            check(row["state"]["status"] in {"Submitted", "PreSubmitted", "PendingSubmit", "PendingCancel"}
+                  and type(order["orderId"]) is int and order["orderId"] > 0
+                  and order["clientId"] == ib.client.clientId == ib.wrapper.clientId,
+                  "IB cancel needs a working order owned by this API client")
+            client_id, order_id, connection = order["clientId"], order["orderId"], self._option_connection
+            prepared = raw_bytes(dict(source="IB_OPTION_CANCEL_PREPARATION_V1", command_id=request.command_id,
+                request_fingerprint=order_fingerprint(request), original_fingerprint=order_fingerprint(original),
+                native_account_ref=bound.native_account_ref, client_id=client_id, order_id=order_id,
+                parent_order_ref=request.parent_order_ref, order_ref=original.client_order_id,
+                observed_order=row))
+            def current():
+                check(self._option_account_binding == bound and self._option_event_binding == bound
+                    and self._option_events is stream and not stream.closed and stream.failure is None
+                    and ib.isConnected() and self._client.connection_state_snapshot().get("connected_since") == connection
+                    and ib.client.clientId == ib.wrapper.clientId == client_id
+                    and bound.native_account_ref in ib.managedAccounts()
+                    and datetime.now(timezone.utc) < timestamp(request.valid_until),
+                    "IB cancellation connection or authority changed")
+            await wait_transport(ib.client, request)
+            await gate.prepare()
+            current()
+            await gate.record_native(prepared)
+            await wait_transport(ib.client, request)
+            current()
+            gate.consume()
+            # Direct native call avoids ib_async's locally simulated status.
+            # Only subsequent broker callbacks may establish cancellation.
+            ib.client.cancelOrder(order_id, "")
+            return OptionCancelAcknowledgement(request.command_id, request.parent_order_ref, "REQUESTED", now_wire())
+        return await self._option_read(request, cancel)
 
     def set_option_event_handler(self, context, handler):
         check(type(context) is OptionVerifiedAccount, "IB option events need a verified scope")

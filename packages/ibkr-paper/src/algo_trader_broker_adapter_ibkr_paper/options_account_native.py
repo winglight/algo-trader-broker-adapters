@@ -173,3 +173,59 @@ async def open_orders(ib, account, *, timeout):
             # Do not cancel orders or another consumer's replaced future.
             if ib.wrapper._futures.get("openOrders") is future:
                 ib.wrapper._endReq("openOrders")
+
+
+async def completed_orders(ib, account, *, timeout):
+    check("completedOrders" not in ib.wrapper._futures, "IB completed-order download already in progress")
+    rows, errors = [], []
+    started = now_wire()
+    def order(contract, native_order, state):
+        if native_order.account != account:
+            return
+        if len(rows) >= 10000:
+            errors.append("IB completed-order download exceeded bound")
+            return
+        rows.append(dict(order_id=native_order.orderId, contract=raw_value(contract), order=raw_value(native_order),
+                         state=raw_value(state), received_at=now_wire()))
+    with observe_callbacks(ib.wrapper, {"completedOrder": order}):
+        future = ib.reqCompletedOrdersAsync(True)
+        try:
+            await asyncio.wait_for(future, timeout)
+            check(not errors, errors[0] if errors else "Invalid completed orders")
+            return dict(source="IB_COMPLETED_ORDERS", account=account, started_at=started,
+                        completed_at=now_wire(), orders=rows)
+        finally:
+            if ib.wrapper._futures.get("completedOrders") is future:
+                ib.wrapper._endReq("completedOrders")
+
+
+async def executions(ib, account, *, timeout):
+    from ib_async import ExecutionFilter
+    req_id = ib.client.getReqId()
+    rows, errors = [], []
+    started = now_wire()
+    future = ib.wrapper.startReq(req_id)
+    def execution(received_id, contract, native):
+        if received_id != req_id:
+            return
+        if native.acctNumber != account or len(rows) >= 10000:
+            errors.append("IB execution query changed account or exceeded bound")
+            return
+        rows.append(dict(contract=raw_value(contract), execution=raw_value(native), received_at=now_wire()))
+    def error(received_id, code, message, *args):
+        if received_id == req_id:
+            errors.append(f"IB execution request failed: {code}")
+    ib.errorEvent += error
+    try:
+        with observe_callbacks(ib.wrapper, {"execDetails": execution}):
+            # Empty time requests the available overlap window. IB Gateway's
+            # midnight limit does not establish historical completeness.
+            ib.client.reqExecutions(req_id, ExecutionFilter(acctCode=account))
+            await asyncio.wait_for(future, timeout)
+            check(not errors, errors[0] if errors else "Invalid execution callback")
+            return dict(source="IB_EXECUTIONS", account=account, request_id=req_id, started_at=started,
+                        completed_at=now_wire(), executions=rows)
+    finally:
+        ib.errorEvent -= error
+        if ib.wrapper._futures.get(req_id) is future:
+            ib.wrapper._endReq(req_id)

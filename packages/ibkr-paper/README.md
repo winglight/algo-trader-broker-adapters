@@ -55,8 +55,9 @@ checks, with a free native transport slot. Lost responses remain UNKNOWN and
 are not replayed. Initial openOrder/error observations are retained; acknowledged
 parents use permId and BAG legs use the native permId:conId pair. Initial ACK
 normalization creates links/status only, never per-leg executions from BAG totals.
-Original execution/commission callbacks are implemented below; corrections,
-cancel/recovery, account certification and complete protocol activation remain pending. The same synthetic read/send
+Original execution/commission callbacks and guarded cancellation/native recovery
+reads are implemented below; corrections, source coverage, account certification
+and complete protocol activation remain pending. The same synthetic read/send
 walkthrough verifies actual ib_async wire serialization and MariaDB preparation.
 
 Native `openOrder`, `orderStatus`, `execDetails` and `commissionReport` callbacks
@@ -67,3 +68,14 @@ contract quantity/premium; BAG execution summaries supply only parent status.
 USD commissions use the associated full execId and are provisional, with the
 execution's native time as association time. Corrections, pending-price events,
 unassociated commissions and unknown source coverage remain reconciliation work.
+
+Guarded cancellation reads the current native parent, checks permanent ID,
+account, original command economics and current API client ownership, then
+retains the exact cancel client/order IDs before one native cancelOrder call.
+REQUESTED is not a terminal state. No global cancellation or reconnect/retry
+helper is used. Order recovery downloads all-open API orders, completed API
+orders and account-filtered executions, retaining native callbacks even when
+ib_async would suppress duplicate execution events. Completed-order responses
+lack API client/order IDs; those missing IDs are not fabricated. Exact actual
+leg executions supply quantities; a filled BAG summary alone stays unresolved.
+History/manual visibility/fee/lifecycle coverage remains explicitly incomplete.

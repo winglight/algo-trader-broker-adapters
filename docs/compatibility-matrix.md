@@ -80,3 +80,8 @@ IB's same native walkthrough now continues through parent statuses, actual OPT
 executions and associated commissions. Original execution IDs remain whole and
 BAG aggregate executions stay nonfinancial. Native revisions/recovery and full
 source certification are still pending; no account activation is implied.
+
+IB also supports scoped guarded cancellation and finite native recovery reads.
+Its native walkthrough continues through partial fill, cancel and cache-free
+order/execution downloads; it does not claim complete historical visibility or
+account certification.
