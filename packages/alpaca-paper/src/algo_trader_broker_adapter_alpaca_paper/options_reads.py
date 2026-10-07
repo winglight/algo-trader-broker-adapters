@@ -191,6 +191,10 @@ class AlpacaOptionReads:
         from .options_history import read_history
         return await read_history(self, request)
 
+    async def option_calendar(self, request):
+        from .options_calendar import read_calendar
+        return await read_calendar(self, request)
+
     def stream_option_quotes(self, request):
         from .options_stream import stream_quotes
         return stream_quotes(self, request)
@@ -260,10 +264,10 @@ class AlpacaOptionReads:
         implemented = OptionCapability("IMPLEMENTED", ("ACCOUNT_CERTIFICATION_REQUIRED",), ())
         unavailable = OptionCapability("UNSUPPORTED", ("NOT_IMPLEMENTED",), ())
         no_history_quotes = OptionCapability("UNSUPPORTED", ("PROVIDER_HISTORY_QUOTES_UNAVAILABLE",), ())
-        return OptionCapabilities(bound.scope, self.adapter_id, ADAPTER_VERSION, "alpaca-options-reads-2", observed,
+        return OptionCapabilities(bound.scope, self.adapter_id, ADAPTER_VERSION, "alpaca-options-reads-3", observed,
             (timestamp(observed) + timedelta(seconds=30)).isoformat().replace("+00:00", "Z"), implemented, implemented,
             unavailable, implemented, no_history_quotes, implemented, unavailable, unavailable, unavailable, implemented,
-            unavailable, ("OPRA", "INDICATIVE"), tuple(OptionShapeCapability(shape, "NATIVE", implemented,
+            implemented, ("OPRA", "INDICATIVE"), tuple(OptionShapeCapability(shape, "NATIVE", implemented,
                 1 if shape.startswith("LONG_") else 2, 1, None, False, not shape.startswith("LONG_"), False, False) for shape in STRUCTURES))
 
     async def option_account_state(self, request):

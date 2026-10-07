@@ -210,6 +210,32 @@ remaining options extension handshake.
 
 Reference: [realtime option data](https://docs.alpaca.markets/us/docs/real-time-option-data).
 
+## V9.2 option calendar (development)
+
+`option_calendar` queries the existing Trading API `/v2/calendar` for one
+explicit trading date and already qualified contracts. It preserves native
+session times, including early closures, and converts New York local times to
+UTC using the timezone database. Raw response hashes identify the original
+calendar evidence. The documented native coverage is 1970–2029.
+
+The source-reviewed P0 SPY/QQQ rules are versioned in `options_calendar.py`.
+They distinguish the broker's normal session, expiration-day order cutoffs and
+exercise cutoff. They do not claim exchange-wide last trading times. ATI
+buffers are applied separately by Market/shared SDK. Sources were checked on
+2026-10-07; the 2026-11-07 review deadline is ATI's refresh policy, not a broker
+guarantee of unchanged rules. Updating these facts requires a new source review
+and revision. A special-session expiry cutoff without explicit source evidence
+stays unknown, rather than being inferred from the normal-day clock.
+
+Calendar reads and a normal expiry-day deadline calculation now run through
+the existing Local integration flow with synthetic native responses. The
+capability remains IMPLEMENTED; certified account evidence is still required.
+
+Sources: [native calendar](https://docs.alpaca.markets/us/reference/legacycalendar),
+[Alpaca trading hours](https://alpaca.markets/support/when-do-options-trade),
+[expiration order cutoff](https://alpaca.markets/support/what-are-the-cutoff-times-for-trading-0dte-options-on-alpaca),
+[Trading API exercise processing](https://docs.alpaca.markets/us/docs/options-trading).
+
 ## Configuration
 
 The broker runner passes the following settings to the package:
