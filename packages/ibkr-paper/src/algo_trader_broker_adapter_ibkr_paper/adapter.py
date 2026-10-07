@@ -224,12 +224,16 @@ class IBKRPaperAdapter(IBOptionReads, IBOptionOrders):
         await self._supervisor.start()
 
     async def close(self) -> None:
+        if getattr(self, "_option_event_binding", None) is not None:
+            self.set_option_event_handler(self._option_event_binding, None)
         await self._supervisor.stop()
 
     async def connect(self) -> None:
         await self._client.connect()
 
     async def disconnect(self, reason: str | None = None) -> None:
+        if getattr(self, "_option_event_binding", None) is not None:
+            self.set_option_event_handler(self._option_event_binding, None)
         await self._client.disconnect(reason=reason)
 
     async def reconnect(self, *, reason: str | None = None) -> None:

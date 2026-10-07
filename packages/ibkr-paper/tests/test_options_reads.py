@@ -28,7 +28,7 @@ async def test_standard_contract_discovery_qualification_and_live_snapshot(monke
     await read_flow(monkeypatch, exercise_orders=True)
 
 
-async def read_flow(monkeypatch, *, scope=None, consume_account=None, exercise_orders=False, gate_factory=None):
+async def read_flow(monkeypatch, *, scope=None, consume_account=None, exercise_orders=False, gate_factory=None, consume_event=None):
     ib = IB()
     monkeypatch.setattr(ib, "isConnected", lambda: True)
     monkeypatch.setattr(ib, "managedAccounts", lambda: ["DU-OPTIONS-FIXTURE"])
@@ -169,7 +169,7 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, exercise_o
         if consume_account is not None:
             await consume_account(state)
         if exercise_orders:
-            await submission_flow(adapter, ib, scope, monkeypatch, gate_factory=gate_factory)
+            await submission_flow(adapter, ib, scope, monkeypatch, gate_factory=gate_factory, consume_event=consume_event)
         client._connected_since = datetime.now(timezone.utc)
         with pytest.raises(BrokerContractError, match="connection changed"):
             await adapter.option_snapshot(request)
@@ -179,7 +179,7 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, exercise_o
         await client._shutdown_sync_executor()
 
 
-async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None):
+async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None, consume_event=None):
     from algo_trader_broker_sdk.options_capabilities import OptionCapability, OptionShapeCapability
     from algo_trader_broker_sdk.submission_gate import order_fingerprint
     from algo_trader_broker_adapter_ibkr_paper.options_orders import build_order
@@ -190,6 +190,8 @@ async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None)
 
     async def sink(event):
         evidence.append(event)
+        if consume_event is not None:
+            await consume_event(adapter, event)
     adapter.set_option_event_handler(OptionVerifiedAccount(scope, "IBKR", "DU-OPTIONS-FIXTURE"), sink)
 
     def socket_send(raw):
@@ -247,17 +249,41 @@ async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None)
                     for leg in payload["contract"]["comboLegs"]] == [(1590, 1, "SELL", 0), (1595, 1, "BUY", 0)]
             assert int.from_bytes(sockets[-1][:4], "big") == len(sockets[-1]) - 4
             assert sockets[-1][4:].split(b"\0")[0] == b"3"  # Actual TWS placeOrder wire message.
-        assert len(sockets) == len(evidence) == 2
-        assert all(event.source == "IB_OPTION_SUBMISSION" for event in evidence)
+            # Continue the same native transaction through actual Wrapper
+            # execution/commission/status callbacks after initial acknowledgement.
+            from ib_async import Execution, CommissionReport
+            for index, intent in enumerate(request.legs):
+                execution = Execution(execId=f"0001.abcdef.{payload['order_id']:02d}{index}.01",
+                    time=datetime.now(timezone.utc), acctNumber="DU-OPTIONS-FIXTURE", exchange="CBOE",
+                    side="BOT" if intent.side == "BUY" else "SLD", shares=2.0, price=1.25 + index,
+                    permId=int(result.parent_order_ref), clientId=40, orderId=payload["order_id"],
+                    cumQty=2.0, avgPrice=1.25 + index, orderRef=request.client_order_id)
+                ib.wrapper.execDetails(-1, contracts[index], execution)
+                ib.wrapper.commissionReport(CommissionReport(execId=execution.execId, commission=0.65, currency="USD"))
+            if combo:
+                aggregate = replace(execution, execId=f"0001.abcdef.{payload['order_id']:02d}P.01", side="BOT", price=-1.5)
+                ib.wrapper.execDetails(-1, expected_contract, aggregate)
+            ib.wrapper.orderStatus(payload["order_id"], "Filled", 2.0, 0.0, 999.0, int(result.parent_order_ref), 0, 999.0, 40, "")
+            await adapter._option_events.flush()
+        assert len(sockets) == 2
+        assert sum(event.source == "IB_OPTION_SUBMISSION" for event in evidence) == 2
         async def resolve(native_id, symbol):
             from algo_trader_broker_sdk.options import QualificationResult
             binding, contract, _ = adapter._option_catalog[native_id]
             assert symbol == binding.local_symbol
             return QualificationResult(binding.canonical_id, "EXACT", binding, contract, ())
+        fills, fees = [], []
         for event in evidence:
             fact = await adapter.decode_option_event(event, resolve)
-            assert fact.status == "ACKNOWLEDGED" and fact.session_key == "IBKR_PERM_ID"
-            assert fact.executions == () and len(fact.legs) in (1, 2)
+            assert fact.session_key == "IBKR_PERM_ID"
+            fills.extend(fact.executions)
+            fees.extend(fact.fees)
+        assert len(fills) == len(fees) == 3
+        assert [fill.price for fill in fills] == ["1.25", "1.25", "2.25"]
+        assert all(fill.contracts == 2 and fill.execution_id.endswith(".01") for fill in fills)
+        assert all(fee.fee_cash == "0.65" for fee in fees)
     finally:
+        await adapter._option_events.flush()
+        adapter.set_option_event_handler(OptionVerifiedAccount(scope, "IBKR", "DU-OPTIONS-FIXTURE"), None)
         ib.newOrderEvent -= acknowledge
         ib.client.connState = ib.client.DISCONNECTED

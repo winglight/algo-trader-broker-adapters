@@ -4,6 +4,7 @@ import asyncio
 from contextlib import contextmanager
 from dataclasses import asdict, is_dataclass
 from decimal import Decimal
+from datetime import datetime, timezone
 import json
 from hashlib import sha256
 
@@ -22,6 +23,9 @@ def raw_value(value):
         return [raw_value(item) for item in value]
     if type(value) in (float, Decimal):
         return str(value)
+    if isinstance(value, datetime):
+        check(value.tzinfo is not None, "Native IB time needs an explicit timezone")
+        return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
     return value
 
 

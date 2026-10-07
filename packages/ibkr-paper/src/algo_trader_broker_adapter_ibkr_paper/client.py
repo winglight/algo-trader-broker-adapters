@@ -3359,6 +3359,13 @@ class IBAsyncClient:
             raise IBConnectionError("IB connection changed during option read")
         return result
 
+    def option_event_connection(self):
+        """Current native callback source; never initiates a connection."""
+        ib = self._ib
+        if ib is None or not self._connected.is_set() or not ib.isConnected():
+            raise IBConnectionError("Option events require the current connected IB session")
+        return ib
+
     def _ensure_sync_executor(self) -> ThreadPoolExecutor:
         executor = self._sync_executor
         if executor is None:

@@ -91,16 +91,31 @@ class IBOptionOrders:
         check(type(context) is OptionVerifiedAccount, "IB option events need a verified scope")
         if handler is None:
             if getattr(self, "_option_event_binding", None) == context:
+                stream = getattr(self, "_option_events", None)
+                if stream is not None:
+                    stream.close()
+                self._option_events = None
                 self._option_event_binding = None
                 self._option_evidence_handler = None
             return
         self.bind_option_account(context)
+        from .options_events import IBOptionEventStream
+        ib = self._client.option_event_connection()
+        previous = getattr(self, "_option_events", None)
+        if previous is not None:
+            if previous.ib is ib and previous.bound == context and previous.handler is handler and not previous.closed:
+                return
+            previous.close()
+        self._option_events = IBOptionEventStream(ib, context, handler)
         self._option_event_binding, self._option_evidence_handler = context, handler
 
     async def submit_option_order(self, request):
         raise BrokerCapabilityError("IB option submissions require the Runner gate", code="BROKER_SUBMISSION_GUARD_REQUIRED")
 
     async def decode_option_event(self, event, resolve_contract):
+        if event.source == "IB_OPTION_CALLBACK":
+            from .options_events import decode
+            return await decode(event, resolve_contract)
         check(event.source == "IB_OPTION_SUBMISSION", "IB option source is not implemented")
         try:
             raw = json.loads(event.raw_payload)
@@ -136,6 +151,9 @@ class IBOptionOrders:
         async def send(ib, bound):
             check(getattr(self, "_option_event_binding", None) == bound and callable(self._option_evidence_handler),
                   "IB option submission requires a durable evidence sink")
+            stream = self._option_events
+            check(stream is not None and stream.ib is ib and not stream.closed and stream.failure is None,
+                  "IB native event retention is unavailable")
             settings = self._settings
             from collections.abc import Mapping
             read_only = settings.get("ib_read_only") if isinstance(settings, Mapping) else settings.read_only
@@ -156,6 +174,7 @@ class IBOptionOrders:
             def current():
                 check(self._option_account_binding == bound and self._option_event_binding == bound
                     and self._option_evidence_handler is sink and ib.isConnected()
+                    and self._option_events is stream and stream.failure is None and not stream.closed
                     and self._client.connection_state_snapshot().get("connected_since") == self._option_connection
                     and ib.client.clientId == ib.wrapper.clientId == order.clientId
                     and bound.native_account_ref in ib.managedAccounts()

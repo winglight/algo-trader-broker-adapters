@@ -24,3 +24,7 @@
   client/order-ID capture. Preserve signed BAG prices and exact leg actions.
 - Retain/interpret initial native acknowledgements without fabricating fills;
   missing acknowledgements stay UNKNOWN and are never automatically resent.
+
+- Retain ongoing scoped IB order/execution/commission callbacks before native
+  wrapper deduplication; normalize original OPT fills and provisional USD fees.
+  BAG summaries never generate financial legs; corrections remain unresolved.

@@ -55,6 +55,15 @@ checks, with a free native transport slot. Lost responses remain UNKNOWN and
 are not replayed. Initial openOrder/error observations are retained; acknowledged
 parents use permId and BAG legs use the native permId:conId pair. Initial ACK
 normalization creates links/status only, never per-leg executions from BAG totals.
-Full execution/commission callbacks, cancel/recovery, account certification and
-complete protocol activation remain pending. The same synthetic read/send
+Original execution/commission callbacks are implemented below; corrections,
+cancel/recovery, account certification and complete protocol activation remain pending. The same synthetic read/send
 walkthrough verifies actual ib_async wire serialization and MariaDB preparation.
+
+Native `openOrder`, `orderStatus`, `execDetails` and `commissionReport` callbacks
+are copied before ib_async mutates/deduplicates them and drained into Runner's
+durable handler with their captured account scope. Storage failure fences further
+submissions. Original OPT executions preserve full `.01` execIds and actual
+contract quantity/premium; BAG execution summaries supply only parent status.
+USD commissions use the associated full execId and are provisional, with the
+execution's native time as association time. Corrections, pending-price events,
+unassociated commissions and unknown source coverage remain reconciliation work.

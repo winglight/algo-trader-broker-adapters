@@ -75,3 +75,8 @@ IB native OPT/BAG preparation and guarded send are implemented with synthetic
 wire/database verification. Complete options activation remains disabled pending
 execution/commission callbacks, cancel/recovery and account/route certification.
 Initial ACKs produce permanent-parent and compound-leg links/status only.
+
+IB's same native walkthrough now continues through parent statuses, actual OPT
+executions and associated commissions. Original execution IDs remain whole and
+BAG aggregate executions stay nonfinancial. Native revisions/recovery and full
+source certification are still pending; no account activation is implied.
