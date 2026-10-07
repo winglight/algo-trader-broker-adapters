@@ -11,7 +11,7 @@ from algo_trader_broker_sdk.options import (
 from algo_trader_broker_sdk.options_events import OptionNativeOrderQuery, OptionRawEvent
 
 from .options_account_native import completed_orders, executions, open_orders, raw_bytes
-from .options_events import SOURCE, STATUS
+from .options_events import SOURCE, STATUS, execution_revision
 from .options_reads import native_decimal, now_wire
 
 
@@ -46,7 +46,7 @@ def order_state(original, row, fills, account):
     parent = str(order["permId"])
     status = STATUS.get(row["state"]["status"])
     check(status is not None, "IB native order status is unresolved")
-    counts, seen = Counter(), {}
+    counts, seen, latest = Counter(), {}, {}
     intents = {leg.binding.broker_contract_id: leg for leg in original.legs}
     for record in fills:
         execution, contract = record["execution"], record["contract"]
@@ -57,17 +57,23 @@ def order_state(original, row, fills, account):
         check(leg is not None and contract["secType"] == "OPT" and execution["acctNumber"] == account
               and contract["localSymbol"] == leg.binding.local_symbol and execution["orderRef"] == original.client_order_id
               and execution["side"] == ("BOT" if leg.side == "BUY" else "SLD") and execution["modelCode"] == ""
-              and re.fullmatch(r"[^\s.]+(?:\.[^\s.]+)+\.01", execution["execId"]) is not None
               and not execution["pendingPriceRevision"], "IB recovered execution needs attribution or revision reconciliation")
-        identity = (execution["execId"], native_id)
+        revision = execution_revision(execution["execId"])
+        family = revision.original_execution_id
+        identity = (family, revision.revision)
         quantity = Decimal(native_decimal(execution["shares"]))
         check(quantity > 0 and quantity == quantity.to_integral_value(), "IB recovered execution has non-contract quantity")
-        signature = (quantity, native_decimal(execution["price"]), execution["time"])
+        signature = (native_id, quantity, native_decimal(execution["price"]), execution["time"])
         if identity in seen:
             check(seen[identity] == signature, "IB execution identity has conflicting observations")
             continue
         seen[identity] = signature
-        counts[native_id] += int(quantity)
+        previous = latest.get(family)
+        check(previous is None or previous[1] == native_id, "IB execution revision changed its economic leg")
+        if previous is None or revision.revision > previous[0]:
+            latest[family] = (revision.revision, native_id, int(quantity))
+    for _, native_id, quantity in latest.values():
+        counts[native_id] += quantity
     legs = []
     for leg in original.legs:
         filled, target = counts[leg.binding.broker_contract_id], original.groups * leg.ratio

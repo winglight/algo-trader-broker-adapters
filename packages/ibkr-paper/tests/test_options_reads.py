@@ -415,6 +415,17 @@ async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None,
                 await asyncio.sleep(0)
                 await adapter._option_events.flush()
         assert len(sockets) == 3 and [raw[4:].split(b"\0")[0] for raw in sockets] == [b"3", b"3", b"4"]
+        # Continue the same execution through IB's native correction version.
+        # The full .02 ID is retained; it must revise, not add to, the .01 fill.
+        original_contract, original_execution = native_fills[0]
+        corrected = replace(original_execution, execId=original_execution.execId.rsplit(".", 1)[0] + ".02",
+                            price=1.24, avgPrice=1.24)
+        native_fills.append((deepcopy(original_contract), deepcopy(corrected)))
+        ib.wrapper.execDetails(-1, original_contract, corrected)
+        corrected_fee = CommissionReport(execId=corrected.execId, commission=0.60, currency="USD")
+        native_fees[corrected.execId] = deepcopy(corrected_fee)
+        ib.wrapper.commissionReport(corrected_fee)
+        await adapter._option_events.flush()
         # Recover from provider downloads, without relying on ib_async's cache.
         ib.wrapper.trades.clear()
         ib.wrapper.permId2Trade.clear()
@@ -444,12 +455,13 @@ async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None,
             assert fact.session_key == "IBKR_PERM_ID"
             fills.extend(fact.executions)
             fees.extend(fact.fees)
-        assert len(fills) == len(fees) == 6  # Native recovery repeats the original evidence.
+        assert len(fills) == len(fees) == 8  # Recovery repeats originals and correction.
         unique = {fill.execution_id: fill for fill in fills}
-        assert len(unique) == 3 and [fill.price for fill in unique.values()] == ["1.25", "1.25", "2.25"]
-        assert [fill.contracts for fill in unique.values()] == [2, 1, 1]
-        assert all(fill.execution_id.endswith(".01") for fill in fills)
-        assert all(fee.fee_cash == "0.65" for fee in fees)
+        assert len(unique) == 4 and [fill.price for fill in unique.values()] == ["1.25", "1.25", "2.25", "1.24"]
+        assert [fill.contracts for fill in unique.values()] == [2, 1, 1, 2]
+        revised = unique[corrected.execId]
+        assert revised.revision.original_execution_id == original_execution.execId and revised.revision.revision == 2
+        assert all(fee.fee_cash == ("0.6" if fee.revision is not None else "0.65") for fee in fees)
     finally:
         await adapter._option_events.flush()
         adapter.set_option_event_handler(OptionVerifiedAccount(scope, "IBKR", "DU-OPTIONS-FIXTURE"), None)

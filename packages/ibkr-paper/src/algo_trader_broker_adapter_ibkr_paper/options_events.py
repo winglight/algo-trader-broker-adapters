@@ -10,7 +10,7 @@ import re
 from algo_trader_broker_sdk import BrokerContractError
 from algo_trader_broker_sdk.options import check, decimal_wire
 from algo_trader_broker_sdk.options_events import (
-    OptionNativeExecution, OptionNativeFee, OptionNativeInterpretation, OptionNativeLeg, OptionRawEvent,
+    OptionExecutionRevision, OptionNativeExecution, OptionNativeFee, OptionNativeInterpretation, OptionNativeLeg, OptionRawEvent,
 )
 
 from .options_account_native import observe_callbacks, raw_bytes, raw_value
@@ -20,6 +20,15 @@ LOG = logging.getLogger(__name__)
 SOURCE = "IB_OPTION_CALLBACK"
 STATUS = {"Submitted": "ACKNOWLEDGED", "PreSubmitted": "ACKNOWLEDGED", "Filled": "FILLED",
           "PendingCancel": "CANCEL_PENDING", "Cancelled": "CANCELED", "ApiCancelled": "CANCELED"}
+
+
+def execution_revision(exec_id):
+    check(type(exec_id) is str and re.fullmatch(r"[^\s.]+(?:\.[^\s.]+)+\.[0-9]+", exec_id) is not None,
+          "IB execution lacks a native revision sequence")
+    family, _, suffix = exec_id.rpartition(".")
+    revision = OptionExecutionRevision("IB_EXECUTION_ID", family + ".01", int(suffix))
+    revision.check_native_id(exec_id)
+    return revision
 
 
 class IBOptionEventStream:
@@ -169,11 +178,9 @@ async def interpret(event, resolve):
     check(execution is not None and execution["acctNumber"] == native_account
           and execution["modelCode"] == "" and type(execution["permId"]) is int and execution["permId"] > 0,
           "IB execution account/allocation is unresolved")
-    # Keep the complete .01 identity. Corrections are retained for the separate
-    # revision reconciler and must never appear as another original fill.
     exec_id = execution["execId"]
-    check(type(exec_id) is str and re.fullmatch(r"[^\s.]+(?:\.[^\s.]+)+\.01", exec_id) is not None
-          and not execution["pendingPriceRevision"], "IB execution correction requires reconciliation")
+    revision = execution_revision(exec_id)
+    check(not execution["pendingPriceRevision"], "IB execution price is still pending revision")
     parent = str(execution["permId"])
     native_parent = raw.get("parent")
     leg_id = parent
@@ -205,7 +212,8 @@ async def interpret(event, resolve):
         quantity = Decimal(native_decimal(execution["shares"]))
         check(quantity == quantity.to_integral_value() and 0 < quantity <= 2**53 - 1,
               "IB option executions need whole contracts")
-        fills = (OptionNativeExecution(leg_id, exec_id, int(quantity), native_decimal(execution["price"]), effective),)
+        fills = (OptionNativeExecution(leg_id, exec_id, int(quantity), native_decimal(execution["price"]), effective,
+            revision=revision if revision.revision > 1 else None),)
     else:
         report = raw["report"]
         check(report["execId"] == exec_id and report["currency"] == "USD", "IB commission changed execution or currency")
@@ -215,8 +223,10 @@ async def interpret(event, resolve):
         wire = wire.rstrip("0").rstrip(".") if "." in wire else wire
         wire = "0" if amount == 0 else wire
         decimal_wire(wire)
-        # This report has no finality/revision timestamp. Use the associated
-        # native execution time, and expose its first observation as provisional.
-        fees = (OptionNativeFee(leg_id, exec_id, wire, "USD", effective),)
+        # The execution revision identifies this commission's version. A second
+        # amount for the same execId has no new authority and stays a conflict.
+        # Native reports do not establish finality or a separate fee timestamp.
+        fees = (OptionNativeFee(leg_id, exec_id, wire, "USD", effective,
+            revision=revision if revision.revision > 1 else None),)
     return OptionNativeInterpretation(event.scope, parent, execution["orderRef"] or None, "IBKR_PERM_ID",
         None, effective, (leg,), fills, fees=fees)

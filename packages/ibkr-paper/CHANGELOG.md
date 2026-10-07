@@ -38,3 +38,7 @@
 - Add paginated native intraday bars/trade/bid-ask history, retaining same-second
   tick overflow and explicit partial archive coverage.
 - Add fresh native contract calendars with explicit unknown broker cutoffs.
+
+- Map native execId correction versions and their associated commissions into
+  existing execution/fee revisions without losing the delivered IDs. Recovery
+  counts only the latest execution version; commission finality remains unknown.

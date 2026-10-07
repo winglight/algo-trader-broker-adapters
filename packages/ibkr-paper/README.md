@@ -57,18 +57,24 @@ are not replayed. Initial openOrder/error observations are retained; acknowledge
 parents use permId and BAG legs use the native permId:conId pair. Initial ACK
 normalization creates links/status only, never per-leg executions from BAG totals.
 Original execution/commission callbacks and guarded cancellation/native recovery
-reads are implemented below; corrections, source coverage, account certification
+reads and execution corrections are implemented below; source coverage, account certification
 and complete protocol activation remain pending. The same synthetic read/send
 walkthrough verifies actual ib_async wire serialization and MariaDB preparation.
 
 Native `openOrder`, `orderStatus`, `execDetails` and `commissionReport` callbacks
 are copied before ib_async mutates/deduplicates them and drained into Runner's
 durable handler with their captured account scope. Storage failure fences further
-submissions. Original OPT executions preserve full `.01` execIds and actual
+submissions. Native OPT executions preserve full delivered execIds and actual
 contract quantity/premium; BAG execution summaries supply only parent status.
 USD commissions use the associated full execId and are provisional, with the
-execution's native time as association time. Corrections, pending-price events,
-unassociated commissions and unknown source coverage remain reconciliation work.
+execution's native time as association time. IB's explicit final execId segment
+maps corrections back to the original `.01` financial identity with a monotonic
+revision; delivered `.02` and later IDs remain intact in raw/SDK evidence.
+Associated commissions use the same revision authority. Recovery counts only
+the latest version per execution family. A changed commission for the same
+execId has no new revision authority and remains a conflict. Pending-price
+records, busts without native evidence, unassociated commissions, fee finality
+and unknown source coverage remain reconciliation work.
 
 Guarded cancellation reads the current native parent, checks permanent ID,
 account, original command economics and current API client ownership, then
@@ -107,3 +113,9 @@ Sources: [IB historical limits](https://interactivebrokers.github.io/tws-api/his
 [ContractDetails](https://interactivebrokers.github.io/tws-api/classIBApi_1_1ContractDetails.html).
 The existing synthetic native walkthrough covers these reads alongside the same
 submission/cancel/recovery flow; it does not access a Gateway or place real orders.
+
+IB revision mapping follows the documented
+[Execution identifier](https://interactivebrokers.github.io/tws-api/classIBApi_1_1Execution.html).
+The existing walkthrough retains original/corrected executions and commissions,
+replays them from native recovery, and verifies one financial row with both
+revision records in MariaDB. No new database or frozen business fields are used.
