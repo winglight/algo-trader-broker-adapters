@@ -159,13 +159,33 @@ implementation status and actual Paper certification.
 The existing Guardian/Orders/Account/Market/Runner integration exercises these
 methods through their HTTP clients with synthetic broker responses. Its explicit
 certification and journal-completeness fixtures are not production evidence.
-Subscriptions, Greeks/calendar certification, complete reconciliation,
+Greeks/calendar certification, complete reconciliation,
 the full extension handshake and actual Paper certification remain pending.
 
 References: [contract and deliverable schemas](https://docs.alpaca.markets/us/reference/get-options-contracts),
 [snapshots and feeds](https://docs.alpaca.markets/us/reference/optionsnapshots),
 [account fields](https://docs.alpaca.markets/us/reference/getaccount-1),
 [position cost basis](https://alpaca.markets/sdks/python/api_reference/trading/models.html#position).
+
+## V9.2 native order and position reconciliation (development)
+
+`reconcile_options` reads current positions/open orders and native option order
+history, using `before_order_id` for descending pagination. Open orders are
+included even when older than the history window. Runner supplies an internal
+lookup of retained native submission requests; their exact command, contract,
+leg, quantity and intent identities are checked against each native response.
+Unmapped external orders stay unresolved.
+
+Original order-object bytes are retained through the existing durable raw sink
+and decoded into links/status only. Cumulative fills never become executions.
+Account open references carry `ALPACA_ORDER_UUID` plus the full order ID; Account
+normalizes them with the shared reference function used by Orders.
+Orders/positions have independent completeness flags; executions/lifecycle
+remain incomplete. No read permits another send or releases a reservation.
+
+The existing synthetic main flow covers ACK/open positions and filled/flat
+reads through Runner HTTP and actual Orders evidence application.
+Reference: [native orders and pagination](https://docs.alpaca.markets/us/reference/getallorders-1).
 
 ## V9.2 historical option bars and trades (development)
 

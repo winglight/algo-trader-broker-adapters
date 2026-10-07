@@ -17,7 +17,7 @@ from algo_trader_broker_sdk.options import (
     QualificationResult, SnapshotRequest, check, option_contract_id, timestamp,
 )
 from algo_trader_broker_sdk.options_account import (
-    NativeBuyingPower, OptionAccountPermissions, OptionAccountPosition, OptionAccountState, UnresolvedOptionPosition,
+    NativeBuyingPower, NativeOrderReference, OptionAccountPermissions, OptionAccountPosition, OptionAccountState, UnresolvedOptionPosition,
 )
 from algo_trader_broker_sdk.options_capabilities import OptionCapabilities, OptionCapability, OptionShapeCapability
 
@@ -270,7 +270,15 @@ class AlpacaOptionReads:
             implemented, ("OPRA", "INDICATIVE"), tuple(OptionShapeCapability(shape, "NATIVE", implemented,
                 1 if shape.startswith("LONG_") else 2, 1, None, False, not shape.startswith("LONG_"), False, False) for shape in STRUCTURES))
 
+    async def reconcile_options(self, request, *, resolve_order=None):
+        from .options_reconciliation import reconcile
+        return await reconcile(self, request, resolve_order=resolve_order)
+
     async def option_account_state(self, request):
+        state, _, _ = await self._option_account_snapshot(request)
+        return state
+
+    async def _option_account_snapshot(self, request):
         bound, account, account_raw = await self._option_bound(request)
         check(account.get("currency") == "USD", "Option account currency must be explicit USD")
         position_raw = await self._backend.get_option_resource("/v2/positions")
@@ -306,13 +314,14 @@ class AlpacaOptionReads:
         raw_bp = tuple(NativeBuyingPower(name, signed_decimal(account[name])) for name in (
             "buying_power", "regt_buying_power", "daytrading_buying_power", "non_marginable_buying_power", "options_buying_power") if account.get(name) is not None)
         bp = None if account.get("options_buying_power") is None else signed_decimal(account["options_buying_power"])
-        open_refs = tuple(_uuid(order["id"]) for order in orders)
+        open_refs = tuple(NativeOrderReference("ALPACA_ORDER_UUID", _uuid(order["id"])) for order in orders)
         received = now_wire()
         self._option_still_bound(bound)
         checkpoint = sha256(account_raw + position_raw + order_raw).hexdigest()
         reasons = ("EXECUTION_RECONCILIATION_REQUIRED", "LIFECYCLE_RECONCILIATION_REQUIRED")
         if len(orders) >= 500: reasons += ("OPEN_ORDER_PAGE_INCOMPLETE",)
         if unresolved: reasons += ("UNRESOLVED_OPTION_POSITIONS",)
-        return OptionAccountState(bound.scope, str(uuid4()), observed, received, "USD", signed_decimal(account["equity"]),
+        state = OptionAccountState(bound.scope, str(uuid4()), observed, received, "USD", signed_decimal(account["equity"]),
             signed_decimal(account["cash"]), bp, raw_bp, "OPTIONS_BUYING_POWER" if bp is not None else "UNKNOWN",
             checkpoint, tuple(exact), tuple(unresolved), open_refs, (), True, len(orders) < 500, False, False, reasons)
+        return state, bound, order_raw
