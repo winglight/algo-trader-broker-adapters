@@ -4,6 +4,7 @@ from pathlib import Path
 
 from algo_trader_broker_adapter_alpaca_paper import AlpacaPaperAdapter
 from algo_trader_broker_sdk import assert_manifest_compatible
+from algo_trader_broker_sdk.options_capabilities import require_options_extension
 
 
 class ContractBackend:
@@ -31,6 +32,8 @@ def test_manifest_is_sdk_1_compatible() -> None:
     assert manifest.capabilities.asset_classes == {"STK", "ETF"}
     assert manifest.capabilities.supports_futures is False
     assert manifest.capabilities.supports_options is False
+    assert manifest.capabilities.options_protocol_version == "options/1.0"
+    assert require_options_extension(adapter) is adapter
 
 
 def test_package_source_has_no_main_repository_or_ib_imports() -> None:

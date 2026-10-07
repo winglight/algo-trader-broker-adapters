@@ -26,9 +26,12 @@ and ask tick times separately, require a native market-data-type callback of 1
 for executable quote quality, and leave unverified Greeks empty. Tick times are
 socket receipt times, not exchange timestamps. Reading does not certify trading.
 
-The full `options/1.0` handshake remains disabled pending the remaining original
-protocol ports and account/source certification. Legacy option endpoints still reject
-requests. Local's compatibility entrypoint now delegates to this package while
+The adapter declares `options/1.0`, allowing Runner to establish a verified
+account context and use implemented reads. Unsupported paged activity/lifecycle,
+native replacement and exercise ports return explicit capability errors; TWS
+callback recovery continues through `reconcile_options`. The legacy
+`supports_options` flag remains false and legacy option endpoints still reject
+requests. Local's compatibility entrypoint delegates to this package while
 preserving its existing manifest entrypoint. The synthetic read walkthrough uses
 `ib_async 2.0.1`; no Gateway connection or real order is part of that check.
 
@@ -57,8 +60,9 @@ are not replayed. Initial openOrder/error observations are retained; acknowledge
 parents use permId and BAG legs use the native permId:conId pair. Initial ACK
 normalization creates links/status only, never per-leg executions from BAG totals.
 Original execution/commission callbacks and guarded cancellation/native recovery
-reads and execution corrections are implemented below; source coverage, account certification
-and complete protocol activation remain pending. The same synthetic read/send
+reads and execution corrections are implemented below; source coverage and account
+certification remain pending. Protocol discovery never grants trading permission.
+The same synthetic read/send
 walkthrough verifies actual ib_async wire serialization and MariaDB preparation.
 
 Native `openOrder`, `orderStatus`, `execDetails` and `commissionReport` callbacks

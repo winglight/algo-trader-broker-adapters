@@ -48,11 +48,11 @@ No fee, correction revision, trade bust or lifecycle activity is inferred by
 this codec. Those sources remain pending; original REST/WS execution evidence
 and the Orders cross-reference path are described below.
 
-The production adapter does not yet declare `options/1.0`. Runner still requires
-the complete extension handshake, so this producer is currently verified using
-synthetic extension fixtures. No read/order capability or Paper/Live
-certification is implied. Enabling option contexts requires the remaining
-extension methods and their scope checks; do not bypass that handshake.
+The adapter declares `options/1.0`; Runner can establish its verified account
+context and use implemented reads. Broker what-if, native replacement and
+exercise remain unsupported and return explicit capability errors after scope
+checks. The legacy `supports_options` flag stays false. Protocol discovery
+does not certify an account or bypass any per-capability trading checks.
 
 Vendor references: [TradingStream](https://alpaca.markets/sdks/python/api_reference/trading/stream.html)
 and [native trade update/option leg fields](https://docs.alpaca.markets/docs/websocket-streaming).
@@ -159,8 +159,8 @@ implementation status and actual Paper certification.
 The existing Guardian/Orders/Account/Market/Runner integration exercises these
 methods through their HTTP clients with synthetic broker responses. Its explicit
 certification and journal-completeness fixtures are not production evidence.
-Greeks/calendar certification, complete reconciliation,
-the full extension handshake and actual Paper certification remain pending.
+Greeks/calendar certification, complete reconciliation and actual Paper
+certification remain pending.
 
 References: [contract and deliverable schemas](https://docs.alpaca.markets/us/reference/get-options-contracts),
 [snapshots and feeds](https://docs.alpaca.markets/us/reference/optionsnapshots),
@@ -245,8 +245,7 @@ end the stream so the caller can identify the gap.
 
 The existing Local main-flow fixture now exercises SDK authentication,
 subscription, quote parsing, Runner publication and consumer cancellation with
-synthetic socket and Redis I/O. This does not certify an account or complete the
-remaining options extension handshake.
+synthetic socket and Redis I/O. This does not certify an account.
 
 Reference: [realtime option data](https://docs.alpaca.markets/us/docs/real-time-option-data).
 

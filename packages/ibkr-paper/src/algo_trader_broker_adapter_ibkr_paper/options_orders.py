@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 from algo_trader_broker_sdk import BrokerCapabilityError, BrokerContractError, BrokerOrderError, SubmissionGate, dataclass_to_payload
 from algo_trader_broker_sdk.options import (
+    ActivityQuery, ExerciseInstruction, OptionReplaceRequest,
     OptionExecutionRequest, OptionLegOrderState, OptionOrderState, OptionScope, OptionVerifiedAccount,
     check, option_from_payload, timestamp,
 )
@@ -90,6 +91,33 @@ async def wait_transport(client, request):
 class IBOptionOrders:
     option_native_preparation_version = 1
     option_native_cancel_preparation_version = 1
+
+    async def _unsupported_option_operation(self, request, request_type, code):
+        check(type(request) is request_type, "Unsupported operation requires its typed scoped request")
+        async def reject(ib, bound):
+            raise BrokerCapabilityError(code, code=code)
+        return await self._option_read(request, reject)
+
+    async def read_option_activity_page(self, request):
+        from algo_trader_broker_sdk.options_backfill import OptionActivityScanPage
+        # TWS recovery is callback based (reconcile_options), not a paged
+        # account-activity source. Never return an empty, apparently final page.
+        return await self._unsupported_option_operation(request, OptionActivityScanPage,
+            "OPTION_ACTIVITY_BACKFILL_UNSUPPORTED")
+
+    def index_option_activity_page(self, page):
+        from algo_trader_broker_sdk.options_backfill import OptionRawActivityPage
+        check(type(page) is OptionRawActivityPage, "Activity indexing requires a retained native page")
+        raise BrokerCapabilityError("TWS has no paged account-activity source", code="OPTION_ACTIVITY_BACKFILL_UNSUPPORTED")
+
+    async def option_lifecycle_events(self, request, *, retain_evidence=None):
+        return await self._unsupported_option_operation(request, ActivityQuery, "OPTION_LIFECYCLE_UNSUPPORTED")
+
+    async def replace_option_order(self, request):
+        return await self._unsupported_option_operation(request, OptionReplaceRequest, "OPTION_REPLACE_UNSUPPORTED")
+
+    async def instruct_option_exercise(self, request):
+        return await self._unsupported_option_operation(request, ExerciseInstruction, "OPTION_EXERCISE_UNSUPPORTED")
 
     async def preview_option_order(self, request):
         from .options_preview import preview_order
@@ -180,7 +208,7 @@ class IBOptionOrders:
     async def submit_option_order(self, request):
         raise BrokerCapabilityError("IB option submissions require the Runner gate", code="BROKER_SUBMISSION_GUARD_REQUIRED")
 
-    async def decode_option_event(self, event, resolve_contract):
+    async def decode_option_event(self, event, resolve_contract, resolve_order=None):
         if event.source == "IB_OPTION_CALLBACK":
             from .options_events import decode
             return await decode(event, resolve_contract)

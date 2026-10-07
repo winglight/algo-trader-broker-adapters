@@ -221,6 +221,7 @@ class AlpacaPaperAdapter(AlpacaOptionReads):
             supports_partial_fills=True,
             supports_screener=False,
             supports_options=False,
+            options_protocol_version="options/1.0",
             supports_futures=False,
             default_asset_class="STK",
             symbol_examples={

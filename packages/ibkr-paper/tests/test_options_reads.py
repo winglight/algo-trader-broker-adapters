@@ -14,7 +14,8 @@ from ib_async import IB, ContractDetails, Option, OptionChain, Stock, Order, Ord
 from algo_trader_broker_adapter_ibkr_paper import IBKRPaperAdapter
 from algo_trader_broker_adapter_ibkr_paper.client import IBAsyncClient
 from algo_trader_broker_adapter_ibkr_paper.settings import IBGatewaySettings
-from algo_trader_broker_sdk import BrokerContractError, SubmissionGate
+from algo_trader_broker_sdk import BrokerCapabilityError, BrokerContractError, SubmissionGate
+from algo_trader_broker_sdk.options_capabilities import require_options_extension
 from algo_trader_broker_sdk.options import (
     OptionContractQuery, OptionScope, OptionVerifiedAccount, QualificationRequest,
     SnapshotRequest, option_contract_id, option_from_payload,
@@ -75,6 +76,7 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, exercise_o
     client._connected.set()
     client._connected_since = datetime.now(timezone.utc)
     adapter = IBKRPaperAdapter({}, client=client)
+    assert require_options_extension(adapter) is adapter
     scope = scope or OptionScope("options/1.0", "a" * 64, "fixture-profile", 1, "fixture-account", "paper")
     values = asdict(scope)
     adapter.bind_option_account(OptionVerifiedAccount(scope, "IBKR", "DU-OPTIONS-FIXTURE"))
@@ -82,6 +84,9 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, exercise_o
         capabilities = await adapter.option_capabilities(scope)
         assert capabilities.discovery.status == capabilities.quotes.status == "IMPLEMENTED"
         assert capabilities.shapes == () and capabilities.greeks.status == "UNSUPPORTED"
+        with pytest.raises(BrokerCapabilityError, match="CAPABILITY_NOT_CERTIFIED"):
+            capabilities.require_entry(scope=scope, structure="LONG_CALL", route="NATIVE",
+                feed="IBKR_LIVE", now=datetime.now(timezone.utc))
         query = OptionContractQuery(**values, underlying="SPY", expiry_from="2026-10-16", expiry_to="2026-10-16",
             right="C", strike_min="590", strike_max="595", cursor=None, limit=1)
         first = await adapter.list_option_contracts(query)
@@ -362,6 +367,11 @@ async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None,
                 tif="DAY", max_slippage="0", legs=(
                     (OptionLegIntent("L1", bindings[0], "SELL", "CLOSE", 1), OptionLegIntent("L2", bindings[1], "BUY", "CLOSE", 1))
                     if combo else (OptionLegIntent("L1", bindings[0], "BUY", "OPEN", 1),)))
+            from algo_trader_broker_sdk.options import OptionReplaceRequest
+            replacement = option_from_payload(OptionReplaceRequest,
+                {**dataclass_to_payload(request), "parent_order_ref": "fixture-existing-order"})
+            with pytest.raises(BrokerCapabilityError, match="OPTION_REPLACE_UNSUPPORTED"):
+                await adapter.replace_option_order(replacement)
             preview = (await adapter.preview_option_order(request) if preview_reader is None
                        else await preview_reader(adapter, request))
             assert (preview.source, preview.required_buying_power_cash, preview.estimated_fee_cash, preview.currency) == (

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from algo_trader_broker_adapter_ibkr_paper import IBKRPaperAdapter
 from algo_trader_broker_sdk import assert_manifest_compatible
+from algo_trader_broker_sdk.options_capabilities import require_options_extension
 
 
 def test_manifest_is_sdk_1_compatible() -> None:
@@ -12,6 +13,9 @@ def test_manifest_is_sdk_1_compatible() -> None:
     assert manifest.adapter_id == "ibkr_paper"
     assert manifest.entrypoint == "algo_trader_broker_adapter_ibkr_paper:create_adapter"
     assert manifest.environment == "PAPER"
+    assert manifest.capabilities.options_protocol_version == "options/1.0"
+    assert manifest.capabilities.supports_options is False
+    assert require_options_extension(adapter) is adapter
 
 
 def test_package_source_has_no_main_repository_imports() -> None:

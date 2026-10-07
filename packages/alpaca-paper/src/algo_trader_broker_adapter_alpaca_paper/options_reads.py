@@ -70,6 +70,29 @@ def contract_from_native(item):
 
 
 class AlpacaOptionReads:
+    async def _unsupported_option_operation(self, request, request_type, code):
+        from algo_trader_broker_sdk import BrokerCapabilityError
+        check(type(request) is request_type, "Unsupported operation requires its typed scoped request")
+        scope = OptionScope(**{name: getattr(request, name) for name in OptionScope.__dataclass_fields__})
+        bound = self._option_account_binding
+        check(bound is not None and bound.scope == scope, "Option operation differs from verified account scope")
+        self._option_still_bound(bound)
+        raise BrokerCapabilityError(code, code=code)
+
+    async def preview_option_order(self, request):
+        from algo_trader_broker_sdk.options import OptionExecutionRequest
+        # Broker what-if is not implemented here. Risk's explicit local policy
+        # estimate remains separate; do not represent it as a broker response.
+        return await self._unsupported_option_operation(request, OptionExecutionRequest, "OPTION_PREVIEW_UNSUPPORTED")
+
+    async def replace_option_order(self, request):
+        from algo_trader_broker_sdk.options import OptionReplaceRequest
+        return await self._unsupported_option_operation(request, OptionReplaceRequest, "OPTION_REPLACE_UNSUPPORTED")
+
+    async def instruct_option_exercise(self, request):
+        from algo_trader_broker_sdk.options import ExerciseInstruction
+        return await self._unsupported_option_operation(request, ExerciseInstruction, "OPTION_EXERCISE_UNSUPPORTED")
+
     async def _option_bound(self, request):
         scope = OptionScope(**{name: getattr(request, name) for name in OptionScope.__dataclass_fields__})
         bound = self._option_account_binding

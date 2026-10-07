@@ -311,6 +311,7 @@ class IBKRPaperAdapter(IBOptionReads, IBOptionOrders):
             supports_partial_fills=True,
             supports_screener=True,
             supports_options=False,
+            options_protocol_version="options/1.0",
             supports_futures=True,
             default_asset_class="FUT",
             symbol_examples={
