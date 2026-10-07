@@ -44,6 +44,7 @@ from algo_trader_broker_sdk import (
 
 
 from .options_reads import IBOptionReads
+from .options_orders import IBOptionOrders
 
 
 def dom_not_supported() -> BrokerCapabilityError:
@@ -172,7 +173,7 @@ def _is_transient_ib_disconnect(exc: BaseException) -> bool:
     return False
 
 
-class IBKRPaperAdapter(IBOptionReads):
+class IBKRPaperAdapter(IBOptionReads, IBOptionOrders):
     adapter_id = "ibkr_paper"
 
     def __init__(

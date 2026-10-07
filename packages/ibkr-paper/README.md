@@ -40,3 +40,21 @@ its unverified unit until source certification. Native permIds are stable order
 references; missing permIds preserve client/order/generation identity. Manual
 order visibility, executions, lifecycle and commission coverage remain explicitly
 incomplete. These reads do not grant option approval or enable trading.
+
+## Guarded option submission
+
+The existing adapter builds exact OPT and BAG limit orders behind Runner's
+single-use gate. Runner supplies the already verified execution shape/tick;
+there is no unguarded option writer. BAG parents always BUY with the original
+signed limit, actual leg actions/ratios and retail `openClose=0`; the parent
+retains O/C. No NonGuaranteed fallback or native replacement is introduced.
+
+Before socket I/O, Runner durably stores the native client/order IDs and complete
+prepared request. The gate consumes only after persistence and current authority
+checks, with a free native transport slot. Lost responses remain UNKNOWN and
+are not replayed. Initial openOrder/error observations are retained; acknowledged
+parents use permId and BAG legs use the native permId:conId pair. Initial ACK
+normalization creates links/status only, never per-leg executions from BAG totals.
+Full execution/commission callbacks, cancel/recovery, account certification and
+complete protocol activation remain pending. The same synthetic read/send
+walkthrough verifies actual ib_async wire serialization and MariaDB preparation.

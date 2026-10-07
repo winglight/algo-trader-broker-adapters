@@ -19,3 +19,8 @@
 - Add request-scoped native account/position callbacks, exact USD funding fields,
   qualified option inventory and stable open-order references. Preserve unknown
   permission/cost-unit/source-completeness states and the evidence archive hook.
+
+- Add guarded OPT/BAG limit preparation and one native send after durable Runner
+  client/order-ID capture. Preserve signed BAG prices and exact leg actions.
+- Retain/interpret initial native acknowledgements without fabricating fills;
+  missing acknowledgements stay UNKNOWN and are never automatically resent.

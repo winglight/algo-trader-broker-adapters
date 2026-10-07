@@ -70,3 +70,8 @@ The IB read foundation also maps fresh account funds, net option inventory and
 API open-order references into the public Account DTOs. AvailableFunds and stock
 BuyingPower stay distinct. Option approval, native cost units, manual-order
 visibility and execution/lifecycle/commission completeness are not inferred.
+
+IB native OPT/BAG preparation and guarded send are implemented with synthetic
+wire/database verification. Complete options activation remains disabled pending
+execution/commission callbacks, cancel/recovery and account/route certification.
+Initial ACKs produce permanent-parent and compound-leg links/status only.

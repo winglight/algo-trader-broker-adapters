@@ -2,7 +2,9 @@
 
 import asyncio
 from dataclasses import asdict, replace
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from copy import deepcopy
+import json
 from itertools import count
 from hashlib import sha256
 
@@ -12,20 +14,21 @@ from ib_async import IB, ContractDetails, Option, OptionChain, Stock, Order, Ord
 from algo_trader_broker_adapter_ibkr_paper import IBKRPaperAdapter
 from algo_trader_broker_adapter_ibkr_paper.client import IBAsyncClient
 from algo_trader_broker_adapter_ibkr_paper.settings import IBGatewaySettings
-from algo_trader_broker_sdk import BrokerContractError
+from algo_trader_broker_sdk import BrokerContractError, SubmissionGate
 from algo_trader_broker_sdk.options import (
     OptionContractQuery, OptionScope, OptionVerifiedAccount, QualificationRequest,
     SnapshotRequest, option_contract_id, option_from_payload,
+    OptionExecutionRequest, OptionLegIntent,
 )
 from algo_trader_broker_sdk import dataclass_to_payload
 
 
 @pytest.mark.asyncio
 async def test_standard_contract_discovery_qualification_and_live_snapshot(monkeypatch):
-    await read_flow(monkeypatch)
+    await read_flow(monkeypatch, exercise_orders=True)
 
 
-async def read_flow(monkeypatch, *, scope=None, consume_account=None):
+async def read_flow(monkeypatch, *, scope=None, consume_account=None, exercise_orders=False, gate_factory=None):
     ib = IB()
     monkeypatch.setattr(ib, "isConnected", lambda: True)
     monkeypatch.setattr(ib, "managedAccounts", lambda: ["DU-OPTIONS-FIXTURE"])
@@ -165,6 +168,8 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None):
         assert "positionMulti" not in ib.wrapper.__dict__ and "openOrder" not in ib.wrapper.__dict__
         if consume_account is not None:
             await consume_account(state)
+        if exercise_orders:
+            await submission_flow(adapter, ib, scope, monkeypatch, gate_factory=gate_factory)
         client._connected_since = datetime.now(timezone.utc)
         with pytest.raises(BrokerContractError, match="connection changed"):
             await adapter.option_snapshot(request)
@@ -172,3 +177,87 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None):
         client._connected.clear()
         client._ib = None
         await client._shutdown_sync_executor()
+
+
+async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None):
+    from algo_trader_broker_sdk.options_capabilities import OptionCapability, OptionShapeCapability
+    from algo_trader_broker_sdk.submission_gate import order_fingerprint
+    from algo_trader_broker_adapter_ibkr_paper.options_orders import build_order
+    stored, sockets, evidence = [], [], []
+    ib.client.connState = ib.client.CONNECTED
+    ib.client._serverVersion = 178
+    ib.client.clientId = ib.wrapper.clientId = 40
+
+    async def sink(event):
+        evidence.append(event)
+    adapter.set_option_event_handler(OptionVerifiedAccount(scope, "IBKR", "DU-OPTIONS-FIXTURE"), sink)
+
+    def socket_send(raw):
+        assert len(stored) == len(sockets) + 1  # Durable callback preceded socket I/O.
+        sockets.append(raw)
+
+    def acknowledge(trade):
+        native = deepcopy(trade.order)
+        native.permId = 20000 + native.orderId
+        asyncio.get_running_loop().call_soon(ib.wrapper.openOrder, native.orderId,
+            deepcopy(trade.contract), native, OrderState(status="Submitted"))
+
+    monkeypatch.setattr(ib.client.conn, "sendMsg", socket_send)
+    ib.newOrderEvent += acknowledge
+    try:
+        bindings = tuple(adapter._option_catalog[key][0] for key in ("1590", "1595"))
+        contracts = [adapter._option_catalog[key][2].contract for key in ("1590", "1595")]
+        for combo in (False, True):
+            shape = OptionShapeCapability("CALL_DEBIT_VERTICAL" if combo else "LONG_CALL", "NATIVE",
+                OptionCapability("PAPER_CERTIFIED", ("EXPLICIT_FIXTURE_ONLY",), ("synthetic-ib-shape",)),
+                2 if combo else 1, 1, "0.01", False, combo, False, False)
+            request = OptionExecutionRequest(**asdict(scope), command_id="ib-bag" if combo else "ib-opt",
+                client_order_id="ato-fixture-bag" if combo else "ato-fixture-opt", plan_hash="b" * 64,
+                authorization_ref="fixture-close-permit" if combo else "fixture-reservation", quote_snapshot_ref="c" * 64,
+                valid_until=(datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat().replace("+00:00", "Z"),
+                capability_revision="fixture-ib", groups=2, order_type="LMT", signed_limit="-1.5" if combo else "1.25",
+                tif="DAY", max_slippage="0", legs=(
+                    (OptionLegIntent("L1", bindings[0], "SELL", "CLOSE", 1), OptionLegIntent("L2", bindings[1], "BUY", "CLOSE", 1))
+                    if combo else (OptionLegIntent("L1", bindings[0], "BUY", "OPEN", 1),)))
+            if gate_factory:
+                request, extra_retain = await gate_factory(request, shape)
+            else:
+                extra_retain = None
+            async def validate():
+                pass  # Explicit authority fixture; no broker account is certified.
+            async def retain(payload):
+                if extra_retain is not None:
+                    await extra_retain(payload)
+                stored.append(payload)
+            gate = SubmissionGate(validate, lambda: None, retain_native=retain, option_shape=shape)
+            result = await adapter.submit_option_order_guarded(request, gate)
+            assert gate.consumed and result.status == "ACKNOWLEDGED"
+            assert result.parent_order_ref and all(leg.filled_contracts == 0 for leg in result.legs)
+            payload = json.loads(stored[-1])
+            assert payload["request_fingerprint"] == order_fingerprint(request)
+            expected_contract, expected_order = build_order(request, contracts if combo else contracts[:1],
+                "DU-OPTIONS-FIXTURE", 40, payload["order_id"], shape)
+            from algo_trader_broker_adapter_ibkr_paper.options_account_native import raw_value
+            assert payload["contract"] == raw_value(expected_contract) and payload["order"] == raw_value(expected_order)
+            assert payload["order"]["lmtPrice"] == ("-1.5" if combo else "1.25")
+            assert payload["order"]["action"] == "BUY" and payload["order"]["totalQuantity"] == 2
+            assert payload["order"]["openClose"] == ("C" if combo else "O")
+            if combo:
+                assert [(leg["conId"], leg["ratio"], leg["action"], leg["openClose"])
+                    for leg in payload["contract"]["comboLegs"]] == [(1590, 1, "SELL", 0), (1595, 1, "BUY", 0)]
+            assert int.from_bytes(sockets[-1][:4], "big") == len(sockets[-1]) - 4
+            assert sockets[-1][4:].split(b"\0")[0] == b"3"  # Actual TWS placeOrder wire message.
+        assert len(sockets) == len(evidence) == 2
+        assert all(event.source == "IB_OPTION_SUBMISSION" for event in evidence)
+        async def resolve(native_id, symbol):
+            from algo_trader_broker_sdk.options import QualificationResult
+            binding, contract, _ = adapter._option_catalog[native_id]
+            assert symbol == binding.local_symbol
+            return QualificationResult(binding.canonical_id, "EXACT", binding, contract, ())
+        for event in evidence:
+            fact = await adapter.decode_option_event(event, resolve)
+            assert fact.status == "ACKNOWLEDGED" and fact.session_key == "IBKR_PERM_ID"
+            assert fact.executions == () and len(fact.legs) in (1, 2)
+    finally:
+        ib.newOrderEvent -= acknowledge
+        ib.client.connState = ib.client.DISCONNECTED
