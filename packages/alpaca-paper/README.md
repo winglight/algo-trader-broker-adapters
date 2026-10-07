@@ -8,7 +8,7 @@ Independent Alpaca Paper adapter for the algo-trader Broker SDK 1.x.
 - Whole-share `MKT`, `LMT`, `STP`, and `STP LMT` orders with `DAY` or `GTC`.
 - Account, positions, open/completed order reconciliation, fill activities,
   historical bars, snapshots, and live stock bars/trades/quotes.
-- Futures, options, crypto, fractional shares, extended hours, order replacement,
+- Futures, legacy option requests, crypto, fractional shares, extended hours, order replacement,
   scanners, and market depth are rejected explicitly.
 
 Alpaca does not currently provide futures trading through this API. This package
@@ -101,6 +101,29 @@ existing financial transaction; the adapter does not unconditionally strip ID
 suffixes. Missing/ambiguous proof remains unresolved. REST-first, WS-first,
 legacy WS and overlapping scans are covered by synthetic MariaDB integration;
 they are not real account certification.
+
+## V9.2 guarded option submission (development)
+
+`submit_option_order_guarded` uses the Runner-verified account and the existing
+credentials/concurrency queue. After the single-use submission gate authorizes
+the exact command, it posts once to the fixed Paper `/v2/orders` endpoint.
+Single options use a positive premium; native `mleg` orders preserve the signed
+net limit, group quantity, each leg's ratio and explicit position intent.
+Amounts remain decimal strings in the JSON request. See Alpaca's
+[multileg order examples](https://docs.alpaca.markets/us/docs/options-level-3-trading)
+and [signed limit definition](https://docs.alpaca.markets/us/v1.1/reference/postorder).
+
+The original acknowledgement is delivered to the bound raw sink before parsing.
+The parser checks the client reference and exact native contract/leg identities;
+status and cumulative leg quantities are receipt data, never execution fills.
+Timeouts and uncertain responses remain unknown and do not trigger another POST.
+The unguarded option submission entry point is explicitly unavailable.
+
+The existing Guardian close integration now executes this adapter and HTTP
+client, with only the broker HTTP response and qualification/quote inputs supplied
+by fixtures. The complete option read/capability extension, IB writer, terminal
+reconciliation and actual account certification remain unfinished; this change
+does not enable production option contexts.
 
 ## Configuration
 

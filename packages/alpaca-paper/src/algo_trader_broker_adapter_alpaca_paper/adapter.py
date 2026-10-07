@@ -99,6 +99,14 @@ class AlpacaPaperAdapter:
         self._lifecycle_lock = asyncio.Lock()
         self._stream_reconnect_task: asyncio.Task[None] | None = None
         self._option_event_binding: OptionVerifiedAccount | None = None
+        self._option_account_binding: OptionVerifiedAccount | None = None
+        self._option_evidence_handler = None
+
+    def bind_option_account(self, verified):
+        if (type(verified) is not OptionVerifiedAccount or verified.broker != "ALPACA" or verified.scope.environment != "paper"
+                or not self._connected or verified.native_account_ref != self._account_id):
+            raise BrokerContractError("Option request differs from the connected verified Alpaca account")
+        self._option_account_binding = verified
 
     def set_option_event_handler(self, context: OptionVerifiedAccount, handler: OptionEventHandler | None) -> None:
         if type(context) is not OptionVerifiedAccount:
@@ -107,6 +115,7 @@ class AlpacaPaperAdapter:
             if self._option_event_binding == context:
                 self._backend.set_raw_trade_handler(None)
                 self._option_event_binding = None
+                self._option_evidence_handler = None
             return
         if (context.broker != "ALPACA" or context.scope.environment != "paper"
                 or context.native_account_ref != self._account_id or not self._connected):
@@ -127,13 +136,18 @@ class AlpacaPaperAdapter:
             await handler(OptionRawEvent(context.scope, "ALPACA_TRADE_UPDATES", raw, native_id))
 
         self._option_event_binding = context
+        self._option_evidence_handler = handler
         self._backend.set_raw_trade_handler(retain)
 
     def _clear_option_event_handler(self):
+        self._option_account_binding = None
         if self._option_event_binding is not None:
             self.set_option_event_handler(self._option_event_binding, None)
 
     async def decode_option_event(self, event, resolve_contract, resolve_order=None):
+        if event.source == "ALPACA_ORDER_DETAIL":
+            from .options_orders import decode_order_evidence
+            return await decode_order_evidence(event, resolve_contract)
         from .options_codec import decode_trade_update, decode_fill_activity
         if event.source == "ALPACA_ACTIVITY_FILL":
             return await decode_fill_activity(event, resolve_contract, resolve_order)
@@ -577,6 +591,32 @@ class AlpacaPaperAdapter:
     async def place_option_order(self, request: OptionOrderRequest) -> OrderResult:
         del request
         raise unsupported("options_trading")
+
+    async def submit_option_order(self, request):
+        raise unsupported("unguarded_option_submission")
+
+    async def submit_option_order_guarded(self, request, gate):
+        from algo_trader_broker_sdk.options import OptionExecutionRequest, OptionScope
+        from .options_orders import order_payload, order_state, rejected_state
+        if type(request) is not OptionExecutionRequest:
+            raise BrokerContractError("Option submission requires a typed exact command")
+        scope = OptionScope(**{name: getattr(request, name) for name in OptionScope.__dataclass_fields__})
+        bound, sink = self._option_account_binding, self._option_evidence_handler
+        if bound is None or bound.scope != scope or bound.native_account_ref != self._account_id or not self._connected:
+            raise BrokerContractError("Option submission requires the current verified account")
+        await self.ensure_connected()
+        account = await self._backend.get_account()
+        if text(value(account, "id") or value(account, "account_number")) != bound.native_account_ref:
+            raise BrokerContractError("Alpaca native account changed before submission")
+        try:
+            raw = await self._backend.submit_option_order_raw(order_payload(request), submission_gate=gate)
+        except BrokerOrderError as exc:
+            if exc.code == "broker_order_error":
+                return rejected_state(request)
+            raise
+        if sink is not None:
+            await sink(OptionRawEvent(scope, "ALPACA_ORDER_DETAIL", raw))
+        return order_state(request, raw)
 
     async def cancel_order(self, order_id: int | str) -> None:
         await self.ensure_connected()

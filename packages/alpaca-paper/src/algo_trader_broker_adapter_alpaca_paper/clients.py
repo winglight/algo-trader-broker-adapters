@@ -28,7 +28,7 @@ PAPER_TRADING_BASE_URL = "https://paper-api.alpaca.markets"
 class AlpacaClients:
     """Small async facade around alpaca-py and the documented activities REST API."""
 
-    def __init__(self, settings: AlpacaPaperSettings) -> None:
+    def __init__(self, settings: AlpacaPaperSettings, *, option_http_transport=None) -> None:
         self.settings = settings
         self._semaphore = asyncio.Semaphore(settings.max_concurrency)
         self._trading: Any | None = None
@@ -37,6 +37,7 @@ class AlpacaClients:
         self._stock_stream: MultiplexedAlpacaStockStream | None = None
         self._stock_stream_lock = asyncio.Lock()
         self._raw_trade_handler = None
+        self._option_http_transport = option_http_transport
 
     def set_raw_trade_handler(self, handler) -> None:
         self._raw_trade_handler = handler
@@ -177,6 +178,39 @@ class AlpacaClients:
     async def submit_order(self, request: Any, *, submission_gate=None) -> Any:
         self._load()
         return await self._call("submit_order", self._trading.submit_order, order_data=request, submission_gate=submission_gate)
+
+    async def submit_option_order_raw(self, payload, *, submission_gate):
+        """One exact REST POST with the existing account credentials and queue."""
+        import httpx
+        import json
+
+        async with self._semaphore:
+            async with httpx.AsyncClient(base_url=PAPER_TRADING_BASE_URL, follow_redirects=False,
+                headers={"APCA-API-KEY-ID": self.settings.api_key_id, "APCA-API-SECRET-KEY": self.settings.secret_key,
+                         "Content-Type": "application/json"}, timeout=self.settings.request_timeout_seconds,
+                transport=self._option_http_transport) as client:
+                try:
+                    await submission_gate.prepare()
+                    submission_gate.consume()
+                    async with asyncio.timeout(self.settings.request_timeout_seconds):
+                        async with client.stream("POST", "/v2/orders", content=json.dumps(payload, allow_nan=False).encode()) as response:
+                            raw = bytearray()
+                            async for chunk in response.aiter_bytes(chunk_size=65536):
+                                if len(raw) + len(chunk) > 8 * 1024 * 1024:
+                                    raise BrokerOrderError("Option order response exceeds native evidence limit", code="broker_order_outcome_unknown")
+                                raw.extend(chunk)
+                            if response.status_code not in {200, 201}:
+                                definite = 400 <= response.status_code < 500 and response.status_code != 408
+                                raise BrokerOrderError("Alpaca rejected the option order" if definite else "Option order outcome requires reconciliation",
+                                    code="broker_order_error" if definite else "broker_order_outcome_unknown",
+                                    details={"status_code": response.status_code})
+                            if not raw:
+                                raise BrokerOrderError("Option order acknowledgement is missing", code="broker_order_outcome_unknown")
+                            return bytes(raw)
+                except (httpx.HTTPError, TimeoutError):
+                    raise BrokerOrderError("Option order outcome requires reconciliation", code="broker_order_outcome_unknown") from None
+                finally:
+                    submission_gate.cancel()
 
     async def get_order_by_client_id(self, client_order_id: str) -> Any | None:
         self._load()
