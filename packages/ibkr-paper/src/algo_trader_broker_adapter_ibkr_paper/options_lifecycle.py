@@ -170,11 +170,16 @@ async def parse(raw, *, account, accounts, resolve_contract, retain, observed=No
         if row.get("assetCategory") == "STK" and i not in consumed)
     page = OptionActivityPage(tuple(events), None, not unresolved, observed, tuple(unresolved))
     if statement_store is not None:
-        from .options_flex_trades import cancellations
+        from .options_flex_trades import cancellations, commissions
         try:
             proofs, trade_unresolved = cancellations(raw, account)
+            fees, fee_unresolved = commissions(raw, account)
         except (BrokerContractError, ValueError, KeyError, TypeError):
-            proofs, trade_unresolved = (), ("FLEX_TRADES_INVALID:" + file_ref,)
+            proofs, fees, fee_unresolved, trade_unresolved = (), (), (), ("FLEX_TRADES_INVALID:" + file_ref,)
+        trade_unresolved += fee_unresolved
+        if fees and day(metadata["whenGenerated"].split(";")[0].split("T")[0]) <= metadata["_to_date"]:
+            trade_unresolved += ("FLEX_FEE_STATEMENT_NOT_CLOSED:" + file_ref,)
+            fees = ()
         if trade_unresolved:
             page = replace(page, complete=False,
                 unresolved_refs=tuple(sorted(set(page.unresolved_refs + trade_unresolved))))
@@ -182,6 +187,8 @@ async def parse(raw, *, account, accounts, resolve_contract, retain, observed=No
         trade_unresolved = ()
         if proofs:
             trade_unresolved += tuple(await statement_store.trade_cancellations(raw, proofs))
+        if fees:
+            trade_unresolved += tuple(await statement_store.trade_fees(raw, metadata, fees))
         if trade_unresolved:
             return replace(result, complete=False,
                 unresolved_refs=tuple(sorted(set(result.unresolved_refs + trade_unresolved))))
