@@ -405,6 +405,7 @@ async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None,
     ib.client.connState = ib.client.CONNECTED
     ib.client._serverVersion = 178
     ib.client.clientId = ib.wrapper.clientId = 40
+    assert await adapter.option_certification_context(scope) == 178
 
     async def sink(event):
         evidence.append(event)

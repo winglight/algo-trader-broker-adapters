@@ -255,6 +255,13 @@ class IBOptionReads:
 
         return await self._option_read(request, read)
 
+    async def option_certification_context(self, request):
+        async def read(ib, bound):
+            version = ib.client.serverVersion()
+            check(type(version) is int and version > 0, "IB server version is unavailable")
+            return version
+        return await self._option_read(request, read)
+
     async def option_capabilities(self, request):
         async def read(ib, bound):
             observed = now_wire()
