@@ -58,7 +58,7 @@ def flex_xml(contract, binding, *, account="DU-OPTIONS-FIXTURE", kind="Assignmen
     return tostring(root)
 
 
-async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_snapshot=None, exercise_orders=False, gate_factory=None, consume_event=None, cancel_sender=None, reconcile_reader=None, preview_reader=None):
+async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_snapshot=None, exercise_orders=False, gate_factory=None, consume_event=None, cancel_sender=None, reconcile_reader=None, preview_reader=None, calendar_reader=None):
     ib = IB()
     monkeypatch.setattr(ib, "isConnected", lambda: True)
     monkeypatch.setattr(ib, "managedAccounts", lambda: ["DU-OPTIONS-FIXTURE"])
@@ -151,7 +151,7 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_sn
         assert canceled == [1000, 1001] and ib.wrapper.reqId2Ticker == {900: existing}
         assert ib.wrapper.ticker2ReqId["mktData"][existing] == 900
 
-        await market_data_flow(adapter, ib, request, monkeypatch)
+        await market_data_flow(adapter, ib, request, monkeypatch, calendar_reader=calendar_reader)
 
         canceled_accounts, canceled_positions, retained = [], [], {}
         def account_values(req_id, account, model, ledger_only):
@@ -318,7 +318,7 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_sn
         await client._shutdown_sync_executor()
 
 
-async def market_data_flow(adapter, ib, snapshot_request, monkeypatch):
+async def market_data_flow(adapter, ib, snapshot_request, monkeypatch, *, calendar_reader=None):
     from ib_async import BarData, HistoricalTickLast, HistoricalTickBidAsk, TickAttribLast, TickAttribBidAsk
     from algo_trader_broker_sdk.options import QuoteSubscription, OptionHistoryRequest
     from algo_trader_broker_sdk.options_calendar import OptionCalendarQuery
@@ -393,6 +393,9 @@ async def market_data_flow(adapter, ib, snapshot_request, monkeypatch):
     assert all(row.broker_entry_cutoff_at is None and row.reason_codes for row in calendar.sessions)
     closed = await adapter.option_calendar(replace(request, trade_date="2026-10-10"))
     assert all(not row.is_trading_day and row.session_close_at is None for row in closed.sessions)
+    if calendar_reader is not None:
+        ib.client._serverVersion = 178
+        await calendar_reader(adapter, request)
 
 
 async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None, consume_event=None, cancel_sender=None, reconcile_reader=None, preview_reader=None):
