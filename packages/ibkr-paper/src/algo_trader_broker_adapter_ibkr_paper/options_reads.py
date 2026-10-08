@@ -91,6 +91,7 @@ class IBOptionReads:
         self._option_connection = None
         self._option_catalog = OrderedDict()
         self._option_pages = OrderedDict()
+        self._option_flex_pages = OrderedDict()
         self._option_history_pages = OrderedDict()
         self._option_history_lock = asyncio.Lock()
         self._option_history_next = 0.0
@@ -108,6 +109,7 @@ class IBOptionReads:
         if self._option_account_binding != verified or self._option_connection != state["connected_since"]:
             self._option_catalog.clear()
             self._option_pages.clear()
+            self._option_flex_pages.clear()
             self._option_history_pages.clear()
             self._option_live_observed = None
         self._option_account_binding = verified
@@ -260,9 +262,10 @@ class IBOptionReads:
             unavailable = OptionCapability("UNSUPPORTED", ("NOT_IMPLEMENTED",), ())
             native_greeks = OptionCapability("IMPLEMENTED",
                 ("GREEKS_INPUT_TIME_UNAVAILABLE", "GREEKS_MODEL_VERSION_UNAVAILABLE", "GREEKS_UNITS_UNVERIFIED"), ())
-            return OptionCapabilities(bound.scope, self.adapter_id, VERSION, "ib-options-reads-4", observed,
+            lifecycle = OptionCapability("IMPLEMENTED", ("LIFECYCLE_SOURCE_UNVERIFIED",), ())
+            return OptionCapabilities(bound.scope, self.adapter_id, VERSION, "ib-options-reads-5", observed,
                 (timestamp(observed) + timedelta(seconds=30)).isoformat().replace("+00:00", "Z"),
-                implemented, implemented, native_greeks, implemented, implemented, implemented, unavailable,
+                implemented, implemented, native_greeks, implemented, implemented, implemented, lifecycle,
                 unavailable, unavailable, implemented, implemented, (FEED, "provider_native"), ())
         return await self._option_read(request, read)
 
@@ -270,9 +273,10 @@ class IBOptionReads:
         from .options_account import permissions
         return await permissions(self, request)
 
-    async def option_account_state(self, request, *, retain_lifecycle=None):
+    async def option_account_state(self, request, *, retain_lifecycle=None, resolve_contract=None, flex_state=None):
         from .options_account import account_state
-        return await account_state(self, request, retain_evidence=retain_lifecycle)
+        return await account_state(self, request, retain_evidence=retain_lifecycle,
+            resolve_contract=resolve_contract, flex_state=flex_state)
 
     async def option_snapshot(self, request):
         check(type(request) is SnapshotRequest and request.feed == FEED, "IB snapshot requires explicit IBKR_LIVE feed")

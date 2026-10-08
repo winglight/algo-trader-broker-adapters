@@ -20,7 +20,7 @@ from algo_trader_broker_sdk.options_capabilities import require_options_extensio
 from algo_trader_broker_sdk.options import (
     OptionContractQuery, OptionScope, OptionVerifiedAccount, QualificationRequest,
     SnapshotRequest, option_contract_id, option_from_payload,
-    OptionExecutionRequest, OptionLegIntent,
+    OptionExecutionRequest, OptionLegIntent, ActivityQuery,
 )
 from algo_trader_broker_sdk import dataclass_to_payload
 
@@ -28,6 +28,34 @@ from algo_trader_broker_sdk import dataclass_to_payload
 @pytest.mark.asyncio
 async def test_standard_contract_discovery_qualification_and_live_snapshot(monkeypatch):
     await read_flow(monkeypatch, exercise_orders=True)
+
+
+def flex_xml(contract, binding, *, account="DU-OPTIONS-FIXTURE", kind="Assignment", day="20261007"):
+    """Synthetic locked EAE layout; not an account-certified IB statement."""
+    from xml.etree.ElementTree import Element, SubElement, tostring
+    key = contract.key
+    root = Element("FlexQueryResponse", queryName="ATI option lifecycle fixture", type="AF")
+    statements = SubElement(root, "FlexStatements", count="1")
+    statement = SubElement(statements, "FlexStatement", accountId=account, fromDate=day, toDate=day,
+                           whenGenerated=day + ";220000")
+    rows = SubElement(statement, "OptionEAE")
+    delta = 1 if kind == "Assignment" else -1
+    parent = dict(accountId=account, currency="USD", assetCategory="OPT", symbol=binding.local_symbol,
+        conid=binding.broker_contract_id, underlyingConid="100", underlyingSymbol=key.underlying,
+        multiplier="100", strike=key.strike, expiry=key.expiry.replace("-", ""), putCall=key.right,
+        date=day, transactionType=kind, quantity=str(delta), tradePrice="0", proceeds="0",
+        commisionsAndTax="0", tradeID="10001")
+    if kind != "Expiration":
+        shares = -delta * 100 * (1 if key.right == "C" else -1)
+        parent["relatedTradeID"] = "10002"
+        SubElement(rows, "OptionEAE", accountId=account, currency="USD", assetCategory="STK",
+            symbol=key.underlying, conid="100", date=day, transactionType="Buy" if shares > 0 else "Sell",
+            quantity=str(shares), tradePrice=key.strike, proceeds=str(-Decimal(shares) * Decimal(key.strike)),
+            commisionsAndTax="0", tradeID="10002", relatedTradeID="10001")
+    SubElement(rows, "OptionEAE", **parent)
+    for name in ("Trades", "OpenPositions", "CashTransactions"):
+        SubElement(statement, name)
+    return tostring(root)
 
 
 async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_snapshot=None, exercise_orders=False, gate_factory=None, consume_event=None, cancel_sender=None, reconcile_reader=None, preview_reader=None):
@@ -194,7 +222,57 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_sn
         permissions = await adapter.option_account_permissions(scope)
         assert permissions.approval_status == "UNKNOWN" and permissions.permitted_structures == ()
         assert permissions.data_entitlement == "ALLOWED" and permissions.bp_semantics == "AVAILABLE_FUNDS"
-        state = await adapter.option_account_state(scope, retain_lifecycle=retain)
+        from algo_trader_broker_adapter_ibkr_paper import flex
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+        settings = dict(ib_flex_token="fixture-secret", ib_flex_query_id="123", ib_flex_accounts="DU-OPTIONS-FIXTURE")
+        adapter._flex = flex.FlexReader(settings)
+        report = flex_xml(contracts[1], bindings[1])
+        responses = iter([
+            b'<FlexStatementResponse><Status>Success</Status><ReferenceCode>987</ReferenceCode><Url>https://untrusted.invalid/</Url></FlexStatementResponse>',
+            b'<FlexStatementResponse><Status>Warn</Status><ErrorCode>1019</ErrorCode></FlexStatementResponse>', report])
+        calls = []
+        def download(endpoint, token, reference):
+            calls.append((endpoint, reference))
+            assert token == "fixture-secret"
+            return next(responses)
+        pending = {}
+        async def save(key, reference): pending[key] = reference
+        store = SimpleNamespace(load=AsyncMock(side_effect=lambda key: pending.get(key)), save=save)
+        monkeypatch.setattr(flex, "_download", download)
+        page = await adapter.option_lifecycle_events(ActivityQuery(**values, since=None, cursor=None, limit=200),
+            retain_evidence=retain, flex_state=store)
+        assert not page.complete and page.unresolved_refs == ("IB_FLEX_PENDING",)
+        # Rebuild the reader, retaining only the durable reference port.
+        adapter._flex = flex.FlexReader(settings)
+        state = await adapter.option_account_state(scope, retain_lifecycle=retain, flex_state=store)
+        assert calls == [("SendRequest", "123"), ("GetStatement", "987"), ("GetStatement", "987")]
+        assert list(pending.values()) == [None] and sha256(report).hexdigest() in retained
+        assert len(state.activities) == 1
+        lifecycle = state.activities[0]
+        assert (lifecycle.kind, lifecycle.signed_option_contracts_delta, lifecycle.delivered_shares,
+                lifecycle.cash_delta, lifecycle.effective_date, lifecycle.effective_at) == (
+                    "ASSIGNMENT", 1, -100, "59500", "2026-10-07", None)
+        assert lifecycle.raw_ref in retained and b"fixture-secret" not in b"".join(retained.values())
+        repeated = await adapter.option_lifecycle_events(ActivityQuery(**values, since=None, cursor=None, limit=200),
+            retain_evidence=retain, flex_state=store)
+        assert repeated.events[0].raw_ref == lifecycle.raw_ref and len(calls) == 3
+        from algo_trader_broker_adapter_ibkr_paper.options_lifecycle import parse
+        async def resolve(native, symbol):
+            return next(item for item in qualified.results if item.binding.broker_contract_id == native
+                        and item.binding.local_symbol == symbol)
+        for kind, day, shares, cash in (("Exercise", "20261007", 100, "-59000"),
+                                       ("Expiration", "20261016", 0, "0")):
+            page = await parse(flex_xml(contracts[0], bindings[0], kind=kind, day=day),
+                account="DU-OPTIONS-FIXTURE", accounts=adapter._flex.accounts, resolve_contract=resolve, retain=retain)
+            assert page.complete and len(page.events) == 1
+            assert (page.events[0].kind, page.events[0].signed_option_contracts_delta,
+                    page.events[0].delivered_shares, page.events[0].cash_delta) == (kind.upper(), -1, shares, cash)
+        incomplete = await parse(report.replace(b' relatedTradeID="10001"', b'').replace(b' relatedTradeID="10002"', b''),
+            account="DU-OPTIONS-FIXTURE", accounts=adapter._flex.accounts, resolve_contract=resolve, retain=retain)
+        assert not incomplete.complete and not incomplete.events and incomplete.unresolved_refs
+        with pytest.raises(BrokerContractError, match="DTD"):
+            flex.xml(b'<!DOCTYPE root [<!ENTITY secret SYSTEM "file:///etc/passwd">]><root>&secret;</root>')
         assert (state.equity_cash, state.cash_available, state.option_buying_power) == ("10000.123456789012", "9000", "8000")
         assert {v.name: v.value for v in state.raw_buying_power} == {"AvailableFunds": "8000", "BuyingPower": "32000"}
         assert [p.signed_contracts for p in state.positions] == [2, -2]

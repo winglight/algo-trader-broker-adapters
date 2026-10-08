@@ -35,7 +35,7 @@ for executable quote quality, and leave unverified Greeks empty. Tick times are
 socket receipt times, not exchange timestamps. Reading does not certify trading.
 
 The adapter declares `options/1.0`, allowing Runner to establish a verified
-account context and use implemented reads. Unsupported paged activity/lifecycle,
+account context and use implemented reads. Unsupported paged TWS activities,
 native replacement and exercise ports return explicit capability errors; TWS
 callback recovery continues through `reconcile_options`. The legacy
 `supports_options` flag remains false and legacy option endpoints still reject
@@ -131,3 +131,44 @@ IB revision mapping follows the documented
 The existing walkthrough retains original/corrected executions and commissions,
 replays them from native recovery, and verifies one financial row with both
 revision records in MariaDB. No new database or frozen business fields are used.
+
+## Activity Flex lifecycle reads
+
+The existing options lifecycle port now reads Activity Flex XML through the
+fixed IB HTTPS SendRequest/GetStatement endpoints. Settings are
+`ib_flex_query_id`, `ib_flex_accounts` (a comma-separated native account allowlist),
+and the secret `ib_flex_token`. Inject the token through the existing Runner
+credential/deployment secret mechanism; do not put it in profile config, request
+bodies, logs or source control. There is no separate trading adapter. The current
+IB profile management API still treats deployment credentials as read-only.
+
+Use an Activity query with OptionEAE, Trades, OpenPositions and CashTransactions.
+The `ib-flex-eae-v1` parser accepts yyyyMMdd or ISO dates and retains the original
+XML, statement account/date range, parser version and row ordinals. The OptionEAE
+layout requires accountId, currency, assetCategory, symbol, conid,
+underlyingConid, underlyingSymbol, multiplier, strike, expiry, putCall, date,
+transactionType, quantity, tradePrice, proceeds, commisionsAndTax and tradeID.
+For exercise/assignment, the stock row must have an explicit relatedTradeID link,
+matching native underlying ID/date/quantity/strike/proceeds. No inference from
+position differences or approximate cash matching is used. Missing fields or
+links remain unresolved. Fees remain in the source evidence; this reader does
+not assign commission amounts to option fills.
+
+Runner retains pending reference codes across restarts. The process-wide token
+governor respects the one-request/second and ten-requests/minute limits; 1018
+blocks that token for a minute. Pending replies keep the same reference and are
+retried by the next read after a bounded delay. The response URL is ignored,
+redirects are rejected, XML is size/structure bounded and DTDs are rejected.
+Errors expose only fixed messages and numeric broker codes, never token URLs.
+
+Account receives explicit signed option changes and linked gross delivery cash
+before refreshing current funds. A finished report page does not certify
+account-wide lifecycle coverage through the current time. The synthetic native
+walkthrough and Account/Orders database flow verify the current layout; real
+account sample certification, corrected-statement revisions/day watermarks,
+manual XML upload and profile-management configuration remain follow-up work.
+Exercise instructions remain disabled.
+
+Sources: [IB Flex transport](https://www.ibkrguides.com/brokerportal/performanceandstatements/flex3.htm),
+[error codes](https://www.ibkrguides.com/orgportal/performanceandstatements/flex3error.htm),
+[OptionEAE fields](https://www.ibkrguides.com/reportingreference/reportguide/options_exercises_expirations_fq.htm).

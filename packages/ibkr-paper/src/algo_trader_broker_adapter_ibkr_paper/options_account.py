@@ -2,13 +2,14 @@
 
 import asyncio
 from collections.abc import Mapping
+from dataclasses import asdict, replace
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation, localcontext
 from hashlib import sha256
 from uuid import uuid4
 
 from algo_trader_broker_sdk import BrokerContractError
-from algo_trader_broker_sdk.options import check, decimal_wire, timestamp
+from algo_trader_broker_sdk.options import ActivityQuery, check, decimal_wire, timestamp
 from algo_trader_broker_sdk.options_account import (
     NativeBuyingPower, NativeOrderReference, OptionAccountPermissions, OptionAccountPosition,
     OptionAccountState, UnresolvedOptionPosition,
@@ -137,8 +138,21 @@ async def permissions(adapter, request):
     return await adapter._option_read(request, read)
 
 
-async def account_state(adapter, request, *, retain_evidence=None):
+async def account_state(adapter, request, *, retain_evidence=None, resolve_contract=None, flex_state=None):
     async def read(ib, bound):
+        activities, lifecycle_reasons = [], []
+        if retain_evidence is not None:
+            query = ActivityQuery(**asdict(bound.scope), since=None, cursor=None, limit=200)
+            for _ in range(100):
+                page = await adapter.option_lifecycle_events(query, retain_evidence=retain_evidence,
+                    resolve_contract=resolve_contract, flex_state=flex_state)
+                activities.extend(page.events)
+                lifecycle_reasons.extend(page.unresolved_refs)
+                if page.next_cursor is None:
+                    break
+                query = replace(query, cursor=page.next_cursor)
+            else:
+                lifecycle_reasons.append("IB_FLEX_PAGE_LIMIT")
         async with adapter._option_account_read_lock:
             # Funds/positions have separate IDs; open orders has a shared end
             # marker and is read only when no other download is in progress.
@@ -155,6 +169,8 @@ async def account_state(adapter, request, *, retain_evidence=None):
         exact, unresolved, underlyings = [], [], {}
         reasons = ["EXECUTION_RECONCILIATION_REQUIRED", "LIFECYCLE_RECONCILIATION_REQUIRED",
                    "IB_MANUAL_ORDER_VISIBILITY_UNVERIFIED"]
+        if lifecycle_reasons:
+            reasons.append("LIFECYCLE_SOURCE_INCOMPLETE")
         if not_ready:
             reasons.append("IB_ACCOUNT_NOT_READY")
 
@@ -218,10 +234,11 @@ async def account_state(adapter, request, *, retain_evidence=None):
         from .cash_account import collect
         cash = await collect(bound.native_account_ref, working, completed, fills, retain=retain)
         checkpoint = await retain(dict(source="IB_ACCOUNT_SNAPSHOT", values=values, positions=inventory, orders=working,
-                                      cost_evidence_refs=cost_refs, completed_orders=completed, executions=fills))
+                                      cost_evidence_refs=cost_refs, completed_orders=completed, executions=fills,
+                                      lifecycle_refs=[item.raw_ref for item in activities], lifecycle_unresolved=lifecycle_reasons))
         return OptionAccountState(bound.scope, str(uuid4()), values["started_at"], now_wire(), "USD",
             read_money("NetLiquidation"), read_money("TotalCashValue"), read_money("AvailableFunds", required=False),
             raw_bp, "AVAILABLE_FUNDS" if any(item.name == "AvailableFunds" for item in raw_bp) else "UNKNOWN",
-            checkpoint, tuple(exact), tuple(unresolved), tuple(refs), (), True, False, False, False,
+            checkpoint, tuple(exact), tuple(unresolved), tuple(refs), tuple(activities), True, False, False, False,
             tuple(sorted(set(reasons))), (), False, ("IB_COMMISSION_RECONCILIATION_REQUIRED",), cash)
     return await adapter._option_read(request, read)

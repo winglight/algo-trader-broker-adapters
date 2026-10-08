@@ -110,8 +110,10 @@ class IBOptionOrders:
         check(type(page) is OptionRawActivityPage, "Activity indexing requires a retained native page")
         raise BrokerCapabilityError("TWS has no paged account-activity source", code="OPTION_ACTIVITY_BACKFILL_UNSUPPORTED")
 
-    async def option_lifecycle_events(self, request, *, retain_evidence=None):
-        return await self._unsupported_option_operation(request, ActivityQuery, "OPTION_LIFECYCLE_UNSUPPORTED")
+    async def option_lifecycle_events(self, request, *, retain_evidence=None, resolve_contract=None, flex_state=None):
+        from .options_lifecycle import read
+        return await read(self, request, retain_evidence=retain_evidence,
+            resolve_contract=resolve_contract, state_store=flex_state)
 
     async def replace_option_order(self, request):
         return await self._unsupported_option_operation(request, OptionReplaceRequest, "OPTION_REPLACE_UNSUPPORTED")

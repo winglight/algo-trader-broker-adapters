@@ -184,6 +184,8 @@ class IBKRPaperAdapter(IBOptionReads, IBOptionOrders):
         supervisor: Any | None = None,
     ) -> None:
         self._init_option_reads()
+        from .flex import FlexReader
+        self._flex = FlexReader(settings)
         if client is not None:
             self._settings = settings
             self._client = client
