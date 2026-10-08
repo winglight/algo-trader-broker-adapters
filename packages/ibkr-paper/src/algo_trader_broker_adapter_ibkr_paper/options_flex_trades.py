@@ -17,7 +17,7 @@ from .options_events import execution_revision
 from .options_lifecycle import amount, day, number, whole
 
 
-def cancellations(raw, account):
+def cancellations(raw, account, lifecycle_trade_ids=()):
     statement = next(item for item in xml(raw).find("FlexStatements") if item.get("accountId") == account)
     sections = statement.findall("Trades")
     if not sections:
@@ -29,6 +29,8 @@ def cancellations(raw, account):
     file_hash = sha256(raw).hexdigest()
     for index, item in enumerate(rows):
         row = item.attrib
+        if row.get("tradeID") in lifecycle_trade_ids or row.get("origTradeID") in lifecycle_trade_ids:
+            continue
         if row.get("assetCategory") != "OPT" or row.get("origTradeID", "") in {"", "0"}:
             continue
         try:
@@ -69,7 +71,7 @@ def cancellations(raw, account):
     return tuple(proofs), tuple(unresolved)
 
 
-def commissions(raw, account):
+def commissions(raw, account, lifecycle_trade_ids=()):
     """Statement totals for explicit USD option executions, never order summaries.
 
 IB's signed cash layout defines netCash = proceeds + taxes + ibCommission.
@@ -87,6 +89,8 @@ The fee is the negative of taxes + commission, including an explicit rebate.
     file_hash, proofs, unresolved = sha256(raw).hexdigest(), [], []
     for index, item in enumerate(rows):
         row = item.attrib
+        if row.get("tradeID") in lifecycle_trade_ids or row.get("origTradeID") in lifecycle_trade_ids:
+            continue
         if row.get("assetCategory") != "OPT" or row.get("levelOfDetail") != "EXECUTION" or row.get("origTradeID", "") not in {"", "0"} or row.get("tradeID") in cancelled:
             # A cancelled trade's original commission alone does not establish
             # the net fee/refund. Keep its existing fee provisional for review.

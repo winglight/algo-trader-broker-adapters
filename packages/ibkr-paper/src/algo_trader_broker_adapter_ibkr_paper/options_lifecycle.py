@@ -91,7 +91,8 @@ async def parse(raw, *, account, accounts, resolve_contract, retain, observed=No
             deliveries.setdefault(item.get("tradeID"), []).append(i)
             if item.get("relatedTradeID"):
                 related.setdefault(item["relatedTradeID"], []).append(i)
-    events, consumed = [], set()
+    events, consumed, lifecycle_trade_ids = [], set(), set()
+    trade_sections = next(item for item in xml(raw).find("FlexStatements") if item.get("accountId") == account).findall("Trades")
     for index, row in enumerate(rows):
         if row.get("assetCategory") == "STK":
             continue
@@ -159,9 +160,14 @@ async def parse(raw, *, account, accounts, resolve_contract, retain, observed=No
                 option_row_index=index, delivery_row_index=delivery_index))
             check(await retain(manifest) == sha256(manifest).hexdigest(), "Flex archive changed statement manifest")
             event_id = "IB_FLEX:" + sha256((account + ":" + identity).encode()).hexdigest()
-            events.append(OptionLifecycleEvent(event_id, kind, contract.canonical_id,
+            event = OptionLifecycleEvent(event_id, kind, contract.canonical_id,
                 delta, underlying, shares, amount(cash), "USD", None, observed, "IB_FLEX_EAE", 1, None, raw_ref,
-                effective_date=effective))
+                effective_date=effective)
+            from .options_flex_lifecycle import reverse
+            event, reversed_ids = await reverse(raw, account, event, row,
+                None if delivery_index is None else rows[delivery_index], retain, statement_store, trade_sections)
+            events.append(event)
+            lifecycle_trade_ids.update(reversed_ids)
             if delivery_index is not None:
                 consumed.add(delivery_index)
         except (BrokerContractError, KeyError, ValueError, TypeError, InvalidOperation):
@@ -172,8 +178,8 @@ async def parse(raw, *, account, accounts, resolve_contract, retain, observed=No
     if statement_store is not None:
         from .options_flex_trades import cancellations, commissions
         try:
-            proofs, trade_unresolved = cancellations(raw, account)
-            fees, fee_unresolved = commissions(raw, account)
+            proofs, trade_unresolved = cancellations(raw, account, lifecycle_trade_ids)
+            fees, fee_unresolved = commissions(raw, account, lifecycle_trade_ids)
         except (BrokerContractError, ValueError, KeyError, TypeError):
             proofs, fees, fee_unresolved, trade_unresolved = (), (), (), ("FLEX_TRADES_INVALID:" + file_ref,)
         trade_unresolved += fee_unresolved
