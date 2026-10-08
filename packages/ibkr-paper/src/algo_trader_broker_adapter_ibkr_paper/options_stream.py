@@ -8,6 +8,7 @@ from algo_trader_broker_sdk.options import QuoteSubscription, check
 
 from .options_quotes import amount, size, quote_from_sides
 from .options_reads import FEED
+from .options_greeks import GreekCapture
 
 
 async def stream_quotes(adapter, request):
@@ -21,9 +22,15 @@ async def stream_quotes(adapter, request):
     subscriptions, sides, dirty, errors = {}, {}, set(), []
     changed = asyncio.Event()
     started = datetime.now(timezone.utc)
+    greeks = GreekCapture(ib)
+    greek_seen, ticker_requests = {}, {}
 
     def update(ticker):
         row = sides[id(ticker)]
+        native = greeks.rows.get(ticker_requests[id(ticker)])
+        if native is not None and native is not greek_seen.get(id(ticker)):
+            greek_seen[id(ticker)] = native
+            dirty.add(id(ticker))
         for tick in ticker.ticks:
             if tick.tickType in {0, 1, 2, 3} and tick.time.tzinfo is not None and tick.time >= started:
                 row["bid" if tick.tickType in {0, 1} else "ask"] = (amount(tick.price), size(tick.size), tick.time)
@@ -50,6 +57,8 @@ async def stream_quotes(adapter, request):
             sides[id(ticker)] = {}
             ticker.updateEvent += update
             subscriptions[req_id] = (binding, ticker)
+            ticker_requests[id(ticker)] = req_id
+            greeks.register(req_id)
             ib.wrapper.reqId2Ticker[req_id] = ticker
             ib.wrapper._reqId2Contract[req_id] = contract
             ib.client.reqMktData(req_id, contract, "", False, False, [])
@@ -59,15 +68,17 @@ async def stream_quotes(adapter, request):
             # Latest bid/ask per contract: bounded by the qualified universe.
             ready = dirty.copy()
             dirty.difference_update(ready)
-            for binding, ticker in subscriptions.values():
+            for req_id, (binding, ticker) in subscriptions.items():
                 if id(ticker) in ready and len(sides[id(ticker)]) == 2:
                     await adapter._option_read(request, current)
-                    yield quote_from_sides(binding, ticker, sides[id(ticker)], request)
+                    yield quote_from_sides(binding, ticker, sides[id(ticker)], request,
+                        native_greeks=greeks.observation(req_id, binding, ticker.marketDataType))
             try:
                 await asyncio.wait_for(changed.wait(), 1)
             except asyncio.TimeoutError:
                 pass
     finally:
+        greeks.close()
         ib.errorEvent -= error
         cleanup_error = None
         for req_id, (_, ticker) in subscriptions.items():

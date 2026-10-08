@@ -9,6 +9,7 @@ from algo_trader_broker_sdk import BrokerContractError
 from algo_trader_broker_sdk.options import OptionMarketSnapshot, OptionQuote, timestamp
 
 from .options_reads import native_decimal, now_wire
+from .options_greeks import GreekCapture
 
 
 def amount(value):
@@ -31,6 +32,7 @@ async def read_snapshot(ib, request, contracts, *, timeout):
 
     subscriptions, ticks, changed = [], {}, asyncio.Event()
     started = datetime.now(timezone.utc)
+    greeks = GreekCapture(ib)
 
     def update(ticker):
         sides = ticks[id(ticker)]
@@ -55,6 +57,7 @@ async def read_snapshot(ib, request, contracts, *, timeout):
             ib.wrapper.reqId2Ticker[req_id] = ticker
             ib.wrapper._reqId2Contract[req_id] = contract
             subscriptions.append((req_id, ticker))
+            greeks.register(req_id)
             ib.client.reqMktData(req_id, contract, "", False, False, [])
         deadline = asyncio.get_running_loop().time() + timeout
         while not all(len(ticks[id(ticker)]) == 2 for _, ticker in subscriptions):
@@ -68,16 +71,18 @@ async def read_snapshot(ib, request, contracts, *, timeout):
                 break
         received, quotes, missing = now_wire(), [], []
         all_side_times = []
-        for binding, (_, ticker) in zip(request.bindings, subscriptions):
+        for binding, (req_id, ticker) in zip(request.bindings, subscriptions):
             sides = ticks[id(ticker)]
             if len(sides) != 2:
                 missing.append(binding.canonical_id)
                 continue
             all_side_times.extend((sides["bid"][2], sides["ask"][2]))
-            quotes.append(quote_from_sides(binding, ticker, sides, request, received=received))
+            quotes.append(quote_from_sides(binding, ticker, sides, request, received=received,
+                native_greeks=greeks.observation(req_id, binding, ticker.marketDataType)))
         skew = int((max(all_side_times) - min(all_side_times)).total_seconds() * 1000) if all_side_times else 0
         return OptionMarketSnapshot(str(uuid4()), tuple(quotes), tuple(missing), not missing, skew, received)
     finally:
+        greeks.close()
         cleanup_error = None
         for req_id, ticker in subscriptions:
             ticker.updateEvent -= update
@@ -93,7 +98,7 @@ async def read_snapshot(ib, request, contracts, *, timeout):
             raise cleanup_error
 
 
-def quote_from_sides(binding, ticker, sides, request, *, received=None):
+def quote_from_sides(binding, ticker, sides, request, *, received=None, native_greeks=None):
     received = received or now_wire()
     bid, bs, bid_time = sides["bid"]
     ask, az, ask_time = sides["ask"]
@@ -111,4 +116,4 @@ def quote_from_sides(binding, ticker, sides, request, *, received=None):
     # Native model Greeks have no certified input timestamp/unit here.
     return OptionQuote(binding.canonical_id, bid, ask, bs, az,
         at.isoformat().replace("+00:00", "Z"), received, "IBKR", request.feed,
-        quality, request.account, None, None, None, None, None, None, None, None, None)
+        quality, request.account, None, None, None, None, None, None, None, None, None, native_greeks)

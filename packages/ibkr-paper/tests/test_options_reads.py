@@ -30,7 +30,7 @@ async def test_standard_contract_discovery_qualification_and_live_snapshot(monke
     await read_flow(monkeypatch, exercise_orders=True)
 
 
-async def read_flow(monkeypatch, *, scope=None, consume_account=None, exercise_orders=False, gate_factory=None, consume_event=None, cancel_sender=None, reconcile_reader=None, preview_reader=None):
+async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_snapshot=None, exercise_orders=False, gate_factory=None, consume_event=None, cancel_sender=None, reconcile_reader=None, preview_reader=None):
     ib = IB()
     monkeypatch.setattr(ib, "isConnected", lambda: True)
     monkeypatch.setattr(ib, "managedAccounts", lambda: ["DU-OPTIONS-FIXTURE"])
@@ -66,6 +66,7 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, exercise_o
             ib.wrapper.marketDataType(req_id, 1)
             ib.wrapper.priceSizeTick(req_id, 1, 1.25, 5)
             ib.wrapper.priceSizeTick(req_id, 2, 1.30, 7)
+            ib.wrapper.tickOptionComputation(req_id, 13, 0, .25, .55, 1.275, .01, .02, .12, -.03, 590.)
             ib.wrapper.tcpDataProcessed()
         asyncio.get_running_loop().call_soon(receive)
 
@@ -84,7 +85,7 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, exercise_o
     try:
         capabilities = await adapter.option_capabilities(scope)
         assert capabilities.discovery.status == capabilities.quotes.status == "IMPLEMENTED"
-        assert capabilities.shapes == () and capabilities.greeks.status == "UNSUPPORTED"
+        assert capabilities.shapes == () and capabilities.greeks.status == "IMPLEMENTED"
         with pytest.raises(BrokerCapabilityError, match="CAPABILITY_NOT_CERTIFIED"):
             capabilities.require_entry(scope=scope, structure="LONG_CALL", route="NATIVE",
                 feed="IBKR_LIVE", now=datetime.now(timezone.utc))
@@ -112,7 +113,13 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, exercise_o
         assert all((q.bid, q.ask, q.bid_size, q.ask_size, q.quality) == ("1.25", "1.3", 5, 7, "EXECUTABLE")
                    for q in snapshot.quotes)
         assert all(q.provider == "IBKR" and q.greeks_as_of is None and q.delta is None for q in snapshot.quotes)
+        assert all(q.native_greeks.inputs_asof is None and q.native_greeks.units == "UNKNOWN"
+                   and q.native_greeks.model_version is None for q in snapshot.quotes)
+        assert [json.loads(q.native_greeks.raw_json)["values"]["delta"] for q in snapshot.quotes] == ["0.55", "0.55"]
+        assert "tickOptionComputation" not in ib.wrapper.__dict__
         assert option_from_payload(type(snapshot), dataclass_to_payload(snapshot)) == snapshot
+        if consume_snapshot is not None:
+            await consume_snapshot(adapter, scope, contracts, bindings, snapshot)
         assert canceled == [1000, 1001] and ib.wrapper.reqId2Ticker == {900: existing}
         assert ib.wrapper.ticker2ReqId["mktData"][existing] == 900
 
@@ -239,6 +246,7 @@ async def market_data_flow(adapter, ib, snapshot_request, monkeypatch):
         q1, q2 = await asyncio.gather(anext(first), anext(second))
         assert q1.canonical_id == q2.canonical_id == base["bindings"][0].canonical_id
         assert q1.quality == q2.quality == "EXECUTABLE"
+        assert q1.native_greeks is not None and q2.native_greeks is not None
         await first.aclose()
         assert len(ib.wrapper.reqId2Ticker) == 2  # Owner two plus pre-existing 900.
         remaining = next(key for key in ib.wrapper.reqId2Ticker if key != 900)
