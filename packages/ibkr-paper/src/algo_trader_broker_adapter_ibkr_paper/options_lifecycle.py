@@ -178,6 +178,7 @@ async def read(adapter, request, *, retain_evidence, resolve_contract=None, stat
     check(type(request) is ActivityQuery and retain_evidence is not None,
           "Flex lifecycle requires a scoped query and durable archive")
     async def operation(ib, bound):
+        reader = adapter._flex
         async def resolve(native, symbol):
             if resolve_contract is not None:
                 return await resolve_contract(native, symbol)
@@ -196,7 +197,7 @@ async def read(adapter, request, *, retain_evidence, resolve_contract=None, stat
             page, offset = saved[1:]
         else:
             try:
-                raw = await adapter._flex.fetch(bound.native_account_ref, retain_evidence, state_store=state_store)
+                raw = await reader.fetch(bound.native_account_ref, retain_evidence, state_store=state_store)
             except BrokerCapabilityError as exc:
                 if state_store is not None and exc.code == "IB_FLEX_UNCONFIGURED":
                     persisted = await state_store.page(None, request.limit)
@@ -207,7 +208,7 @@ async def read(adapter, request, *, retain_evidence, resolve_contract=None, stat
                 return OptionActivityPage((), None, False, now_wire(), ("IB_FLEX_UNAVAILABLE",))
             if raw is None:
                 return OptionActivityPage((), None, False, now_wire(), ("IB_FLEX_PENDING",))
-            page = await parse(raw, account=bound.native_account_ref, accounts=adapter._flex.accounts,
+            page = await parse(raw, account=bound.native_account_ref, accounts=reader.accounts,
                 resolve_contract=resolve, retain=retain_evidence, statement_store=state_store)
             if state_store is not None:
                 persisted = await state_store.page(None, request.limit)

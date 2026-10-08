@@ -174,6 +174,12 @@ def _is_transient_ib_disconnect(exc: BaseException) -> bool:
 
 
 class IBKRPaperAdapter(IBOptionReads, IBOptionOrders):
+    def configure_option_flex(self, settings: Mapping[str, Any]) -> None:
+        """Replace only the read-only report reader; retain the gateway session."""
+        from .flex import FlexReader
+        self._flex = FlexReader(settings)
+        self._option_flex_pages.clear()
+
     adapter_id = "ibkr_paper"
 
     def __init__(

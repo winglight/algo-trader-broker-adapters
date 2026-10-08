@@ -138,9 +138,19 @@ The existing options lifecycle port now reads Activity Flex XML through the
 fixed IB HTTPS SendRequest/GetStatement endpoints. Settings are
 `ib_flex_query_id`, `ib_flex_accounts` (a comma-separated native account allowlist),
 and the secret `ib_flex_token`. Inject the token through the existing Runner
-credential/deployment secret mechanism; do not put it in profile config, request
-bodies, logs or source control. There is no separate trading adapter. The current
-IB profile management API still treats deployment credentials as read-only.
+encrypted credential store; do not put it in profile config, logs or source
+control. There is no separate trading adapter. The authenticated Runner admin
+endpoint `PATCH /broker/admin/profiles/{profile_id}/flex` takes
+`config: {ib_flex_query_id, ib_flex_accounts}` and optional
+`secret_action: replace` with `secrets: {ib_flex_token}`. Use the existing
+`If-Match` revision and `Idempotency-Key` headers. `keep` retains the token;
+`clear` removes it. Empty query and allowlist disable Web Flex while retaining
+manual import. The response returns public configuration and credential presence,
+never the token. Saving replaces only the report reader, including for the active
+IB account, and is restored from the store at startup. Gateway connection settings
+remain deployment managed. Installer import stores an environment Flex token in
+the same encrypted store; once configured there, clearing it cannot restore a
+legacy environment token.
 
 Use an Activity query with OptionEAE, Trades, OpenPositions and CashTransactions.
 The `ib-flex-eae-v1` parser accepts yyyyMMdd or ISO dates and retains the original
