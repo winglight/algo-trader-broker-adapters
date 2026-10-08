@@ -300,11 +300,11 @@ class AlpacaOptionReads:
         from .options_reconciliation import reconcile
         return await reconcile(self, request, resolve_order=resolve_order)
 
-    async def option_lifecycle_events(self, request, *, retain_evidence=None):
+    async def option_lifecycle_events(self, request, *, retain_evidence=None, lifecycle_state=None):
         from .options_lifecycle import read
-        return await read(self, request, retain_evidence=retain_evidence)
+        return await read(self, request, retain_evidence=retain_evidence, lifecycle_state=lifecycle_state)
 
-    async def option_account_state(self, request, *, retain_lifecycle=None):
+    async def option_account_state(self, request, *, retain_lifecycle=None, lifecycle_state=None):
         activities, lifecycle_events, unresolved, cursor = None, [], [], None
         fees, fee_reasons = (), ()
         cash_executions = None
@@ -312,7 +312,8 @@ class AlpacaOptionReads:
             seen = set()
             for _ in range(100):
                 activities = await self.option_lifecycle_events(ActivityQuery(**{name: getattr(request, name)
-                    for name in OptionScope.__dataclass_fields__}, since=None, cursor=cursor, limit=100), retain_evidence=retain_lifecycle)
+                    for name in OptionScope.__dataclass_fields__}, since=None, cursor=cursor, limit=100),
+                    retain_evidence=retain_lifecycle, lifecycle_state=lifecycle_state)
                 lifecycle_events.extend(activities.events)
                 unresolved.extend(activities.unresolved_refs)
                 cursor = activities.next_cursor

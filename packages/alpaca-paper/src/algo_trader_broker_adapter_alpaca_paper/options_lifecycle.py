@@ -34,7 +34,8 @@ def records(raw):
 def event(parent, delivery, contract, *, observed, raw_ref):
     kind = KINDS[parent["activity_type"]]
     day = parent["date"]
-    check(date.fromisoformat(day).isoformat() == day and parent["status"] == "executed", "Lifecycle date or status is unresolved")
+    check(date.fromisoformat(day).isoformat() == day and parent["status"] in {"executed", "correct", "canceled"},
+          "Lifecycle date or status is unresolved")
     qty = Decimal(signed_decimal(parent["qty"]))
     delta = whole(qty.copy_abs()) * (-1 if qty < 0 else 1)
     check(delta != 0 and signed_decimal(parent["net_amount"]) == "0", "Unrecognized option lifecycle quantity or cash")
@@ -43,7 +44,7 @@ def event(parent, delivery, contract, *, observed, raw_ref):
     if kind != "EXPIRATION":
         check(delivery is not None and delivery["activity_type"] == "OPTRD"
               and (delivery["id"], delivery["date"], delivery["symbol"], delivery["status"]) ==
-              (parent["id"], day, contract.key.underlying, "executed"), "Matching native delivery is required")
+              (parent["id"], day, contract.key.underlying, parent["status"]), "Matching native delivery is required")
         quantity = Decimal(signed_decimal(delivery["qty"]))
         shares = whole(quantity.copy_abs()) * (-1 if quantity < 0 else 1)
         check(shares == -delta * contract.key.multiplier * (1 if contract.key.right == "C" else -1), "Delivery quantity differs from contract")
@@ -56,7 +57,7 @@ def event(parent, delivery, contract, *, observed, raw_ref):
         "ALPACA_OPTION_NTA", 1, None, raw_ref, effective_date=day)
 
 
-async def read(adapter, request, *, retain_evidence):
+async def read(adapter, request, *, retain_evidence, lifecycle_state=None):
     check(type(request) is ActivityQuery and retain_evidence is not None, "Lifecycle reads require a scoped query and durable evidence archive")
     bound, _, _ = await adapter._option_bound(request)
     async def retain(raw):
@@ -111,7 +112,12 @@ async def read(adapter, request, *, retain_evidence):
             delivery, delivery_raw = deliveries.get(parent["id"], (None, None))
             proof = b"[" + original + (b"," + delivery_raw if delivery_raw is not None else b"") + b"]"
             reference = await retain(proof)
-            events.append(event(parent, delivery, contract, observed=observed, raw_ref=reference))
+            item = event(parent, delivery, contract, observed=observed, raw_ref=reference)
+            if lifecycle_state is not None:
+                item = await lifecycle_state.record(item, parent["status"])
+            else:
+                check(parent["status"] == "executed", "Native corrections require durable lifecycle state")
+            events.append(item)
         except (BrokerContractError, KeyError, ValueError, TypeError, InvalidOperation):
             unresolved.append(identity)
     adapter._option_still_bound(bound)
