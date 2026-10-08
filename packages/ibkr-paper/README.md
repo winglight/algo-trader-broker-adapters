@@ -165,9 +165,24 @@ Account receives explicit signed option changes and linked gross delivery cash
 before refreshing current funds. A finished report page does not certify
 account-wide lifecycle coverage through the current time. The synthetic native
 walkthrough and Account/Orders database flow verify the current layout; real
-account sample certification, corrected-statement revisions/day watermarks,
-manual XML upload and profile-management configuration remain follow-up work.
+account sample certification and profile-management configuration remain follow-up work.
 Exercise instructions remain disabled.
+
+Official XML can also be uploaded through the options-authenticated Account
+`/internal/options/v1/accounts/{account_id}/lifecycle/flex/import` endpoint, then
+the Account-only Runner `/broker/options/v1/lifecycle/flex/import` endpoint.
+The typed request carries a complete execution context, SHA-256 and base64 of
+the original bytes (up to 8 MiB). No caller-supplied financial events are accepted.
+The native account must match the currently verified connection; without a web
+query/token, imported statements remain readable through the normal lifecycle port.
+
+Runner persists statements and economic event revisions under the stable account.
+Repeated files are idempotent; a newer report can correct quantity/cash while
+retaining the prior revision. Older reports cannot roll back a correction.
+Only fully parsed reports advance per-day coverage, using their native date range
+and local generation time. A missing row in a newer report remains an explicit
+removal review, not an invented zero-quantity reversal. Source certification and
+explicit broker cancellation/reversal mapping are still required for completeness.
 
 Sources: [IB Flex transport](https://www.ibkrguides.com/brokerportal/performanceandstatements/flex3.htm),
 [error codes](https://www.ibkrguides.com/orgportal/performanceandstatements/flex3error.htm),

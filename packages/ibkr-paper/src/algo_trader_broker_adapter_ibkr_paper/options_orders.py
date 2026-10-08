@@ -115,6 +115,11 @@ class IBOptionOrders:
         return await read(self, request, retain_evidence=retain_evidence,
             resolve_contract=resolve_contract, state_store=flex_state)
 
+    async def import_option_flex_statement(self, scope, raw, *, retain_evidence, resolve_contract, flex_state):
+        from .options_lifecycle import import_statement
+        return await import_statement(self, scope, raw, retain_evidence=retain_evidence,
+            resolve_contract=resolve_contract, state_store=flex_state)
+
     async def replace_option_order(self, request):
         return await self._unsupported_option_operation(request, OptionReplaceRequest, "OPTION_REPLACE_UNSUPPORTED")
 

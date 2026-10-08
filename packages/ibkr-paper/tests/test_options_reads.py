@@ -239,6 +239,13 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_sn
         pending = {}
         async def save(key, reference): pending[key] = reference
         store = SimpleNamespace(load=AsyncMock(side_effect=lambda key: pending.get(key)), save=save)
+        async def record_statement(raw, metadata, page):
+            store.saved_page = page
+            return page
+        async def read_statement_page(cursor, limit):
+            assert cursor is None and limit == 200
+            return getattr(store, "saved_page", None)
+        store.record, store.page = record_statement, read_statement_page
         monkeypatch.setattr(flex, "_download", download)
         page = await adapter.option_lifecycle_events(ActivityQuery(**values, since=None, cursor=None, limit=200),
             retain_evidence=retain, flex_state=store)

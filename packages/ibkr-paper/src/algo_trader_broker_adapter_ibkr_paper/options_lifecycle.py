@@ -1,6 +1,7 @@
 """Explicit Flex lifecycle rows and their broker-linked stock delivery."""
 
 from collections import Counter
+from dataclasses import replace
 from datetime import date
 from decimal import Decimal, InvalidOperation, localcontext
 from hashlib import sha256
@@ -67,10 +68,11 @@ def document(raw, account, accounts):
     # A selected empty section is different from an omitted report section.
     required = {"Trades", "OpenPositions", "CashTransactions"}
     missing = required - {item.tag for item in statement}
-    return dict(statement.attrib), start, end, rows, missing
+    metadata = {**statement.attrib, "_query_name": root.get("queryName"), "_from_date": start, "_to_date": end}
+    return metadata, start, end, rows, missing
 
 
-async def parse(raw, *, account, accounts, resolve_contract, retain, observed=None):
+async def parse(raw, *, account, accounts, resolve_contract, retain, observed=None, statement_store=None):
     file_ref = await retain(raw)
     check(file_ref == sha256(raw).hexdigest(), "Flex archive changed original statement")
     observed = observed or now_wire()
@@ -166,7 +168,10 @@ async def parse(raw, *, account, accounts, resolve_contract, retain, observed=No
             unresolved.append(file_ref + ":" + str(index))
     unresolved.extend(file_ref + ":" + str(i) for i, row in enumerate(rows)
         if row.get("assetCategory") == "STK" and i not in consumed)
-    return OptionActivityPage(tuple(events), None, not unresolved, observed, tuple(unresolved))
+    page = OptionActivityPage(tuple(events), None, not unresolved, observed, tuple(unresolved))
+    if statement_store is not None:
+        return await statement_store.record(raw, metadata, page)
+    return page
 
 
 async def read(adapter, request, *, retain_evidence, resolve_contract=None, state_store=None):
@@ -181,6 +186,10 @@ async def read(adapter, request, *, retain_evidence, resolve_contract=None, stat
             return QualificationResult(entry[1].canonical_id, "EXACT", entry[0], entry[1], ())
         # Cursor pages refer to immutable parsed statements within this bound
         # connection, not to a new HTTP query with a moving report window.
+        if state_store is not None and request.cursor is not None:
+            page = await state_store.page(request.cursor, request.limit)
+            check(page is not None, "Flex cursor has no persisted report")
+            return page
         if request.cursor is not None:
             saved = adapter._option_flex_pages.get(request.cursor)
             check(saved is not None and saved[0] == (bound.scope, request.since), "Flex cursor expired or changed scope")
@@ -189,13 +198,22 @@ async def read(adapter, request, *, retain_evidence, resolve_contract=None, stat
             try:
                 raw = await adapter._flex.fetch(bound.native_account_ref, retain_evidence, state_store=state_store)
             except BrokerCapabilityError as exc:
+                if state_store is not None and exc.code == "IB_FLEX_UNCONFIGURED":
+                    persisted = await state_store.page(None, request.limit)
+                    if persisted is not None:
+                        return persisted
                 return OptionActivityPage((), None, False, now_wire(), (exc.code,))
             except BrokerConnectionError:
                 return OptionActivityPage((), None, False, now_wire(), ("IB_FLEX_UNAVAILABLE",))
             if raw is None:
                 return OptionActivityPage((), None, False, now_wire(), ("IB_FLEX_PENDING",))
             page = await parse(raw, account=bound.native_account_ref, accounts=adapter._flex.accounts,
-                resolve_contract=resolve, retain=retain_evidence)
+                resolve_contract=resolve, retain=retain_evidence, statement_store=state_store)
+            if state_store is not None:
+                persisted = await state_store.page(None, request.limit)
+                if persisted is not None:
+                    return replace(persisted, complete=persisted.complete and page.complete,
+                        unresolved_refs=tuple(sorted(set(persisted.unresolved_refs + page.unresolved_refs))))
             # since is a creation-time query in this API. Flex supplies economic
             # dates; replay the bounded statement rather than silently lose late rows.
             offset = 0
@@ -209,3 +227,20 @@ async def read(adapter, request, *, retain_evidence, resolve_contract=None, stat
                 adapter._option_flex_pages.popitem(last=False)
         return OptionActivityPage(events, cursor, page.complete and cursor is None, page.observed_at, page.unresolved_refs)
     return await adapter._option_read(request, operation)
+
+
+async def import_statement(adapter, scope, raw, *, retain_evidence, resolve_contract, state_store):
+    check(retain_evidence is not None and resolve_contract is not None and state_store is not None,
+          "Flex import requires durable evidence, qualifications and statement storage")
+    async def operation(ib, bound):
+        accounts = adapter._flex.accounts or frozenset({bound.native_account_ref})
+        check(bound.native_account_ref in accounts, "Flex account is outside the configured allowlist")
+        # Invalid XML is retained for audit but never becomes a financial event.
+        check(await retain_evidence(raw) == sha256(raw).hexdigest(), "Flex archive changed source file")
+        try:
+            document(raw, bound.native_account_ref, accounts)
+        except (ValueError, KeyError, TypeError):
+            raise BrokerContractError("Invalid Flex statement metadata") from None
+        return await parse(raw, account=bound.native_account_ref, accounts=accounts,
+            resolve_contract=resolve_contract, retain=retain_evidence, statement_store=state_store)
+    return await adapter._option_read(scope, operation)
