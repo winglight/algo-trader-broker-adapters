@@ -18,7 +18,7 @@ STATUS = {"Submitted": "WORKING", "PreSubmitted": "WORKING", "PendingSubmit": "W
 
 
 async def validate_close(ib, contract, order):
-    """A SELL/CLOSE may consume only the current native long STK position."""
+    """A stock CLOSE reduces the current native position without crossing zero."""
     check(bool(order.account) and not order.modelCode and contract.currency == "USD",
           "Cash close requires an explicit native USD account")
     details = await asyncio.wait_for(ib.reqContractDetailsAsync(contract), 15)
@@ -30,10 +30,12 @@ async def validate_close(ib, contract, order):
     snapshot = await positions(ib, order.account, timeout=15)
     matches = [row for row in snapshot["positions"] if row["contract"]["conId"] == exact.conId]
     quantity = Decimal(str(order.totalQuantity))
+    native = Decimal(matches[0]['quantity']) if len(matches) == 1 else Decimal(0)
     check(len(matches) == 1 and matches[0]["contract"]["secType"] == "STK"
           and matches[0]["contract"]["symbol"] == exact.symbol and matches[0]["contract"]["currency"] == "USD"
-          and quantity.is_finite() and 0 < quantity <= Decimal(matches[0]["quantity"]),
-          "Cash close exceeds the native long position")
+          and quantity.is_finite() and order.action in {'BUY', 'SELL'}
+          and ((order.action == 'SELL' and native > 0) or (order.action == 'BUY' and native < 0))
+          and 0 < quantity <= abs(native), "Cash close exceeds the native position in its reducing direction")
     contract.conId = exact.conId
 
 

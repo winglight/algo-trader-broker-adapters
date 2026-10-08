@@ -547,15 +547,18 @@ class AlpacaPaperAdapter(AlpacaOptionReads):
             raise BrokerOrderError("Alpaca asset is not a US equity or ETF")
         if not asset_is_active(asset) or not bool(value(asset, "tradable", False)):
             raise BrokerOrderError("Alpaca asset is not active and tradable")
-        if request.side == "SELL":
+        if request.side == "SELL" or request.position_effect == 'CLOSE':
             current_qty = 0.0
             for position in await self._backend.get_positions():
                 if text(value(position, "symbol")).strip().upper() == symbol:
                     current_qty = number(value(position, "qty"))
                     break
-            if request.position_effect == "CLOSE" and request.quantity > max(0.0, current_qty):
-                raise BrokerOrderError("Owned cash close exceeds the native long position", code="cash_close_exceeds_position")
-            if request.quantity > max(0.0, current_qty) and not bool(value(asset, "shortable", False)):
+            if request.position_effect == "CLOSE" and (
+                request.side not in {'BUY','SELL'} or request.quantity > abs(current_qty)
+                or (request.side == 'BUY' and current_qty >= 0) or (request.side == 'SELL' and current_qty <= 0)
+            ):
+                raise BrokerOrderError("Owned cash close exceeds the native position in its reducing direction", code="cash_close_exceeds_position")
+            if request.side == 'SELL' and request.quantity > max(0.0, current_qty) and not bool(value(asset, "shortable", False)):
                 raise BrokerOrderError("Alpaca asset is not shortable")
         return asset
 
