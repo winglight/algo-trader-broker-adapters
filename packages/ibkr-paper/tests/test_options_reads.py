@@ -54,7 +54,12 @@ def flex_xml(contract, binding, *, account="DU-OPTIONS-FIXTURE", kind="Assignmen
             commisionsAndTax="0", tradeID="10002", relatedTradeID="10001")
     SubElement(rows, "OptionEAE", **parent)
     for name in ("Trades", "OpenPositions", "CashTransactions"):
-        SubElement(statement, name)
+        section = SubElement(statement, name)
+        if name == "CashTransactions":
+            for identity, kind, cash in (("31001", "Other Fees", "-0.12"),
+                                          ("31002", "Commission Adjustments", "0.02")):
+                SubElement(section, "CashTransaction", accountId=account, transactionID=identity,
+                    currency="USD", type=kind, amount=cash, dateTime=day + ";190000")
     return tostring(root)
 
 
@@ -246,6 +251,7 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_sn
             assert cursor is None and limit == 200
             return getattr(store, "saved_page", None)
         store.record, store.page = record_statement, read_statement_page
+        store.source_statement = AsyncMock(return_value=report)
         monkeypatch.setattr(flex, "_download", download)
         page = await adapter.option_lifecycle_events(ActivityQuery(**values, since=None, cursor=None, limit=200),
             retain_evidence=retain, flex_state=store)
@@ -256,6 +262,12 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_sn
         assert calls == [("SendRequest", "123"), ("GetStatement", "987"), ("GetStatement", "987")]
         assert list(pending.values()) == [None] and sha256(report).hexdigest() in retained
         assert len(state.activities) == 1
+        assert [(fee.source, fee.activity_id, fee.fee_cash, fee.effective_date,
+                 fee.effective_at, fee.broker_execution_id) for fee in state.fees] == [
+            ("IB_FLEX_ACCOUNT_FEE", "31001", "0.12", "2026-10-07", None, None),
+            ("IB_FLEX_ACCOUNT_FEE", "31002", "-0.02", "2026-10-07", None, None)]
+        assert not state.fees_complete and "IB_COMMISSION_RECONCILIATION_REQUIRED" in state.fee_quality_reasons
+        assert all(fee.raw_ref in retained for fee in state.fees)
         lifecycle = state.activities[0]
         assert (lifecycle.kind, lifecycle.signed_option_contracts_delta, lifecycle.delivered_shares,
                 lifecycle.cash_delta, lifecycle.effective_date, lifecycle.effective_at) == (

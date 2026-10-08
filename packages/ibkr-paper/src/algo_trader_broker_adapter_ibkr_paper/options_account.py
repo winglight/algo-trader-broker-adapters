@@ -141,6 +141,7 @@ async def permissions(adapter, request):
 async def account_state(adapter, request, *, retain_evidence=None, resolve_contract=None, flex_state=None):
     async def read(ib, bound):
         activities, lifecycle_reasons = [], []
+        fees, fee_reasons = (), ("IB_COMMISSION_RECONCILIATION_REQUIRED",)
         if retain_evidence is not None:
             query = ActivityQuery(**asdict(bound.scope), since=None, cursor=None, limit=200)
             for _ in range(100):
@@ -153,6 +154,14 @@ async def account_state(adapter, request, *, retain_evidence=None, resolve_contr
                 query = replace(query, cursor=page.next_cursor)
             else:
                 lifecycle_reasons.append("IB_FLEX_PAGE_LIMIT")
+            if flex_state is not None:
+                raw = await flex_state.source_statement()
+                if raw is not None:
+                    from .options_cash_fees import parse
+                    fees, cash_fee_reasons = await parse(raw, account=bound.native_account_ref, retain=retain_evidence)
+                    fee_reasons += cash_fee_reasons
+                else:
+                    fee_reasons += ("IB_FLEX_CASH_SOURCE_UNAVAILABLE",)
         async with adapter._option_account_read_lock:
             # Funds/positions have separate IDs; open orders has a shared end
             # marker and is read only when no other download is in progress.
@@ -235,10 +244,11 @@ async def account_state(adapter, request, *, retain_evidence=None, resolve_contr
         cash = await collect(bound.native_account_ref, working, completed, fills, retain=retain)
         checkpoint = await retain(dict(source="IB_ACCOUNT_SNAPSHOT", values=values, positions=inventory, orders=working,
                                       cost_evidence_refs=cost_refs, completed_orders=completed, executions=fills,
-                                      lifecycle_refs=[item.raw_ref for item in activities], lifecycle_unresolved=lifecycle_reasons))
+                                      lifecycle_refs=[item.raw_ref for item in activities], lifecycle_unresolved=lifecycle_reasons,
+                                      account_fee_refs=[item.raw_ref for item in fees], account_fee_unresolved=fee_reasons))
         return OptionAccountState(bound.scope, str(uuid4()), values["started_at"], now_wire(), "USD",
             read_money("NetLiquidation"), read_money("TotalCashValue"), read_money("AvailableFunds", required=False),
             raw_bp, "AVAILABLE_FUNDS" if any(item.name == "AvailableFunds" for item in raw_bp) else "UNKNOWN",
             checkpoint, tuple(exact), tuple(unresolved), tuple(refs), tuple(activities), True, False, False, False,
-            tuple(sorted(set(reasons))), (), False, ("IB_COMMISSION_RECONCILIATION_REQUIRED",), cash)
+            tuple(sorted(set(reasons))), fees, False, fee_reasons, cash)
     return await adapter._option_read(request, read)
