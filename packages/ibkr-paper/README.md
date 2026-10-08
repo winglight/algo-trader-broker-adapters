@@ -10,6 +10,14 @@ Only IBKR Paper accounts are in scope. Live trading is not enabled by this packa
 
 ## V9.2 option read foundation
 
+Position carrying costs now use the same account's retained `updatePortfolio`
+sample to verify the `positionMulti` avgCost unit. Account base currency must be
+USD; contract, quantity and average cost must match exactly, and the normalized
+cost must equal native market value minus unrealized P/L. Missing or mismatched
+samples leave the cost unit UNKNOWN. Sample objects, the rule and hashes are
+retained as evidence. The portfolio cache is not used as a live quote or current
+position source, and this verification creates no additional subscription.
+
 The existing adapter now has scoped `list_option_contracts`,
 `qualify_option_contracts`, `option_snapshot`, `option_capabilities`,
 `option_account_permissions`, `option_account_state`, `stream_option_quotes`,
@@ -40,7 +48,7 @@ Account observations use explicit-account `reqAccountUpdatesMulti` and
 download. Callback observations are retained through the existing evidence
 archive when supplied. USD `AvailableFunds` is kept separate from stock
 `BuyingPower`; position conIds are qualified again. Original `avgCost` stays in
-its unverified unit until source certification. Native permIds are stable order
+its unverified unit until a matching native cost sample is available. Native permIds are stable order
 references; missing permIds preserve client/order/generation identity. Manual
 order visibility, executions, lifecycle and commission coverage remain explicitly
 incomplete. These reads do not grant option approval or enable trading.

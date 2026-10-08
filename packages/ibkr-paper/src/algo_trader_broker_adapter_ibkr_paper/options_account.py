@@ -3,7 +3,7 @@
 import asyncio
 from collections.abc import Mapping
 from datetime import timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, localcontext
 from hashlib import sha256
 from uuid import uuid4
 
@@ -14,7 +14,7 @@ from algo_trader_broker_sdk.options_account import (
     OptionAccountState, UnresolvedOptionPosition,
 )
 
-from .options_account_native import account_values, open_orders, positions, raw_bytes
+from .options_account_native import account_values, open_orders, positions, raw_bytes, raw_value
 from .options_reads import contract_from_details, native_decimal, now_wire
 
 
@@ -56,6 +56,58 @@ def native_order_reference(row, scope):
     return NativeOrderReference(f"IBKR_CLIENT_{client_id}_GEN_{scope.expected_generation}", str(order_id)), True
 
 
+def position_cost(row, portfolio, account, *, base_usd):
+    """Verify the current position's unit against a native account sample.
+
+    The existing updatePortfolio cache supplies market value and unrealized P/L
+    from one callback. It is used only to verify carrying-cost units, never as a
+    fresh quote or position snapshot. No subscription is created or replaced.
+    """
+    try:
+        cost = signed_decimal(row["average_cost"])
+    except BrokerContractError:
+        return None, "UNKNOWN", None
+    fallback = cost, "UNKNOWN", None
+    if not base_usd or portfolio is None:
+        return fallback
+    try:
+        native, contract = row["contract"], portfolio.contract
+        check(portfolio.account == account and contract.secType == "OPT" and contract.currency == "USD" and
+              all(str(getattr(contract, name)) == str(native[name]) for name in (
+                  "conId", "localSymbol", "symbol", "right", "lastTradeDateOrContractMonth")) and
+              native_decimal(contract.strike) == native_decimal(native["strike"]) and
+              native_decimal(contract.multiplier) == native_decimal(native["multiplier"]),
+              "Portfolio cost sample differs from the qualified position")
+        quantity = Decimal(signed_decimal(row["quantity"]))
+        average = Decimal(cost)
+        check(Decimal(signed_decimal(portfolio.position)) == quantity and
+              Decimal(signed_decimal(portfolio.averageCost)) == average,
+              "Portfolio cost sample differs from current quantity or average cost")
+        with localcontext() as context:
+            context.prec = 160
+            cash = Decimal(signed_decimal(portfolio.marketValue)) - Decimal(signed_decimal(portfolio.unrealizedPNL))
+            check((quantity != 0 or cash == 0) and cash * quantity >= 0, "Invalid signed portfolio cost")
+            candidates = {"CASH_TOTAL": average}
+            if average >= 0:
+                candidates.update(CASH_PER_CONTRACT=average * quantity,
+                    PREMIUM_PER_UNIT=average * quantity * Decimal(native_decimal(contract.multiplier)))
+            matches = [unit for unit, value in candidates.items() if value == cash]
+        if not matches:
+            return fallback
+        # With one contract or zero cost, several units can yield the same
+        # cash. Use the independently observed total for this position only;
+        # do not certify an ambiguous avgCost unit for other positions.
+        unit = matches[0] if len(matches) == 1 else "CASH_TOTAL"
+        value = cost if len(matches) == 1 else signed_decimal(cash)
+        proof = dict(source="IB_POSITION_COST_SAMPLE", rule="native-portfolio-cost-v1", account=account,
+            position=row, portfolio=raw_value(portfolio._asdict()), retrieved_at=now_wire(),
+            cost_cash=signed_decimal(cash), raw_cost_value=value, raw_cost_unit=unit,
+            basis="AVG_COST_UNIT_MATCH" if len(matches) == 1 else "PORTFOLIO_VALUE_MINUS_UNREALIZED_PNL")
+        return value, unit, proof
+    except (BrokerContractError, InvalidOperation, ValueError, TypeError):
+        return fallback
+
+
 async def permissions(adapter, request):
     async def read(ib, bound):
         async with adapter._option_account_read_lock:
@@ -94,6 +146,9 @@ async def account_state(adapter, request, *, retain_evidence=None):
             inventory = await positions(ib, bound.native_account_ref, timeout=adapter._qualification_timeout)
             working = await open_orders(ib, bound.native_account_ref, timeout=adapter._qualification_timeout)
         read_money, raw_bp, not_ready = money_values(values)
+        base_usd = {(row["tag"], row["currency"]): row["value"] for row in values["values"]}.get(("Currency", "BASE")) == "USD"
+        portfolio = {item.contract.conId: item for item in ib.portfolio(bound.native_account_ref)}
+        cost_refs = []
         exact, unresolved, underlyings = [], [], {}
         reasons = ["EXECUTION_RECONCILIATION_REQUIRED", "LIFECYCLE_RECONCILIATION_REQUIRED",
                    "IB_MANUAL_ORDER_VISIBILITY_UNVERIFIED"]
@@ -138,13 +193,11 @@ async def account_state(adapter, request, *, retain_evidence=None):
                 number = decimal_wire(quantity)
                 check(number == number.to_integral_value(), "Option inventory must be whole contracts")
                 binding = adapter._remember_contract(bound, detail, contract)
-                # Native avgCost is retained. Unit certification for this TWS
-                # source is still pending; never guess it from multiplier=100.
-                try:
-                    cost = signed_decimal(row["average_cost"])
-                except BrokerContractError:
-                    cost = None
-                exact.append(OptionAccountPosition(contract, binding, position_ref, int(number), cost, "UNKNOWN",
+                cost, unit, proof = position_cost(row, portfolio.get(con_id), bound.native_account_ref, base_usd=base_usd)
+                if proof is not None:
+                    raw_ref = await retain(proof)
+                    cost_refs.append(raw_ref)
+                exact.append(OptionAccountPosition(contract, binding, position_ref, int(number), cost, unit,
                     raw_ref, raw_ref, row["received_at"], row["received_at"]))
             except BrokerContractError:
                 unresolved.append(UnresolvedOptionPosition(position_ref, str(con_id), asset or "UNKNOWN", quantity,
@@ -159,7 +212,8 @@ async def account_state(adapter, request, *, retain_evidence=None):
             reasons.append("UNRESOLVED_OPTION_POSITIONS")
         if any(item.raw_cost_unit == "UNKNOWN" for item in exact):
             reasons.append("IB_POSITION_COST_UNIT_UNVERIFIED")
-        checkpoint = await retain(dict(source="IB_ACCOUNT_SNAPSHOT", values=values, positions=inventory, orders=working))
+        checkpoint = await retain(dict(source="IB_ACCOUNT_SNAPSHOT", values=values, positions=inventory, orders=working,
+                                      cost_evidence_refs=cost_refs))
         return OptionAccountState(bound.scope, str(uuid4()), values["started_at"], now_wire(), "USD",
             read_money("NetLiquidation"), read_money("TotalCashValue"), read_money("AvailableFunds", required=False),
             raw_bp, "AVAILABLE_FUNDS" if any(item.name == "AvailableFunds" for item in raw_bp) else "UNKNOWN",

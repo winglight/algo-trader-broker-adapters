@@ -3,6 +3,7 @@
 import asyncio
 from dataclasses import asdict, replace
 from datetime import datetime, timezone, timedelta
+from decimal import Decimal
 from copy import deepcopy
 import json
 from itertools import count
@@ -137,6 +138,12 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, exercise_o
                     ib.client.decoder.interpret(["71", "1", str(req_id), account, str(1000 + strike),
                         "SPY", "OPT", "20261016", str(strike), "C", "100", "", "USD",
                         f"SPY   261016C{strike * 1000:08d}", "SPY", qty, cost, ""])
+                    contract = adapter._option_catalog[str(1000 + strike)][2].contract
+                    # Same native account's existing portfolio callback gives
+                    # an independent total-cost sample; it is not a new quote.
+                    ib.wrapper.updatePortfolio(contract, Decimal(qty), 2.5 if strike == 590 else 1.0,
+                        500.0 if strike == 590 else -200.0, float(cost),
+                        20.0 if strike == 590 else -20.0, 0.0, account)
                 ib.client.decoder.interpret(["72", "1", str(req_id)])
             asyncio.get_running_loop().call_soon(receive)
 
@@ -166,7 +173,11 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, exercise_o
         assert {v.name: v.value for v in state.raw_buying_power} == {"AvailableFunds": "8000", "BuyingPower": "32000"}
         assert [p.signed_contracts for p in state.positions] == [2, -2]
         assert [p.raw_cost_value for p in state.positions] == ["240", "90"]
-        assert all(p.raw_cost_unit == "UNKNOWN" and p.raw_ref in retained for p in state.positions)
+        assert all(p.raw_cost_unit == "CASH_PER_CONTRACT" and p.raw_ref in retained for p in state.positions)
+        proofs = [json.loads(retained[p.raw_ref]) for p in state.positions]
+        assert [proof["cost_cash"] for proof in proofs] == ["480", "-180"]
+        assert all(proof["source"] == "IB_POSITION_COST_SAMPLE" and proof["account"] == "DU-OPTIONS-FIXTURE" for proof in proofs)
+        assert "IB_POSITION_COST_UNIT_UNVERIFIED" not in state.quality_reasons
         assert state.positions_complete and not state.unresolved_positions
         assert not state.orders_complete and not state.executions_complete and not state.lifecycle_complete
         assert [(r.broker_order_session_key, r.broker_order_id) for r in state.open_order_refs] == [("IBKR_PERM_ID", "19001")]
