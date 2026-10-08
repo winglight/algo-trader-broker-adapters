@@ -499,6 +499,26 @@ async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None,
         revised = unique[corrected.execId]
         assert revised.revision.original_execution_id == original_execution.execId and revised.revision.revision == 2
         assert all(fee.fee_cash == ("0.6" if fee.revision is not None else "0.65") for fee in fees)
+        if gate_factory is None:
+            # Continue the native read/send walkthrough with the admitted cash
+            # order control port, preserving completedOrder's explicit zero fill.
+            from algo_trader_broker_sdk.cash_control import CashOrderQuery
+            cash_order = Order(orderId=990, clientId=40, permId=20990, orderRef="fixture-cash",
+                account="DU-OPTIONS-FIXTURE", action="BUY", orderType="LMT", totalQuantity=1,
+                lmtPrice=20, tif="DAY", filledQuantity=0)
+            native_orders[990] = [Stock("SPY", "SMART", "USD", conId=100), cash_order, OrderState(status="Submitted")]
+            cash = CashOrderQuery(**asdict(scope), client_order_id="fixture-cash", broker_order_id="990",
+                instrument_id="IBKR:100", symbol="SPY", side="BUY", quantity="1", limit_price="20", tif="DAY")
+            before = await adapter.read_cash_order(cash)
+            assert before.state.status == "WORKING" and before.state.filled_quantity is None
+            async def retain_cash(raw):
+                stored.append(raw)
+            cash_gate = SubmissionGate(validate, lambda: None, retain_native=retain_cash)
+            assert await adapter.cancel_cash_order_guarded(cash, cash_gate) == "REQUESTED" and cash_gate.consumed
+            terminal = await adapter.read_cash_order(cash)
+            assert terminal.state.status == "CANCELLED" and terminal.state.filled_quantity == "0"
+            assert json.loads(terminal.raw_payload)["completed"] is True
+            assert json.loads(stored[-1])["source"] == "IB_CASH_CANCEL"
     finally:
         await adapter._option_events.flush()
         adapter.set_option_event_handler(OptionVerifiedAccount(scope, "IBKR", "DU-OPTIONS-FIXTURE"), None)

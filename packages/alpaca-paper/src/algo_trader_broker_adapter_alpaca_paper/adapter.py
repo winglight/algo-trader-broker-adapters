@@ -664,6 +664,16 @@ class AlpacaPaperAdapter(AlpacaOptionReads):
                 return
             raise exc
 
+    cash_order_control_version = 1
+
+    async def read_cash_order(self, request):
+        from .cash_control import read
+        return await read(self, request)
+
+    async def cancel_cash_order_guarded(self, request, gate):
+        from .cash_control import cancel
+        return await cancel(self, request, gate)
+
     async def request_open_orders(self) -> list[TradeUpdate]:
         await self.ensure_connected()
         return await self.request_open_orders_unchecked()

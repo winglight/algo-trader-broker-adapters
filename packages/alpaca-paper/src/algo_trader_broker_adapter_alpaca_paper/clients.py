@@ -216,6 +216,9 @@ class AlpacaClients:
                     submission_gate.cancel()
 
     async def cancel_option_order_raw(self, order_id, *, submission_gate):
+        return await self.cancel_order_raw(order_id, submission_gate=submission_gate)
+
+    async def cancel_order_raw(self, order_id, *, submission_gate, native_preparation=None):
         """A single DELETE acceptance; order status still comes from evidence reads."""
         import httpx
         from .options_codec import _uuid
@@ -226,15 +229,17 @@ class AlpacaClients:
                 timeout=self.settings.request_timeout_seconds, transport=self._option_http_transport) as client:
                 try:
                     await submission_gate.prepare()
+                    if native_preparation is not None:
+                        await submission_gate.record_native(native_preparation)
                     submission_gate.consume()
                     async with client.stream("DELETE", "/v2/orders/" + order_id) as response:
                         if response.status_code == 204:
                             return "REQUESTED"
                         if response.status_code == 422:
                             return "NOT_CANCELABLE"
-                        raise BrokerOrderError("Option cancellation needs reconciliation", code="broker_order_outcome_unknown")
+                        raise BrokerOrderError("Cancellation needs reconciliation", code="broker_order_outcome_unknown")
                 except (httpx.HTTPError, TimeoutError):
-                    raise BrokerOrderError("Option cancellation outcome is unknown", code="broker_order_outcome_unknown") from None
+                    raise BrokerOrderError("Cancellation outcome is unknown", code="broker_order_outcome_unknown") from None
                 finally:
                     submission_gate.cancel()
 
