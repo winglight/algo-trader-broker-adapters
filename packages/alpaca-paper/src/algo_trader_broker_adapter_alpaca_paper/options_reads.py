@@ -18,7 +18,8 @@ from algo_trader_broker_sdk.options import (
     QualificationResult, SnapshotRequest, check, option_contract_id, timestamp,
 )
 from algo_trader_broker_sdk.options_account import (
-    NativeBuyingPower, NativeOrderReference, OptionAccountPermissions, OptionAccountPosition, OptionAccountState, UnresolvedOptionPosition,
+    NativeBuyingPower, NativeOrderReference, NativeStockInventory, NativeStockPosition,
+    OptionAccountPermissions, OptionAccountPosition, OptionAccountState, UnresolvedOptionPosition,
 )
 from algo_trader_broker_sdk.options_capabilities import OptionCapabilities, OptionCapability, OptionShapeCapability
 
@@ -326,7 +327,7 @@ class AlpacaOptionReads:
             cash_executions = await read_cash(self, request, retain_evidence=retain_lifecycle)
         # Read money after booked activities; Risk additionally matches every
         # retained native order/asset/execution before removing duplicate funds.
-        state, _, _ = await self._option_account_snapshot(request)
+        state, _, _ = await self._option_account_snapshot(request, retain_evidence=retain_lifecycle)
         if activities is not None:
             reasons = state.quality_reasons
             if cursor is not None: reasons += ("LIFECYCLE_PAGE_INCOMPLETE",)
@@ -335,19 +336,39 @@ class AlpacaOptionReads:
                 fees=fees, fee_quality_reasons=fee_reasons, cash_executions=cash_executions)
         return state
 
-    async def _option_account_snapshot(self, request):
+    async def _option_account_snapshot(self, request, *, retain_evidence=None):
         bound, account, account_raw = await self._option_bound(request)
         check(account.get("currency") == "USD", "Option account currency must be explicit USD")
         position_raw = await self._backend.get_option_resource("/v2/positions")
         order_raw = await self._backend.get_option_resource("/v2/orders", params=dict(status="open", limit=500, nested="true"))
         positions, orders = decode_native(position_raw), decode_native(order_raw)
         check(type(positions) is list and type(orders) is list, "Native account collections are invalid")
+        check(len(positions) <= 10000, "Native positions exceed account evidence bound")
         pos_hash = self._remember_option_read(position_raw)
+        if retain_evidence is not None:
+            check(await retain_evidence(position_raw) == pos_hash, "Position archive changed native collection")
         self._remember_option_read(order_raw)
         exact, unresolved, observed = [], [], now_wire()
+        stocks, stock_reasons = [], [] if retain_evidence is not None else ["STOCK_RAW_ARCHIVE_UNAVAILABLE"]
         for position in positions:
             asset_class = position.get("asset_class")
-            if asset_class in {"us_equity", "crypto"}: continue
+            if asset_class == "us_equity":
+                try:
+                    check(position.get('currency','USD') == 'USD', 'Native US equity currency differs')
+                    quantity = signed_decimal(position['qty'])
+                    if position.get('side') == 'short' and Decimal(quantity) > 0:
+                        quantity = '-' + quantity
+                    check(position.get('side') in {'long','short'} and
+                        (Decimal(quantity) == 0 or (Decimal(quantity) < 0) == (position['side'] == 'short')),
+                        'Native stock quantity and direction disagree')
+                    stocks.append(NativeStockPosition('ALPACA:' + _uuid(position['asset_id']), position['symbol'],
+                        quantity, 'USD', pos_hash, observed, observed))
+                except (BrokerContractError, KeyError, ValueError, TypeError, InvalidOperation):
+                    stock_reasons.append('STOCK_POSITION_UNRESOLVED')
+                continue
+            if asset_class == "crypto": continue
+            if asset_class != 'us_option':
+                stock_reasons.append('STOCK_ASSET_CLASS_UNRESOLVED')
             native_id, symbol = _uuid(position["asset_id"]), position["symbol"]
             quantity = signed_decimal(position["qty"])
             if position.get("side") == "short" and Decimal(quantity) > 0: quantity = "-" + quantity
@@ -380,5 +401,7 @@ class AlpacaOptionReads:
         if unresolved: reasons += ("UNRESOLVED_OPTION_POSITIONS",)
         state = OptionAccountState(bound.scope, str(uuid4()), observed, received, "USD", signed_decimal(account["equity"]),
             signed_decimal(account["cash"]), bp, raw_bp, "OPTIONS_BUYING_POWER" if bp is not None else "UNKNOWN",
-            checkpoint, tuple(exact), tuple(unresolved), open_refs, (), True, len(orders) < 500, False, False, reasons)
+            checkpoint, tuple(exact), tuple(unresolved), open_refs, (), True, len(orders) < 500, False, False, reasons,
+            stock_inventory=NativeStockInventory('ALPACA_POSITIONS',tuple(stocks),not stock_reasons,
+                tuple(sorted(set(stock_reasons))),observed,received,pos_hash))
         return state, bound, order_raw

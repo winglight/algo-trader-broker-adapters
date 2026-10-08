@@ -184,6 +184,7 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_sn
                     ib.wrapper.updatePortfolio(contract, Decimal(qty), 2.5 if strike == 590 else 1.0,
                         500.0 if strike == 590 else -200.0, float(cost),
                         20.0 if strike == 590 else -20.0, 0.0, account)
+                ib.wrapper.positionMulti(req_id,account,'',Stock('SPY','SMART','USD',conId=100),Decimal('-100'),0.)
                 ib.client.decoder.interpret(["72", "1", str(req_id)])
             asyncio.get_running_loop().call_soon(receive)
 
@@ -302,6 +303,11 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_sn
         assert all(proof["source"] == "IB_POSITION_COST_SAMPLE" and proof["account"] == "DU-OPTIONS-FIXTURE" for proof in proofs)
         assert "IB_POSITION_COST_UNIT_UNVERIFIED" not in state.quality_reasons
         assert state.positions_complete and not state.unresolved_positions
+        stock = state.stock_inventory
+        assert stock.complete and stock.source == 'IB_POSITION_MULTI'
+        assert [(item.instrument_id,item.symbol,item.signed_quantity) for item in stock.positions] == [('IBKR:100','SPY','-100')]
+        assert stock.raw_ref in retained and stock.positions[0].raw_ref in retained
+        assert json.loads(retained[stock.raw_ref])['source'] == 'IB_POSITION_MULTI'
         assert not state.orders_complete and not state.executions_complete and not state.lifecycle_complete
         assert [(r.broker_order_session_key, r.broker_order_id) for r in state.open_order_refs] == [("IBKR_PERM_ID", "19001")]
         assert state.source_checkpoint in retained
