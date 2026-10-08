@@ -86,6 +86,8 @@ class StockOrderRequest:
         )
         result = _CONTRACT_FACTORY.build(params)
         contract = result.contract
+        if self.contract_id is not None:
+            contract.conId = self.contract_id
         order = _build_order(
             side=self.side,
             quantity=self.quantity,

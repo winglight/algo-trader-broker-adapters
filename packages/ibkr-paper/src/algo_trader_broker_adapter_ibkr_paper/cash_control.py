@@ -8,13 +8,33 @@ from algo_trader_broker_sdk import SubmissionGate, BrokerContractError
 from algo_trader_broker_sdk.cash_control import CashOrderQuery, CashOrderState, CashOrderEvidence
 from algo_trader_broker_sdk.options import check
 
-from .options_account_native import open_orders, completed_orders, raw_bytes
+from .options_account_native import open_orders, completed_orders, positions, raw_bytes
 from .options_orders import transport_ready
 from .options_reads import native_decimal, now_wire
 
 STATUS = {"Submitted": "WORKING", "PreSubmitted": "WORKING", "PendingSubmit": "WORKING",
           "PendingCancel": "CANCEL_PENDING", "Cancelled": "CANCELLED", "ApiCancelled": "CANCELLED",
           "Filled": "FILLED"}
+
+
+async def validate_close(ib, contract, order):
+    """A SELL/CLOSE may consume only the current native long STK position."""
+    check(bool(order.account) and not order.modelCode and contract.currency == "USD",
+          "Cash close requires an explicit native USD account")
+    details = await asyncio.wait_for(ib.reqContractDetailsAsync(contract), 15)
+    check(len(details) == 1, "Cash close contract did not qualify uniquely")
+    exact = details[0].contract
+    check(exact.secType == "STK" and exact.symbol == contract.symbol and exact.currency == contract.currency
+          and exact.conId > 0 and (not contract.conId or exact.conId == contract.conId),
+          "Cash close changed its qualified asset")
+    snapshot = await positions(ib, order.account, timeout=15)
+    matches = [row for row in snapshot["positions"] if row["contract"]["conId"] == exact.conId]
+    quantity = Decimal(str(order.totalQuantity))
+    check(len(matches) == 1 and matches[0]["contract"]["secType"] == "STK"
+          and matches[0]["contract"]["symbol"] == exact.symbol and matches[0]["contract"]["currency"] == "USD"
+          and quantity.is_finite() and 0 < quantity <= Decimal(matches[0]["quantity"]),
+          "Cash close exceeds the native long position")
+    contract.conId = exact.conId
 
 
 async def native_read(adapter, ib, bound, request):
@@ -49,7 +69,10 @@ async def native_read(adapter, ib, bound, request):
         except (BrokerContractError, KeyError):
             pass
     raw = raw_bytes(dict(source="IB_CASH_ORDER", completed=done, account=bound.native_account_ref, observation=item))
-    native_id = str(order["orderId"]) if order["orderId"] > 0 else request.broker_order_id or str(order["permId"])
+    # completedOrder omits the API orderId. Keep the permanent identity for
+    # Account execution matching; the original query still carries the API ID
+    # used by the current client's cancellation port.
+    native_id = "IBKR_PERM_ID:" + str(order["permId"])
     state = CashOrderState(request, native_id, STATUS.get(item["state"]["status"], "UNKNOWN"), filled,
         sha256(raw).hexdigest(), now_wire())
     return CashOrderEvidence(state, raw), item

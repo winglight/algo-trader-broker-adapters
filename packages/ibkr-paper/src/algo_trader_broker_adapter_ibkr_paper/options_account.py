@@ -14,7 +14,7 @@ from algo_trader_broker_sdk.options_account import (
     OptionAccountState, UnresolvedOptionPosition,
 )
 
-from .options_account_native import account_values, open_orders, positions, raw_bytes, raw_value
+from .options_account_native import account_values, open_orders, completed_orders, executions, positions, raw_bytes, raw_value
 from .options_reads import contract_from_details, native_decimal, now_wire
 
 
@@ -142,9 +142,12 @@ async def account_state(adapter, request, *, retain_evidence=None):
         async with adapter._option_account_read_lock:
             # Funds/positions have separate IDs; open orders has a shared end
             # marker and is read only when no other download is in progress.
-            values = await account_values(ib, bound.native_account_ref, timeout=adapter._qualification_timeout)
             inventory = await positions(ib, bound.native_account_ref, timeout=adapter._qualification_timeout)
             working = await open_orders(ib, bound.native_account_ref, timeout=adapter._qualification_timeout)
+            completed = await completed_orders(ib, bound.native_account_ref, timeout=adapter._qualification_timeout)
+            fills = await executions(ib, bound.native_account_ref, timeout=adapter._qualification_timeout)
+            # Funds follow the execution observation used to prove cash booking.
+            values = await account_values(ib, bound.native_account_ref, timeout=adapter._qualification_timeout)
         read_money, raw_bp, not_ready = money_values(values)
         base_usd = {(row["tag"], row["currency"]): row["value"] for row in values["values"]}.get(("Currency", "BASE")) == "USD"
         portfolio = {item.contract.conId: item for item in ib.portfolio(bound.native_account_ref)}
@@ -212,11 +215,13 @@ async def account_state(adapter, request, *, retain_evidence=None):
             reasons.append("UNRESOLVED_OPTION_POSITIONS")
         if any(item.raw_cost_unit == "UNKNOWN" for item in exact):
             reasons.append("IB_POSITION_COST_UNIT_UNVERIFIED")
+        from .cash_account import collect
+        cash = await collect(bound.native_account_ref, working, completed, fills, retain=retain)
         checkpoint = await retain(dict(source="IB_ACCOUNT_SNAPSHOT", values=values, positions=inventory, orders=working,
-                                      cost_evidence_refs=cost_refs))
+                                      cost_evidence_refs=cost_refs, completed_orders=completed, executions=fills))
         return OptionAccountState(bound.scope, str(uuid4()), values["started_at"], now_wire(), "USD",
             read_money("NetLiquidation"), read_money("TotalCashValue"), read_money("AvailableFunds", required=False),
             raw_bp, "AVAILABLE_FUNDS" if any(item.name == "AvailableFunds" for item in raw_bp) else "UNKNOWN",
             checkpoint, tuple(exact), tuple(unresolved), tuple(refs), (), True, False, False, False,
-            tuple(sorted(set(reasons))), (), False, ("IB_COMMISSION_RECONCILIATION_REQUIRED",))
+            tuple(sorted(set(reasons))), (), False, ("IB_COMMISSION_RECONCILIATION_REQUIRED",), cash)
     return await adapter._option_read(request, read)

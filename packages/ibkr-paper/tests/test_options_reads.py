@@ -34,7 +34,7 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, exercise_o
     ib = IB()
     monkeypatch.setattr(ib, "isConnected", lambda: True)
     monkeypatch.setattr(ib, "managedAccounts", lambda: ["DU-OPTIONS-FIXTURE"])
-    request_ids, canceled, queries = count(1), [], []
+    request_ids, canceled, queries = count(1000), [], []
     monkeypatch.setattr(ib.client, "getReqId", lambda: next(request_ids))
     monkeypatch.setattr(ib.client, "cancelMktData", canceled.append)
 
@@ -113,7 +113,7 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, exercise_o
                    for q in snapshot.quotes)
         assert all(q.provider == "IBKR" and q.greeks_as_of is None and q.delta is None for q in snapshot.quotes)
         assert option_from_payload(type(snapshot), dataclass_to_payload(snapshot)) == snapshot
-        assert canceled == [1, 2] and ib.wrapper.reqId2Ticker == {900: existing}
+        assert canceled == [1000, 1001] and ib.wrapper.reqId2Ticker == {900: existing}
         assert ib.wrapper.ticker2ReqId["mktData"][existing] == 900
 
         await market_data_flow(adapter, ib, request, monkeypatch)
@@ -165,6 +165,25 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, exercise_o
         monkeypatch.setattr(ib.client, "reqPositionsMulti", positions)
         monkeypatch.setattr(ib.client, "cancelPositionsMulti", canceled_positions.append)
         monkeypatch.setattr(ib.client, "reqAllOpenOrders", orders)
+        # Native cash evidence shares the existing account walkthrough. Keep
+        # both IB correction versions in the download; only .02 is current.
+        cash_contract = Stock("SPY", "SMART", "USD", conId=100)
+        cash_order = Order(permId=20980, orderRef="fixture-cash-entry", account="DU-OPTIONS-FIXTURE",
+            action="BUY", orderType="LMT", totalQuantity=1, lmtPrice=20, tif="DAY", filledQuantity=1)
+        def cash_completed(api_only):
+            assert api_only
+            ib.wrapper.completedOrder(cash_contract, cash_order, OrderState(status="Filled"))
+            ib.wrapper.completedOrdersEnd()
+        def cash_executions(req_id, query):
+            from ib_async import Execution
+            assert query.acctCode == cash_order.account
+            for revision, price in (("01", 20.0), ("02", 19.5)):
+                ib.wrapper.execDetails(req_id, cash_contract, Execution(execId="0001.fixture.980." + revision,
+                    time=datetime.now(timezone.utc), acctNumber=cash_order.account, side="BOT", shares=1.0,
+                    price=price, permId=cash_order.permId, orderRef=cash_order.orderRef))
+            ib.wrapper.execDetailsEnd(req_id)
+        monkeypatch.setattr(ib.client, "reqCompletedOrders", cash_completed)
+        monkeypatch.setattr(ib.client, "reqExecutions", cash_executions)
         permissions = await adapter.option_account_permissions(scope)
         assert permissions.approval_status == "UNKNOWN" and permissions.permitted_structures == ()
         assert permissions.data_entitlement == "ALLOWED" and permissions.bp_semantics == "AVAILABLE_FUNDS"
@@ -182,6 +201,12 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, exercise_o
         assert not state.orders_complete and not state.executions_complete and not state.lifecycle_complete
         assert [(r.broker_order_session_key, r.broker_order_id) for r in state.open_order_refs] == [("IBKR_PERM_ID", "19001")]
         assert state.source_checkpoint in retained
+        assert len(state.cash_executions) == 1
+        booked = state.cash_executions[0]
+        assert (booked.execution_id, booked.price, booked.broker_order_id, booked.instrument_id) == (
+            "0001.fixture.980.02", "19.5", "IBKR_PERM_ID:20980", "IBKR:100")
+        assert booked.activity_ref in retained and booked.order_ref in retained
+        assert booked.effective_at <= state.observed_at
         assert option_from_payload(type(state), dataclass_to_payload(state)) == state
         assert len(canceled_accounts) == 2 and len(canceled_positions) == 1
         assert not ib.wrapper._futures
@@ -342,7 +367,8 @@ async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None,
             for contract, order, state in native_orders.values():
                 if state.status in {"Filled", "Cancelled"}:
                     # These fields are absent from the real completedOrder wire.
-                    native = replace(order, clientId=0, orderId=0)
+                    native = deepcopy(order)
+                    native.clientId = native.orderId = 0
                     ib.wrapper.completedOrder(deepcopy(contract), native, deepcopy(state))
             ib.wrapper.completedOrdersEnd()
         asyncio.get_running_loop().call_soon(receive)
@@ -503,7 +529,9 @@ async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None,
             assert fact.session_key == "IBKR_PERM_ID"
             fills.extend(fact.executions)
             fees.extend(fact.fees)
-        assert len(fills) == len(fees) == 8  # Recovery repeats originals and correction.
+        # Both reconciliation and the independent Account download replay the
+        # same native versions; the unique financial identities remain four.
+        assert len(fills) == len(fees) == 12
         unique = {fill.execution_id: fill for fill in fills}
         assert len(unique) == 4 and [fill.price for fill in unique.values()] == ["1.25", "1.25", "2.25", "1.24"]
         assert [fill.contracts for fill in unique.values()] == [2, 1, 1, 2]
@@ -530,6 +558,41 @@ async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None,
             assert terminal.state.status == "CANCELLED" and terminal.state.filled_quantity == "0"
             assert json.loads(terminal.raw_payload)["completed"] is True
             assert json.loads(stored[-1])["source"] == "IB_CASH_CANCEL"
+            assert terminal.state.broker_order_id == "IBKR_PERM_ID:20990"
+            # Exercise the native SELL/CLOSE boundary with the same STK. The
+            # original durable cash guard remains responsible for owned lots.
+            from algo_trader_broker_sdk import StockOrderRequest
+            position = [1]
+            def cash_positions(req_id, account, model):
+                ib.wrapper.positionMulti(req_id, account, model, native_orders[990][0], position[0], 20.0)
+                ib.wrapper.positionMultiEnd(req_id)
+            monkeypatch.setattr(ib.client, "reqPositionsMulti", cash_positions)
+            async def cash_authority():
+                stored.append(b"explicit-fixture-cash-authority")
+            close_gate = SubmissionGate(cash_authority, lambda: None)
+            close = StockOrderRequest(symbol="SPY", side="SELL", quantity=1, order_type="LMT", limit_price=20,
+                account="DU-OPTIONS-FIXTURE", contract_id=100, client_order_id="fixture-cash-close", position_effect="CLOSE")
+            sent = await adapter.place_stock_order_guarded(close, close_gate)
+            assert close_gate.consumed
+            closing = native_orders[int(sent.adapter_order_id)]
+            assert closing[0].conId == 100 and closing[1].action == "SELL" and closing[1].openClose == "C"
+            closing[1].filledQuantity, closing[2].status = 1, "Filled"
+            native_fills.append((deepcopy(closing[0]), Execution(execId="0001.fixture.close.01",
+                time=datetime.now(timezone.utc), acctNumber=close.account, side="SLD", shares=1., price=20.,
+                permId=closing[1].permId, orderRef=close.client_order_id)))
+            archive = {}
+            async def archive_cash(raw):
+                ref = sha256(raw).hexdigest()
+                archive[ref] = raw
+                return ref
+            booked = await adapter.option_account_state(scope, retain_lifecycle=archive_cash)
+            assert len(booked.cash_executions) == 1 and booked.cash_executions[0].side == "SELL"
+            assert booked.cash_executions[0].broker_order_id == "IBKR_PERM_ID:" + str(closing[1].permId)
+            position[0] = 0
+            denied = SubmissionGate(cash_authority, lambda: None)
+            with pytest.raises(BrokerContractError, match="exceeds the native long position"):
+                await adapter.place_stock_order_guarded(close, denied)
+            assert not denied.consumed
     finally:
         await adapter._option_events.flush()
         adapter.set_option_event_handler(OptionVerifiedAccount(scope, "IBKR", "DU-OPTIONS-FIXTURE"), None)

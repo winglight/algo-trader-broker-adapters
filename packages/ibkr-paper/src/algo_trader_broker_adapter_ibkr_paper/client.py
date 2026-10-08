@@ -2664,6 +2664,9 @@ class IBAsyncClient:
             self._install_order_listeners(ib)
         if self._account_update_handler is not None:
             self._install_account_listeners(ib)
+        if contract.secType == "STK" and order.action == "SELL" and order.openClose == "C":
+            from .cash_control import validate_close
+            await validate_close(ib, contract, order)
         if submission_gate is not None:
             await submission_gate.prepare()
             if not ib.isConnected():
