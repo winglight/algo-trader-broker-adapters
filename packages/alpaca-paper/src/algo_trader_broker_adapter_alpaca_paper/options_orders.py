@@ -16,7 +16,7 @@ STATUSES = {"accepted": "ACKNOWLEDGED", "new": "ACKNOWLEDGED", "pending_new": "A
 
 
 def order_payload(request):
-    check(type(request) is OptionExecutionRequest and request.environment == "paper", "A scoped Paper option request is required")
+    check(type(request) is OptionExecutionRequest and request.environment in {"paper", "live"}, "A scoped same-environment option request is required")
     check(all(leg.binding.adapter_id == "alpaca_paper" for leg in request.legs), "Order belongs to another adapter")
     check(request.max_slippage == "0", "The authorized limit already incorporates slippage")
     common = dict(qty=str(request.groups), type="limit", time_in_force="day", client_order_id=request.client_order_id)
@@ -88,7 +88,7 @@ async def decode_order_evidence(event, resolve_contract):
 
 
 async def _decode_order_evidence(event, resolve_contract):
-    check(event.source == "ALPACA_ORDER_DETAIL" and event.scope.environment == "paper", "Unsupported native option order source")
+    check(event.source == "ALPACA_ORDER_DETAIL" and event.scope.environment in {"paper", "live"}, "Unsupported native option order source")
     order = decode_native(event.raw_payload)
     check(type(order) is dict and order.get("status") in STATUSES, "Unsupported native option order evidence")
     root = _uuid(order["id"])

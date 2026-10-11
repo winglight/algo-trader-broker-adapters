@@ -301,7 +301,7 @@ class AlpacaOptionReads:
         implemented = OptionCapability("IMPLEMENTED", ("ACCOUNT_CERTIFICATION_REQUIRED",), ())
         unavailable = OptionCapability("UNSUPPORTED", ("NOT_IMPLEMENTED",), ())
         no_history_quotes = OptionCapability("UNSUPPORTED", ("PROVIDER_HISTORY_QUOTES_UNAVAILABLE",), ())
-        return OptionCapabilities(bound.scope, self.adapter_id, ADAPTER_VERSION, "alpaca-options-reads-8", observed,
+        return OptionCapabilities(bound.scope, self.adapter_id, ADAPTER_VERSION, "alpaca-options-reads-9", observed,
             (timestamp(observed) + timedelta(seconds=30)).isoformat().replace("+00:00", "Z"), implemented, implemented,
             implemented, implemented, no_history_quotes, implemented, implemented, unavailable, unavailable, implemented,
             implemented, ("OPRA", "INDICATIVE"), tuple(OptionShapeCapability(shape, "NATIVE", implemented,

@@ -14,7 +14,7 @@ SOURCE = "ALPACA_ACCOUNT_ACTIVITIES"
 
 def index_activity_page(page):
     try:
-        check(page.source == SOURCE and page.request.environment == "paper", "Unsupported activity source")
+        check(page.source == SOURCE and page.request.environment in {"paper", "live"}, "Unsupported activity source")
         text = page.raw_payload.decode("utf-8")
         decoder = json.JSONDecoder(parse_float=Decimal, parse_constant=_constant, object_pairs_hook=_object)
         size, pos, byte_pos, byte_pos_char, items = len(text), 0, 0, 0, []

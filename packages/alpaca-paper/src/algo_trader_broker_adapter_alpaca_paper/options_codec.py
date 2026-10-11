@@ -71,7 +71,7 @@ async def decode_trade_update(event, resolve_contract):
 
 
 async def _decode(event, resolve_contract):
-    check(event.source == "ALPACA_TRADE_UPDATES" and event.scope.environment == "paper", "Unsupported native option event source")
+    check(event.source == "ALPACA_TRADE_UPDATES" and event.scope.environment in {"paper", "live"}, "Unsupported native option event source")
     message = decode_native(event.raw_payload)
     check(type(message) is dict and message.get("stream") == "trade_updates", "Expected a native trade_updates frame")
     data = message["data"]
@@ -151,7 +151,7 @@ async def decode_fill_activity(event, resolve_contract, resolve_order):
 
 
 async def _decode_activity(event, resolve_contract, resolve_order):
-    check(event.source == "ALPACA_ACTIVITY_FILL" and event.scope.environment == "paper", "Unsupported activity source")
+    check(event.source == "ALPACA_ACTIVITY_FILL" and event.scope.environment in {"paper", "live"}, "Unsupported activity source")
     activity = decode_native(event.raw_payload)
     check(type(activity) is dict and activity.get("activity_type") == "FILL" and activity.get("type") in ("fill", "partial_fill"), "Expected original FILL activity")
     order_id = _uuid(activity["order_id"])
