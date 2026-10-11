@@ -27,7 +27,14 @@ from .options_codec import _decimal, _time, _uuid
 from .raw_stream import decode_native
 from ._version import VERSION as ADAPTER_VERSION
 
-STRUCTURES = ("LONG_CALL", "LONG_PUT", "CALL_DEBIT_VERTICAL", "PUT_DEBIT_VERTICAL", "CALL_CREDIT_VERTICAL", "PUT_CREDIT_VERTICAL")
+STRUCTURE_LIMITS = {
+    "LONG_CALL": (1, 1), "LONG_PUT": (1, 1),
+    "CALL_DEBIT_VERTICAL": (2, 1), "PUT_DEBIT_VERTICAL": (2, 1),
+    "CALL_CREDIT_VERTICAL": (2, 1), "PUT_CREDIT_VERTICAL": (2, 1),
+    "CALL_BUTTERFLY": (3, 2), "IRON_CONDOR": (4, 1), "IRON_BUTTERFLY": (4, 1),
+    "LONG_STRADDLE": (2, 1), "LONG_STRANGLE": (2, 1),
+}
+STRUCTURES = tuple(STRUCTURE_LIMITS)
 
 
 def now_wire():
@@ -294,11 +301,11 @@ class AlpacaOptionReads:
         implemented = OptionCapability("IMPLEMENTED", ("ACCOUNT_CERTIFICATION_REQUIRED",), ())
         unavailable = OptionCapability("UNSUPPORTED", ("NOT_IMPLEMENTED",), ())
         no_history_quotes = OptionCapability("UNSUPPORTED", ("PROVIDER_HISTORY_QUOTES_UNAVAILABLE",), ())
-        return OptionCapabilities(bound.scope, self.adapter_id, ADAPTER_VERSION, "alpaca-options-reads-7", observed,
+        return OptionCapabilities(bound.scope, self.adapter_id, ADAPTER_VERSION, "alpaca-options-reads-8", observed,
             (timestamp(observed) + timedelta(seconds=30)).isoformat().replace("+00:00", "Z"), implemented, implemented,
             implemented, implemented, no_history_quotes, implemented, implemented, unavailable, unavailable, implemented,
             implemented, ("OPRA", "INDICATIVE"), tuple(OptionShapeCapability(shape, "NATIVE", implemented,
-                1 if shape.startswith("LONG_") else 2, 1, None, False, not shape.startswith("LONG_"), False, False) for shape in STRUCTURES))
+                legs, ratio, None, False, legs > 1, False, False) for shape, (legs, ratio) in STRUCTURE_LIMITS.items()))
 
     async def reconcile_options(self, request, *, resolve_order=None):
         from .options_reconciliation import reconcile
