@@ -105,7 +105,7 @@ class AlpacaPaperAdapter(AlpacaOptionReads):
         self._option_evidence_handler = None
 
     def bind_option_account(self, verified):
-        if (type(verified) is not OptionVerifiedAccount or verified.broker != "ALPACA" or verified.scope.environment != "paper"
+        if (type(verified) is not OptionVerifiedAccount or verified.broker != "ALPACA" or verified.scope.environment != self._settings.environment
                 or not self._connected or verified.native_account_ref != self._account_id):
             raise BrokerContractError("Option request differs from the connected verified Alpaca account")
         if self._option_account_binding != verified:
@@ -122,7 +122,7 @@ class AlpacaPaperAdapter(AlpacaOptionReads):
                 self._option_event_binding = None
                 self._option_evidence_handler = None
             return
-        if (context.broker != "ALPACA" or context.scope.environment != "paper"
+        if (context.broker != "ALPACA" or context.scope.environment != self._settings.environment
                 or context.native_account_ref != self._account_id or not self._connected):
             raise BrokerContractError("Raw option event account does not match the connected Alpaca account")
         if not callable(getattr(self._backend, "set_raw_trade_handler", None)):
@@ -169,7 +169,7 @@ class AlpacaPaperAdapter(AlpacaOptionReads):
         _uuid(request.order_id)
         scope = OptionScope(**{name: getattr(request, name) for name in OptionScope.__dataclass_fields__})
         bound = self._option_event_binding
-        if (bound is None or bound.scope != scope or bound.broker != "ALPACA" or scope.environment != "paper"
+        if (bound is None or bound.scope != scope or bound.broker != "ALPACA" or scope.environment != self._settings.environment
                 or not self._connected or bound.native_account_ref != self._account_id):
             raise BrokerContractError("Native order query differs from verified account")
         raw = await self._backend.get_option_order_evidence(request)
@@ -183,7 +183,7 @@ class AlpacaPaperAdapter(AlpacaOptionReads):
             raise BrokerContractError("Activity acquisition requires a typed scoped query")
         scope = OptionScope(**{name: getattr(request, name) for name in OptionScope.__dataclass_fields__})
         bound = self._option_event_binding
-        if (bound is None or bound.scope != scope or bound.broker != "ALPACA" or scope.environment != "paper"
+        if (bound is None or bound.scope != scope or bound.broker != "ALPACA" or scope.environment != self._settings.environment
                 or not self._connected or bound.native_account_ref != self._account_id):
             raise BrokerContractError("Activity query does not match the verified Alpaca account")
         # Return the captured query even if the connection changes in flight.
@@ -198,10 +198,10 @@ class AlpacaPaperAdapter(AlpacaOptionReads):
     def manifest(self) -> BrokerAdapterManifest:
         return BrokerAdapterManifest(
             adapter_id=self.adapter_id,
-            display_name="Alpaca Paper Adapter",
+            display_name="Alpaca Paper Adapter" if self._settings.paper else "Alpaca Live Adapter",
             adapter_version=VERSION,
             protocol_version="1.0",
-            environment="PAPER",
+            environment=self._settings.environment.upper(),
             entrypoint="algo_trader_broker_adapter_alpaca_paper:create_adapter",
             capabilities=self.capabilities(),
         )
@@ -210,7 +210,7 @@ class AlpacaPaperAdapter(AlpacaOptionReads):
         return BrokerCapabilities(
             default_time_in_force="DAY",
             adapter_name=self.adapter_id,
-            environment="PAPER",
+            environment=self._settings.environment.upper(),
             asset_classes={"STK", "ETF"},
             order_types=set(_ORDER_TYPES),
             time_in_force=set(_TIFS),
@@ -231,7 +231,7 @@ class AlpacaPaperAdapter(AlpacaOptionReads):
             },
             native={
                 "dataFeed": self._settings.data_feed,
-                "paperOnly": True,
+                "paperOnly": self._settings.paper,
                 "liveBarSizes": ["1 min"],
                 "latestPriceStream": "realtime_price",
             },

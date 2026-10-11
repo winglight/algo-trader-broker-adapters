@@ -28,6 +28,7 @@ def test_settings_are_strict_and_redacted() -> None:
 
     assert settings.data_feed == "sip"
     assert settings.redacted() == {
+        "environment": "paper",
         "data_feed": "sip",
         "request_timeout_seconds": 10.0,
         "reconcile_lookback_hours": 24,
@@ -42,6 +43,8 @@ def test_settings_are_strict_and_redacted() -> None:
     ("key", "value"),
     [
         ("alpaca_data_feed", "auto"),
+        ("alpaca_environment", "auto"),
+        ("alpaca_environment", ""),
         ("alpaca_request_timeout_seconds", "0"),
         ("alpaca_reconcile_lookback_hours", "0"),
         ("alpaca_max_concurrency", "100"),

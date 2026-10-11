@@ -1,10 +1,36 @@
 # Alpaca Paper adapter
 
-Independent Alpaca Paper adapter for the algo-trader Broker SDK 1.x.
+Independent Alpaca adapter for the algo-trader Broker SDK 1.x, defaulting to Paper.
+
+### Explicit trading environment (0.3.0rc1)
+
+The existing `alpaca_paper` package/class/entrypoint now accepts
+`alpaca_environment=paper|live`, default `paper`. SDK trading requests, exact
+option/account REST reads and writes, fill reconciliation and raw trading WS
+all use the selected official trading host. Market data keeps the data host
+and the selected profile's credentials. Arbitrary endpoint overrides are not
+accepted by the account-profile schema.
+
+Create a separate account profile for Live, with `environment=LIVE` and
+`config.alpaca_environment=live`, and store its own key pair in that profile's
+encrypted secrets. Existing profiles cannot change environment in place.
+Default/legacy credentials remain Paper. Manifests, native bindings, event
+ownership and all context guards use the actual configured environment;
+an opposite-environment binding is rejected before native reads or writes.
+
+The native capability revision is `alpaca-options-reads-6`. Implemented
+transport support does not confer Paper/Live certification or enable an
+account. Existing server-side account, version, generation, permission,
+certification, admission and dispatch checks still apply. Live account
+validation, limits and emergency-exit evidence remain the original M5 gate.
+
+References: [TradingClient](https://alpaca.markets/sdks/python/api_reference/trading/trading-client.html),
+[TradingStream](https://alpaca.markets/sdks/python/api_reference/trading/stream.html),
+[separate Paper/Live authentication](https://docs.alpaca.markets/us/docs/authentication).
 
 ## Scope
 
-- US equities and ETFs through Alpaca Paper only.
+- US equities and ETFs through the explicitly configured Alpaca environment.
 - Whole-share `MKT`, `LMT`, `STP`, and `STP LMT` orders with `DAY` or `GTC`.
 - Account, positions, open/completed order reconciliation, fill activities,
   historical bars, snapshots, and live stock bars/trades/quotes.

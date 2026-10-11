@@ -98,7 +98,7 @@ class AlpacaOptionReads:
         scope = OptionScope(**{name: getattr(request, name) for name in OptionScope.__dataclass_fields__})
         bound = self._option_account_binding
         check(bound is not None and bound.scope == scope and bound.native_account_ref == self._account_id
-              and self._connected, "Option read requires the current verified Paper account")
+              and self._connected and scope.environment == self._settings.environment, "Option read requires the current verified account and environment")
         raw = await self._backend.get_option_resource("/v2/account")
         account = decode_native(raw)
         check(type(account) is dict and account.get("id") == bound.native_account_ref, "Native option account changed")
@@ -296,7 +296,7 @@ class AlpacaOptionReads:
         native_greeks = OptionCapability("IMPLEMENTED",
             ("GREEKS_INPUT_TIME_UNAVAILABLE", "GREEKS_MODEL_VERSION_UNAVAILABLE", "GREEKS_UNITS_UNVERIFIED"), ())
         no_history_quotes = OptionCapability("UNSUPPORTED", ("PROVIDER_HISTORY_QUOTES_UNAVAILABLE",), ())
-        return OptionCapabilities(bound.scope, self.adapter_id, ADAPTER_VERSION, "alpaca-options-reads-5", observed,
+        return OptionCapabilities(bound.scope, self.adapter_id, ADAPTER_VERSION, "alpaca-options-reads-6", observed,
             (timestamp(observed) + timedelta(seconds=30)).isoformat().replace("+00:00", "Z"), implemented, implemented,
             native_greeks, implemented, no_history_quotes, implemented, implemented, unavailable, unavailable, implemented,
             implemented, ("OPRA", "INDICATIVE"), tuple(OptionShapeCapability(shape, "NATIVE", implemented,

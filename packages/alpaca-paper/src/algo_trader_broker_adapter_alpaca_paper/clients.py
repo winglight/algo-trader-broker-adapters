@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
-from typing import Any, AsyncIterator, Callable
+from typing import Any, Callable
 
 from algo_trader_broker_sdk import BrokerConnectionError, BrokerOrderError
 
@@ -22,7 +22,6 @@ from .streams import (
 )
 
 
-PAPER_TRADING_BASE_URL = "https://paper-api.alpaca.markets"
 OPTION_DATA_BASE_URL = "https://data.alpaca.markets"
 
 
@@ -59,7 +58,7 @@ class AlpacaClients:
         self._trading = SingleAttemptTradingClient(
             self.settings.api_key_id,
             self.settings.secret_key,
-            paper=True,
+            paper=self.settings.paper,
             request_timeout_seconds=self.settings.request_timeout_seconds,
         )
         self._historical = StockHistoricalDataClient(
@@ -188,7 +187,7 @@ class AlpacaClients:
         import json
 
         async with self._semaphore:
-            async with httpx.AsyncClient(base_url=PAPER_TRADING_BASE_URL, follow_redirects=False,
+            async with httpx.AsyncClient(base_url=self.settings.trading_base_url, follow_redirects=False,
                 headers={"APCA-API-KEY-ID": self.settings.api_key_id, "APCA-API-SECRET-KEY": self.settings.secret_key,
                          "Content-Type": "application/json"}, timeout=self.settings.request_timeout_seconds,
                 transport=self._option_http_transport) as client:
@@ -224,7 +223,7 @@ class AlpacaClients:
         from .options_codec import _uuid
         order_id = _uuid(order_id)
         async with self._semaphore:
-            async with httpx.AsyncClient(base_url=PAPER_TRADING_BASE_URL, follow_redirects=False,
+            async with httpx.AsyncClient(base_url=self.settings.trading_base_url, follow_redirects=False,
                 headers={"APCA-API-KEY-ID": self.settings.api_key_id, "APCA-API-SECRET-KEY": self.settings.secret_key},
                 timeout=self.settings.request_timeout_seconds, transport=self._option_http_transport) as client:
                 try:
@@ -249,7 +248,7 @@ class AlpacaClients:
         from algo_trader_broker_sdk import BrokerCapabilityError
 
         async with self._semaphore:
-            async with httpx.AsyncClient(base_url=OPTION_DATA_BASE_URL if data else PAPER_TRADING_BASE_URL,
+            async with httpx.AsyncClient(base_url=OPTION_DATA_BASE_URL if data else self.settings.trading_base_url,
                 headers={"APCA-API-KEY-ID": self.settings.api_key_id, "APCA-API-SECRET-KEY": self.settings.secret_key},
                 timeout=self.settings.request_timeout_seconds, follow_redirects=False, transport=self._option_http_transport) as client:
                 try:
@@ -318,7 +317,7 @@ class AlpacaClients:
         }
         activities: list[dict[str, Any]] = []
         async with httpx.AsyncClient(
-            base_url=PAPER_TRADING_BASE_URL,
+            base_url=self.settings.trading_base_url,
             headers=headers,
             timeout=self.settings.request_timeout_seconds,
         ) as client:
@@ -370,7 +369,7 @@ class AlpacaClients:
 
         try:
             async with self._semaphore, asyncio.timeout(self.settings.request_timeout_seconds):
-                async with httpx.AsyncClient(base_url=PAPER_TRADING_BASE_URL, follow_redirects=False,
+                async with httpx.AsyncClient(base_url=self.settings.trading_base_url, follow_redirects=False,
                     headers={"APCA-API-KEY-ID": self.settings.api_key_id, "APCA-API-SECRET-KEY": self.settings.secret_key},
                     timeout=self.settings.request_timeout_seconds) as client:
                     async with client.stream("GET", path, params=params) as response:

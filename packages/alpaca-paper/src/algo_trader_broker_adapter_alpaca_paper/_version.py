@@ -1,3 +1,3 @@
 """Package version shared by the plugin manifest and Options bindings."""
 
-VERSION = "0.2.0rc1"
+VERSION = "0.3.0rc1"

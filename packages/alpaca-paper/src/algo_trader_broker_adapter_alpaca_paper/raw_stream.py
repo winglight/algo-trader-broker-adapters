@@ -88,4 +88,4 @@ def create_trading_stream(settings, capture_sink):
             finally:
                 await self.close()
 
-    return ExactTradingStream(settings.api_key_id, settings.secret_key, paper=True, raw_data=True)
+    return ExactTradingStream(settings.api_key_id, settings.secret_key, paper=settings.paper, raw_data=True)

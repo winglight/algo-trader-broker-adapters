@@ -63,6 +63,19 @@ class AlpacaPaperSettings:
     reconcile_lookback_hours: int = 72
     max_concurrency: int = 8
     stream_queue_size: int = 512
+    environment: str = "paper"
+
+    def __post_init__(self) -> None:
+        if self.environment not in {"paper", "live"}:
+            raise BrokerContractError("alpaca_environment must be paper or live", details={"setting": "alpaca_environment"})
+
+    @property
+    def paper(self) -> bool:
+        return self.environment == "paper"
+
+    @property
+    def trading_base_url(self) -> str:
+        return "https://paper-api.alpaca.markets" if self.paper else "https://api.alpaca.markets"
 
     @classmethod
     def from_mapping(cls, settings: Mapping[str, Any]) -> "AlpacaPaperSettings":
@@ -73,6 +86,7 @@ class AlpacaPaperSettings:
                 details={"setting": "alpaca_data_feed"},
             )
         return cls(
+            environment=str(settings.get("alpaca_environment", "paper")).strip().lower(),
             api_key_id=_required(settings, "alpaca_api_key_id"),
             secret_key=_required(settings, "alpaca_secret_key"),
             data_feed=data_feed,
@@ -100,6 +114,7 @@ class AlpacaPaperSettings:
 
     def redacted(self) -> dict[str, object]:
         return {
+            "environment": self.environment,
             "data_feed": self.data_feed,
             "request_timeout_seconds": self.request_timeout_seconds,
             "reconcile_lookback_hours": self.reconcile_lookback_hours,
