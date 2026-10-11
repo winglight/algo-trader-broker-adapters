@@ -23,12 +23,14 @@ from .options_reads import now_wire
 
 def build_order(request, contracts, account, client_id, order_id, shape, *, preview=False):
     from ib_async import ComboLeg, Contract, Order
-    check(type(request) is OptionExecutionRequest and request.environment == "paper"
-          and request.max_slippage == "0", "IB needs an exact authorized Paper limit request")
+    from .settings import account_matches_environment
+    check(type(request) is OptionExecutionRequest and request.environment in {"paper", "live"}
+          and account_matches_environment(account, request.environment)
+          and request.max_slippage == "0", "IB needs an exact authorized same-environment limit request")
     check(len(contracts) == len(request.legs), "IB contract vector differs from order legs")
     if not preview:
         check(type(shape) is OptionShapeCapability and shape.route == "NATIVE"
-              and shape.capability.status == "PAPER_CERTIFIED" and shape.net_tick is not None,
+              and shape.capability.status == request.environment.upper() + "_CERTIFIED" and shape.net_tick is not None,
               "IB requires the Runner-selected certified execution shape")
         check(len(contracts) <= shape.max_legs and all(leg.ratio <= shape.max_ratio for leg in request.legs),
               "IB shape quantity limits exceeded")

@@ -1,5 +1,36 @@
 # IBKR Paper adapter
 
+## Explicit trading environment (0.4.0rc1)
+
+The existing package, class and adapter ID support `ib_environment=paper|live`,
+default `paper`. Live requires an explicit supported retail native account
+(`ib_account`); its verified binding must match that exact configured account.
+Paper option bindings retain the existing DU account restriction; Live option
+bindings require U accounts. Those identifiers are a supported-account filter,
+not account certification. Each native read checks current connection identity
+and membership in `managedAccounts()`. Host/port are configurable and never
+used to infer environment. Log the Gateway/TWS into the intended environment
+using that environment's own deployment credentials and set its actual socket
+host/port; Local does not log in or switch the Gateway for the user.
+
+Manifests, bindings, order construction and raw callback decoding preserve the
+configured scope. Native order construction requires the Runner-selected
+`PAPER_CERTIFIED` or `LIVE_CERTIFIED` shape matching that scope. The package
+version is 0.4.0rc1 and native capability revision is `ib-options-reads-6`;
+prior version/account certifications cannot certify this candidate.
+
+Local deployment uses `BROKER_RUNNER_IB_ENVIRONMENT` and
+`BROKER_RUNNER_IB_ACCOUNT` alongside the existing Gateway host/port settings.
+Fresh profile initialization records that environment. Initialization refuses
+to relabel an existing profile when deployment environment changes; retained
+accounts, plans and trades keep their original scope. Environment switching is
+deployment-managed and is not exposed through the Flex-configuration API.
+Actual account certification, permissions, limits and emergency-exit evidence
+remain the original M4/M5 gates; this development does not activate a Live
+account or change the Public image list.
+
+Reference: [IB connection defaults and configurable ports](https://www.interactivebrokers.com/campus/trading-lessons/installing-configuring-tws-for-the-api/?retakeFinal=1).
+
 Package entry point: `algo_trader.broker_adapters:ibkr_paper`.
 
 This package implements the same Broker SDK 1.x contract as the built-in

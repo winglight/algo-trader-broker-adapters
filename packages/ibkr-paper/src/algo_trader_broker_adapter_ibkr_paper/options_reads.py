@@ -100,9 +100,12 @@ class IBOptionReads:
         self._option_live_observed = None
 
     def bind_option_account(self, verified):
+        from .settings import account_matches_environment
         check(type(verified) is OptionVerifiedAccount and verified.broker == "IBKR"
-              and verified.scope.environment == "paper" and verified.native_account_ref.startswith("DU"),
-              "Option read requires an explicit verified IB Paper account")
+              and verified.scope.environment == self._option_environment
+              and account_matches_environment(verified.native_account_ref, self._option_environment)
+              and (self._configured_account is None or verified.native_account_ref == self._configured_account),
+              "Option read requires the configured verified IB account and environment")
         state = self._client.connection_state_snapshot()
         check(state.get("connected") and state.get("connected_since") is not None,
               "Option read requires an observed IB connection")
@@ -270,7 +273,7 @@ class IBOptionReads:
             native_greeks = OptionCapability("IMPLEMENTED",
                 ("GREEKS_INPUT_TIME_UNAVAILABLE", "GREEKS_MODEL_VERSION_UNAVAILABLE", "GREEKS_UNITS_UNVERIFIED"), ())
             lifecycle = OptionCapability("IMPLEMENTED", ("LIFECYCLE_SOURCE_UNVERIFIED",), ())
-            return OptionCapabilities(bound.scope, self.adapter_id, VERSION, "ib-options-reads-5", observed,
+            return OptionCapabilities(bound.scope, self.adapter_id, VERSION, "ib-options-reads-6", observed,
                 (timestamp(observed) + timedelta(seconds=30)).isoformat().replace("+00:00", "Z"),
                 implemented, implemented, native_greeks, implemented, implemented, implemented, lifecycle,
                 unavailable, unavailable, implemented, implemented, (FEED, "provider_native"), ())

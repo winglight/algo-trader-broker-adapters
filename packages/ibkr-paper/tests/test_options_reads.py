@@ -705,7 +705,7 @@ async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None,
             assert booked.cash_executions[0].broker_order_id == "IBKR_PERM_ID:" + str(closing[1].permId)
             position[0] = 0
             denied = SubmissionGate(cash_authority, lambda: None)
-            with pytest.raises(BrokerContractError, match="exceeds the native long position"):
+            with pytest.raises(BrokerContractError, match="exceeds the native position in its reducing direction"):
                 await adapter.place_stock_order_guarded(close, denied)
             assert not denied.consumed
     finally:

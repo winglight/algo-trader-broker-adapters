@@ -9,6 +9,15 @@ from typing import Mapping
 __all__ = ["IBGatewaySettings"]
 
 
+def account_matches_environment(account: object, environment: str) -> bool:
+    # Limit this integration to explicit retail account identifiers. Port and
+    # market-data type are not proof of a trading environment.
+    return type(account) is str and account.strip() == account and (
+        environment == "paper" and account.startswith("DU") or
+        environment == "live" and account.startswith("U")
+    )
+
+
 @dataclass(slots=True)
 class IBGatewaySettings:
     """Connection configuration for the IB Gateway or Trader Workstation."""
@@ -24,9 +33,15 @@ class IBGatewaySettings:
     market_data_depth_rows: int = 10
     market_data_queue_size: int = 64
     historical_timeout: float = 60.0
+    environment: str = "paper"
 
     def validate(self) -> None:
         """Validate settings to guard against invalid configuration."""
+
+        if self.environment not in {"paper", "live"}:
+            raise ValueError("IB environment must be paper or live")
+        if self.environment == "live" and not account_matches_environment(self.account, "live"):
+            raise ValueError("IB Live requires an explicit supported native account")
 
         if not self.host:
             raise ValueError("IB gateway host must be provided")
@@ -74,6 +89,7 @@ class IBGatewaySettings:
 
         source = env or os.environ
         mapping = {
+            "environment": lambda value: value.strip().lower(),
             "host": str,
             "port": int,
             "client_id": int,

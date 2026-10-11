@@ -24,6 +24,7 @@ from algo_trader_broker_sdk import (
     BrokerCapabilities,
     BrokerCapabilityError,
     BrokerConnectionError,
+    BrokerContractError,
     BrokerConnectionState,
     BrokerOrderError,
     DOMSnapshot,
@@ -191,6 +192,13 @@ class IBKRPaperAdapter(IBOptionReads, IBOptionOrders):
         client: Any | None = None,
         supervisor: Any | None = None,
     ) -> None:
+        from .settings import account_matches_environment
+        self._option_environment = str(settings.get("ib_environment", "paper")).strip().lower()
+        self._configured_account = _optional_str(settings.get("ib_account"))
+        if self._option_environment not in {"paper", "live"}:
+            raise BrokerContractError("ib_environment must be paper or live")
+        if self._option_environment == "live" and not account_matches_environment(self._configured_account, self._option_environment):
+            raise BrokerContractError("IB configured environment requires a matching explicit native account")
         self._init_option_reads()
         from .flex import FlexReader
         self._flex = FlexReader(settings)
@@ -210,6 +218,7 @@ class IBKRPaperAdapter(IBOptionReads, IBOptionOrders):
         from .supervisor import IBClientSupervisor
 
         ib_settings = IBGatewaySettings(
+            environment=self._option_environment,
             host=str(settings.get("ib_gateway_host") or settings.get("ib_host") or "127.0.0.1"),
             port=_int(settings.get("ib_gateway_port") or settings.get("ib_port"), 4002),
             client_id=_int(settings.get("ib_client_id"), 40),
@@ -297,10 +306,10 @@ class IBKRPaperAdapter(IBOptionReads, IBOptionOrders):
     def manifest(self) -> BrokerAdapterManifest:
         return BrokerAdapterManifest(
             adapter_id=self.adapter_id,
-            display_name="IBKR Paper Adapter",
+            display_name="IBKR Paper Adapter" if self._option_environment == "paper" else "IBKR Live Adapter",
             adapter_version=VERSION,
             protocol_version="1.1",
-            environment="PAPER",
+            environment=self._option_environment.upper(),
             entrypoint="algo_trader_broker_adapter_ibkr_paper:create_adapter",
             capabilities=self.capabilities(),
         )
@@ -309,7 +318,7 @@ class IBKRPaperAdapter(IBOptionReads, IBOptionOrders):
         return BrokerCapabilities(
             default_time_in_force="DAY",
             adapter_name=self.adapter_id,
-            environment="PAPER",
+            environment=self._option_environment.upper(),
             asset_classes={"STK", "FUT"},
             order_types={"MKT", "LMT", "STP", "STP LMT"},
             time_in_force={"DAY", "GTC"},
