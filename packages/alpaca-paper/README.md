@@ -147,6 +147,17 @@ native quote timestamps, report missing/crossed/stale data and leg skew, and kee
 indicative research-only. Provider Greeks without independent timing and unit
 evidence remain raw. Native last-trade/exercise cutoffs are not guessed.
 
+Snapshots now attach `NativeGreekObservation` for returned Greeks or implied
+volatility. It retains exact decimal observations, the contract/feed and the
+original response byte hash; the original response remains in the bounded
+read-evidence queue. Receipt time is only `observed_at`; input time and model
+version stay absent and units stay `UNKNOWN`. Normalized quote Greeks remain
+empty. The `alpaca-options-reads-5` capability reports raw reading implemented
+with these explicit gaps, which account attestation cannot remove. A missing
+provider model observation remains missing. See the official
+[snapshot endpoint](https://docs.alpaca.markets/us/reference/optionsnapshots) and
+[model availability explanation](https://docs.alpaca.markets/us/docs/market-data-faq).
+
 Account reads preserve equity/cash and separate buying-power fields, normalize
 only exact option holdings, and retain unsupported positions as unresolved.
 Cost basis uses the vendor's total-dollar field with its original sign; unknown
