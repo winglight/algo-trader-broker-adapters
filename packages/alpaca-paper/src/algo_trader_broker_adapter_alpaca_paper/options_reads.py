@@ -225,7 +225,7 @@ class AlpacaOptionReads:
         return stream_quotes(self, request)
 
     async def option_snapshot(self, request):
-        from .options_greeks import snapshot_greeks
+        from .options_greeks import snapshot_greeks, normalized_greeks
         check(type(request) is SnapshotRequest, "Expected an exact snapshot request")
         bound, _, _ = await self._option_bound(request)
         check(request.feed in {"OPRA", "INDICATIVE"}, "Options require an explicit OPRA or indicative feed")
@@ -260,7 +260,7 @@ class AlpacaOptionReads:
             native_greeks = snapshot_greeks(item, binding, feed=request.feed, received=received,
                 response_hash=sha256(raw).hexdigest())
             quotes.append(OptionQuote(binding.canonical_id, bid, ask, bs, az, at, received, "ALPACA", request.feed,
-                quality, bound.scope.account, None, None, None, None, None, None, None, None, None,
+                quality, bound.scope.account, *normalized_greeks(item, native_greeks), None, None,
                 native_greeks=native_greeks))
         times = [timestamp(quote.quote_at) for quote in quotes]
         skew = int((max(times) - min(times)).total_seconds() * 1000) if times else 0
@@ -293,12 +293,10 @@ class AlpacaOptionReads:
         observed = now_wire()
         implemented = OptionCapability("IMPLEMENTED", ("ACCOUNT_CERTIFICATION_REQUIRED",), ())
         unavailable = OptionCapability("UNSUPPORTED", ("NOT_IMPLEMENTED",), ())
-        native_greeks = OptionCapability("IMPLEMENTED",
-            ("GREEKS_INPUT_TIME_UNAVAILABLE", "GREEKS_MODEL_VERSION_UNAVAILABLE", "GREEKS_UNITS_UNVERIFIED"), ())
         no_history_quotes = OptionCapability("UNSUPPORTED", ("PROVIDER_HISTORY_QUOTES_UNAVAILABLE",), ())
-        return OptionCapabilities(bound.scope, self.adapter_id, ADAPTER_VERSION, "alpaca-options-reads-6", observed,
+        return OptionCapabilities(bound.scope, self.adapter_id, ADAPTER_VERSION, "alpaca-options-reads-7", observed,
             (timestamp(observed) + timedelta(seconds=30)).isoformat().replace("+00:00", "Z"), implemented, implemented,
-            native_greeks, implemented, no_history_quotes, implemented, implemented, unavailable, unavailable, implemented,
+            implemented, implemented, no_history_quotes, implemented, implemented, unavailable, unavailable, implemented,
             implemented, ("OPRA", "INDICATIVE"), tuple(OptionShapeCapability(shape, "NATIVE", implemented,
                 1 if shape.startswith("LONG_") else 2, 1, None, False, not shape.startswith("LONG_"), False, False) for shape in STRUCTURES))
 

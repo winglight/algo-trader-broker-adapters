@@ -9,7 +9,7 @@ from algo_trader_broker_sdk import BrokerContractError
 from algo_trader_broker_sdk.options import OptionMarketSnapshot, OptionQuote, timestamp
 
 from .options_reads import native_decimal, now_wire
-from .options_greeks import GreekCapture
+from .options_greeks import GreekCapture, normalized_greeks
 
 
 def amount(value):
@@ -118,7 +118,6 @@ def quote_from_sides(binding, ticker, sides, request, *, received=None, native_g
         quality = "STALE"
     elif ticker.marketDataType != 1:
         quality = "RESEARCH_ONLY"
-    # Native model Greeks have no certified input timestamp/unit here.
     return OptionQuote(binding.canonical_id, bid, ask, bs, az,
         at.isoformat().replace("+00:00", "Z"), received, "IBKR", request.feed,
-        quality, request.account, None, None, None, None, None, None, None, None, None, native_greeks)
+        quality, request.account, *normalized_greeks(native_greeks), None, None, native_greeks)

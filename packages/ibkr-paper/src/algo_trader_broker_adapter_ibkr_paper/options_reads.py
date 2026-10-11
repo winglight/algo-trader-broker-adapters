@@ -272,12 +272,10 @@ class IBOptionReads:
             observed = now_wire()
             implemented = OptionCapability("IMPLEMENTED", ("ACCOUNT_CERTIFICATION_REQUIRED",), ())
             unavailable = OptionCapability("UNSUPPORTED", ("NOT_IMPLEMENTED",), ())
-            native_greeks = OptionCapability("IMPLEMENTED",
-                ("GREEKS_INPUT_TIME_UNAVAILABLE", "GREEKS_MODEL_VERSION_UNAVAILABLE", "GREEKS_UNITS_UNVERIFIED"), ())
             lifecycle = OptionCapability("IMPLEMENTED", ("LIFECYCLE_SOURCE_UNVERIFIED",), ())
-            return OptionCapabilities(bound.scope, self.adapter_id, VERSION, "ib-options-reads-6", observed,
+            return OptionCapabilities(bound.scope, self.adapter_id, VERSION, "ib-options-reads-7", observed,
                 (timestamp(observed) + timedelta(seconds=30)).isoformat().replace("+00:00", "Z"),
-                implemented, implemented, native_greeks, implemented, implemented, implemented, lifecycle,
+                implemented, implemented, implemented, implemented, implemented, implemented, lifecycle,
                 unavailable, unavailable, implemented, implemented, (FEED, "provider_native"), ())
         return await self._option_read(request, read)
 

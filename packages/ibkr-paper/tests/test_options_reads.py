@@ -107,7 +107,7 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_sn
             ib.wrapper.marketDataType(req_id, 1)
             ib.wrapper.priceSizeTick(req_id, 1, 1.25, 5)
             ib.wrapper.priceSizeTick(req_id, 2, 1.30, 7)
-            ib.wrapper.tickOptionComputation(req_id, 13, 0, .25, .55, 1.275, .01, .02, .12, -.03, 590.)
+            ib.wrapper.tickOptionComputation(req_id, 13, 0, .25, .550000000000045, 1.275, .01, .02, .12, -.03, 590.)
             ib.wrapper.tcpDataProcessed()
         asyncio.get_running_loop().call_soon(unavailable)
         asyncio.get_running_loop().call_later(.01, receive)
@@ -154,10 +154,18 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_sn
         assert snapshot.complete and not snapshot.missing_contract_ids
         assert all((q.bid, q.ask, q.bid_size, q.ask_size, q.quality) == ("1.25", "1.3", 5, 7, "EXECUTABLE")
                    for q in snapshot.quotes)
-        assert all(q.provider == "IBKR" and q.greeks_as_of is None and q.delta is None for q in snapshot.quotes)
-        assert all(q.native_greeks.inputs_asof is None and q.native_greeks.units == "UNKNOWN"
+        assert all(q.provider == "IBKR" and q.greeks_as_of == q.native_greeks.observed_at
+                   and (q.delta, q.gamma, q.vega_per_vol_point, q.theta_per_day, q.iv_decimal)
+                   == ("0.55", "0.02", "0.12", "-0.03", "0.25") for q in snapshot.quotes)
+        assert capabilities.greeks.reason_codes == ("ACCOUNT_CERTIFICATION_REQUIRED",)
+        assert all(q.native_greeks.inputs_asof is None and q.native_greeks.units == "PER_SHARE_PER_VOL_POINT_PER_DAY"
                    and q.native_greeks.model_version is None for q in snapshot.quotes)
-        assert [json.loads(q.native_greeks.raw_json)["values"]["delta"] for q in snapshot.quotes] == ["0.55", "0.55"]
+        assert [json.loads(q.native_greeks.raw_json)["values"]["delta"] for q in snapshot.quotes] == ["0.550000000000045"] * 2
+        with pytest.raises(BrokerContractError, match="Unverified native Greeks"):
+            replace(snapshot.quotes[0], native_greeks=replace(snapshot.quotes[0].native_greeks,
+                units="UNKNOWN", reason_codes=("GREEKS_UNITS_UNVERIFIED",)))
+        with pytest.raises(BrokerContractError, match="actual observation time"):
+            replace(snapshot.quotes[0], greeks_as_of="2026-10-01T00:00:00Z")
         assert "tickOptionComputation" not in ib.wrapper.__dict__
         assert option_from_payload(type(snapshot), dataclass_to_payload(snapshot)) == snapshot
         if consume_snapshot is not None:
