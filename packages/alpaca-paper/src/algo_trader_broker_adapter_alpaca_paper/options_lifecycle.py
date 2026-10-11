@@ -12,7 +12,7 @@ from algo_trader_broker_sdk.options import ActivityQuery, OptionActivityPage, Op
 from .options_reads import contract_from_native, now_wire, signed_decimal, whole
 from .raw_stream import decode_native, _constant, _object
 
-KINDS = {"OPEXC": "EXERCISE", "OPXRC": "EXERCISE", "OPASN": "ASSIGNMENT", "OPEXP": "EXPIRATION"}
+KINDS = {"OPEXC": "EXERCISE", "OPASN": "ASSIGNMENT", "OPEXP": "EXPIRATION"}
 
 
 def records(raw):
