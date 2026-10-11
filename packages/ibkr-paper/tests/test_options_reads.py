@@ -89,7 +89,8 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_sn
 
     async def parameters(*args):
         assert args == ("SPY", "", "STK", 100)
-        return [OptionChain("SMART", 100, "SPY", "100", {"20261016"}, {590.0, 595.0})]
+        # Match ib_async's actual securityDefinitionOptionParameter decoder.
+        return [OptionChain("SMART", "100", "SPY", "100", {"20261016"}, {590.0, 595.0})]
 
     def subscribe(req_id, contract, generic, snapshot, regulatory, options):
         assert generic == "" and snapshot is False and regulatory is False

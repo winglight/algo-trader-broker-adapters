@@ -185,7 +185,9 @@ class IBOptionReads:
                 under_id = await self._underlying(ib, request.underlying)
                 chains = await asyncio.wait_for(ib.reqSecDefOptParamsAsync(request.underlying, "", "STK", under_id),
                                                self._qualification_timeout)
-                chains = [chain for chain in chains if chain.exchange == "SMART" and chain.underlyingConId == under_id
+                # ib_async's secdef decoder retains underlyingConId as wire text;
+                # ContractDetails supplies the same identity as an integer.
+                chains = [chain for chain in chains if chain.exchange == "SMART" and str(chain.underlyingConId) == str(under_id)
                           and chain.tradingClass == request.underlying and str(chain.multiplier) == "100"]
                 check(len(chains) == 1, "Standard SMART option parameters must be unique")
                 chain = chains[0]
