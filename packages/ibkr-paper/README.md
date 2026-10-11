@@ -197,3 +197,13 @@ explicit broker cancellation/reversal mapping are still required for completenes
 Sources: [IB Flex transport](https://www.ibkrguides.com/brokerportal/performanceandstatements/flex3.htm),
 [error codes](https://www.ibkrguides.com/orgportal/performanceandstatements/flex3error.htm),
 [OptionEAE fields](https://www.ibkrguides.com/reportingreference/reportguide/options_exercises_expirations_fq.htm).
+
+Closed-day Trades fees reconcile each USD execution's proceeds, taxes and
+commission against netCash and match the original full execId to Runner's retained
+TWS evidence. For a cancelled execution, exactly one proven reversing Trade and
+both explicit signed cash components are required; the sum gives the remaining
+fee after refund. Missing components or an ambiguous reversal remain
+FLEX_FEE_REVIEW, without inferring a refund from the bust. The same retained XML
+and original execution identity feed the existing fee revision chain; no new fill
+or account cash movement is created. This does not certify account-wide fee
+coverage. Field meanings: [IB Activity Flex Trades](https://www.ibkrguides.com/reportingreference/reportguide/tradesfq.htm).

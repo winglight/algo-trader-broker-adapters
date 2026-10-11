@@ -85,15 +85,15 @@ The fee is the negative of taxes + commission, including an explicit rebate.
     rows = list(sections[0])
     identities = Counter(item.get("ibExecID") for item in rows if item.get("assetCategory") == "OPT"
         and item.get("levelOfDetail") == "EXECUTION" and item.get("origTradeID", "") in {"", "0"})
-    cancelled = {item.get("origTradeID") for item in rows if item.get("origTradeID", "") not in {"", "0"}}
+    cancelled = Counter(item.get("origTradeID") for item in rows if item.get("origTradeID", "") not in {"", "0"})
+    cancellation_proofs, _ = cancellations(raw, account, lifecycle_trade_ids)
+    reversals = {proof["original_row"]: proof["cancellation_row"] for proof in cancellation_proofs}
     file_hash, proofs, unresolved = sha256(raw).hexdigest(), [], []
     for index, item in enumerate(rows):
         row = item.attrib
         if row.get("tradeID") in lifecycle_trade_ids or row.get("origTradeID") in lifecycle_trade_ids:
             continue
-        if row.get("assetCategory") != "OPT" or row.get("levelOfDetail") != "EXECUTION" or row.get("origTradeID", "") not in {"", "0"} or row.get("tradeID") in cancelled:
-            # A cancelled trade's original commission alone does not establish
-            # the net fee/refund. Keep its existing fee provisional for review.
+        if row.get("assetCategory") != "OPT" or row.get("levelOfDetail") != "EXECUTION" or row.get("origTradeID", "") not in {"", "0"}:
             continue
         try:
             check(item.tag == "Trade" and not len(item) and row["accountId"] == account
@@ -107,10 +107,17 @@ The fee is the negative of taxes + commission, including an explicit rebate.
             check(quantity != 0 and price >= 0 and row["buySell"] == ("BUY" if quantity > 0 else "SELL"), "Fee execution economics differ")
             with localcontext() as context:
                 context.prec = 100
-                proceeds, taxes, commission = number(row["proceeds"]), number(row["taxes"]), number(row["ibCommission"])
-                check(proceeds == -Decimal(quantity) * price * 100 and number(row["netCash"]) == proceeds + taxes + commission,
-                      "Fee components do not reconcile to statement net cash")
-                fee = amount(-(taxes + commission))
+                fee_value = fee_component(row, quantity, price)
+                if row.get("tradeID") in cancelled:
+                    # Never infer a refund from a bust: both actual signed cash
+                    # rows must reconcile, with one independently proven reversal.
+                    check(cancelled[row["tradeID"]] == 1 and index in reversals,
+                          "Cancelled fee needs a unique proven reversal")
+                    reversal = rows[reversals[index]].attrib
+                    check(day(statement.get("fromDate")) <= day(reversal["tradeDate"]) <= day(statement.get("toDate")),
+                          "Fee reversal is outside statement coverage")
+                    fee_value += fee_component(reversal, -quantity, price)
+                fee = amount(fee_value)
             effective = day(row["tradeDate"])
             check(day(statement.get("fromDate")) <= effective <= day(statement.get("toDate")), "Fee execution is outside statement coverage")
             proofs.append(dict(original_execution_id=execution, execution_family=revision.original_execution_id,
@@ -119,3 +126,12 @@ The fee is the negative of taxes + commission, including an explicit rebate.
         except (BrokerContractError, KeyError, ValueError, TypeError, InvalidOperation):
             unresolved.append("FLEX_FEE_REVIEW:" + file_hash + ":" + str(index))
     return tuple(proofs), tuple(unresolved)
+
+
+def fee_component(row, quantity, price):
+    """Signed fee cash from an explicit, reconciled USD execution row."""
+    check(row["ibCommissionCurrency"] == "USD", "Fee component currency differs")
+    proceeds, taxes, commission = number(row["proceeds"]), number(row["taxes"]), number(row["ibCommission"])
+    check(proceeds == -Decimal(quantity) * price * 100 and number(row["netCash"]) == proceeds + taxes + commission,
+          "Fee components do not reconcile to statement net cash")
+    return -(taxes + commission)
