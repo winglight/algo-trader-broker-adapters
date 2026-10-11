@@ -13,6 +13,7 @@ from algo_trader_broker_sdk.options_events import OptionNativeOrderQuery, Option
 from .options_account_native import completed_orders, executions, open_orders, raw_bytes
 from .options_events import SOURCE, STATUS, execution_revision
 from .options_reads import native_decimal, now_wire
+from .options_orders import matches_open_close
 
 
 def validate_order(original, row, account):
@@ -27,7 +28,7 @@ def validate_order(original, row, account):
           and Decimal(str(order["totalQuantity"])) == original.groups
           and Decimal(str(order["lmtPrice"])) == (price if combo else price.copy_abs())
           and order["orderType"] == "LMT" and order["tif"] == "DAY" and not order["outsideRth"]
-          and order["openClose"] == ("O" if original.legs[0].position_effect == "OPEN" else "C"),
+          and matches_open_close(order["openClose"], "O" if original.legs[0].position_effect == "OPEN" else "C"),
           "IB native order changed its retained quantity, limit or policy")
     check(contract["currency"] == "USD", "IB native order changed its currency")
     if combo:

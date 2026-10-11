@@ -469,6 +469,8 @@ async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None,
     def acknowledge(trade):
         native = deepcopy(trade.order)
         native.permId = 20000 + native.orderId
+        if trade.contract.secType in {"OPT", "BAG"}:
+            native.openClose = ""  # Actual retail option callback omits this institutional field.
         native_orders[native.orderId] = [deepcopy(trade.contract), native, OrderState(status="Submitted")]
         asyncio.get_running_loop().call_soon(ib.wrapper.openOrder, native.orderId,
             deepcopy(trade.contract), native, OrderState(status="Submitted"))
@@ -483,8 +485,10 @@ async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None,
             previewing = False
         if order.whatIf:
             state = OrderState(status="PreSubmitted", initMarginChange="310.25", commission=1.30, commissionCurrency="USD")
+            returned = deepcopy(order)
+            returned.openClose = ""
             asyncio.get_running_loop().call_soon(ib.wrapper.openOrder, order_id,
-                deepcopy(contract), deepcopy(order), state)
+                deepcopy(contract), returned, state)
 
     def open_orders():
         def receive():
@@ -547,6 +551,7 @@ async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None,
             assert (preview.source, preview.required_buying_power_cash, preview.estimated_fee_cash, preview.currency) == (
                 "BROKER_WHAT_IF", "310.25", "1.3", "USD")
             assert "EMERGENCY_CLOSE_FEES_NOT_INCLUDED" in preview.warnings
+            assert "IB_OPEN_CLOSE_NOT_REPORTED" in preview.warnings
             if gate_factory:
                 request, extra_retain = await gate_factory(request, shape)
             else:
@@ -571,6 +576,12 @@ async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None,
             assert payload["order"]["lmtPrice"] == ("-1.5" if combo else "1.25")
             assert payload["order"]["action"] == "BUY" and payload["order"]["totalQuantity"] == 2
             assert payload["order"]["openClose"] == ("C" if combo else "O")
+            from algo_trader_broker_adapter_ibkr_paper.options_orders import acknowledgement
+            changed = deepcopy(payload["order"])
+            changed["openClose"] = "O" if combo else "C"
+            with pytest.raises(BrokerContractError, match="changed the prepared command"):
+                acknowledgement(request, expected_order, [dict(kind="openOrder", order=changed,
+                    contract=payload["contract"], state=dict(status="Submitted"))])
             if combo:
                 assert [(leg["conId"], leg["ratio"], leg["action"], leg["openClose"])
                     for leg in payload["contract"]["comboLegs"]] == [(1590, 1, "SELL", 0), (1595, 1, "BUY", 0)]

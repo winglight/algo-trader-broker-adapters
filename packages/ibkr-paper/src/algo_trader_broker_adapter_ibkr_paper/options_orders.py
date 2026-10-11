@@ -328,6 +328,13 @@ class IBOptionOrders:
         return await self._option_read(request, send)
 
 
+def matches_open_close(returned, prepared):
+    # IB documents this field as institutional-only. Retail openOrder and
+    # what-if responses may omit it; the retained request remains the intent.
+    # A reported, contradictory intent must still be rejected.
+    return prepared in {"O", "C"} and returned in {"", prepared}
+
+
 def acknowledgement(request, prepared_order, records):
     parent, status = None, "SUBMISSION_UNKNOWN"
     for record in records:
@@ -340,7 +347,7 @@ def acknowledgement(request, prepared_order, records):
               and order["orderId"] == prepared_order.orderId and order["clientId"] == prepared_order.clientId
               and Decimal(str(order["totalQuantity"])) == request.groups
               and Decimal(order["lmtPrice"]) == Decimal(str(prepared_order.lmtPrice))
-              and order["action"] == prepared_order.action and order["openClose"] == prepared_order.openClose,
+              and order["action"] == prepared_order.action and matches_open_close(order["openClose"], prepared_order.openClose),
               "IB acknowledgement changed the prepared command")
         check(order["orderType"] == "LMT" and order["tif"] == "DAY" and not order["outsideRth"],
               "IB acknowledgement changed its order policy")

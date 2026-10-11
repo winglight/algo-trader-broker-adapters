@@ -9,7 +9,7 @@ from algo_trader_broker_sdk.options import OptionExecutionRequest, OrderPreview,
 
 from .options_account import signed_decimal
 from .options_account_native import account_values, observe_callbacks, raw_bytes, raw_value
-from .options_orders import build_order, wait_transport
+from .options_orders import build_order, matches_open_close, wait_transport
 from .options_quotes import amount
 from .options_reads import now_wire
 
@@ -68,8 +68,9 @@ async def preview_order(adapter, request):
                   and native_order["action"] == order.action
                   and Decimal(str(native_order["totalQuantity"])) == request.groups
                   and Decimal(native_order["lmtPrice"]) == Decimal(str(order.lmtPrice))
-                  and (native_order["orderType"], native_order["tif"], native_order["openClose"], native_order["outsideRth"]) ==
-                      (order.orderType, order.tif, order.openClose, False)
+                  and (native_order["orderType"], native_order["tif"], native_order["outsideRth"]) ==
+                      (order.orderType, order.tif, False)
+                  and matches_open_close(native_order["openClose"], order.openClose)
                   and native_contract["secType"] == contract.secType,
                   "IB what-if response changed its account or order")
             if len(contracts) == 1:
@@ -81,6 +82,8 @@ async def preview_order(adapter, request):
                       "IB preview changed the exact combo vector")
             warnings = ["IB_INITIAL_MARGIN_CHANGE_ONLY", "INTERIM_ASSIGNMENT_FUNDING_NOT_ESTIMATED",
                         "EMERGENCY_CLOSE_FEES_NOT_INCLUDED"]
+            if not native_order["openClose"]:
+                warnings.append("IB_OPEN_CLOSE_NOT_REPORTED")
             try:
                 margin = signed_decimal(state["initMarginChange"]) if usd else None
             except BrokerContractError:
