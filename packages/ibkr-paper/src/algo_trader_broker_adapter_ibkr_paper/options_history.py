@@ -28,6 +28,7 @@ def next_day(at):
 
 
 async def native_page(adapter, ib, contract, request, start, end):
+    from ib_async.wrapper import RequestError
     # Serialize option history across owners on this connection. The existing
     # IB client also applies its global outbound-message rate limit.
     loop = asyncio.get_running_loop()
@@ -38,7 +39,7 @@ async def native_page(adapter, ib, contract, request, start, end):
     errors = []
     def error(received_id, code, message, *args):
         if received_id == req_id:
-            errors.append(code)
+            errors.append((code, message))
     ib.errorEvent += error
     try:
         if request.data_kind == "BAR":
@@ -48,8 +49,21 @@ async def native_page(adapter, ib, contract, request, start, end):
         else:
             ib.client.reqHistoricalTicks(req_id, contract, start.strftime("%Y%m%d-%H:%M:%S"), "", 1000,
                 "BID_ASK" if request.data_kind == "QUOTE" else "TRADES", False, False, [])
-        rows = await asyncio.wait_for(future, adapter._qualification_timeout)
-        check(not errors, f"IB option history failed: {errors[0]}" if errors else "Invalid history response")
+        def no_data():
+            return bool(errors) and all(code == 162 and "hmds query returned no data:" in message.lower()
+                                        for code, message in errors)
+        try:
+            rows = await asyncio.wait_for(future, adapter._qualification_timeout)
+        except RequestError:
+            if not no_data():
+                raise
+            rows = []
+        # IB uses 162 for both an empty trade interval and genuine failures
+        # (permissions, session conflict). Only its explicit no-data response
+        # is an empty page; no bars or substitute prices are manufactured.
+        if not rows and no_data():
+            return []
+        check(not errors, f"IB option history failed: {errors[0][0]}" if errors else "Invalid history response")
         check(len(rows) <= 100000, "Narrow the IB history query: native batch exceeded bound")
         return rows
     finally:

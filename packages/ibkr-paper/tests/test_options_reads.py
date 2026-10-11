@@ -404,6 +404,23 @@ async def market_data_flow(adapter, ib, snapshot_request, monkeypatch, *, calend
             assert [row.contracts for row in output] == [1, 2, 3]  # Same second survives pagination.
     assert calls == ["BAR", "TRADES", "BID_ASK"] and not ib.wrapper._futures
 
+    empty_request = OptionHistoryRequest(**{**base, "feed": "provider_native"}, data_kind="BAR",
+        time_from=start.isoformat().replace("+00:00", "Z"),
+        time_to=(start + timedelta(seconds=120)).isoformat().replace("+00:00", "Z"),
+        adjustment="raw", cursor=None, limit=100)
+    message = ["Historical Market Data Service error message:HMDS query returned no data: SPY@SMART Trades"]
+    def empty_bars(req_id, *args):
+        asyncio.get_running_loop().call_soon(ib.wrapper.error, req_id, 162, message[0], "")
+    monkeypatch.setattr(ib.client, "reqHistoricalData", empty_bars)
+    page = await adapter.option_history(empty_request)
+    assert page.bars == () and page.complete and page.next_cursor is None and page.coverage == "UNAVAILABLE"
+    assert option_from_payload(type(page), dataclass_to_payload(page)) == page
+    for failure in ("Trading TWS session is connected from a different IP address", "No market data permissions for SPY"):
+        message[0] = "Historical Market Data Service error message:" + failure
+        with pytest.raises(BrokerContractError, match="history failed: 162"):
+            await adapter.option_history(empty_request)
+    assert not ib.wrapper._futures
+
     scope = {name: getattr(snapshot_request, name) for name in OptionScope.__dataclass_fields__}
     request = OptionCalendarQuery(**scope, bindings=snapshot_request.bindings, trade_date="2026-10-08")
     calendar = await adapter.option_calendar(request)
