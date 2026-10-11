@@ -50,6 +50,7 @@ from .mapping import (
     value,
 )
 from .settings import AlpacaPaperSettings
+from ._version import VERSION
 from .raw_stream import CapturedTradeFrame, decode_native
 from .options_reads import AlpacaOptionReads
 
@@ -198,7 +199,7 @@ class AlpacaPaperAdapter(AlpacaOptionReads):
         return BrokerAdapterManifest(
             adapter_id=self.adapter_id,
             display_name="Alpaca Paper Adapter",
-            adapter_version="0.1.0",
+            adapter_version=VERSION,
             protocol_version="1.0",
             environment="PAPER",
             entrypoint="algo_trader_broker_adapter_alpaca_paper:create_adapter",

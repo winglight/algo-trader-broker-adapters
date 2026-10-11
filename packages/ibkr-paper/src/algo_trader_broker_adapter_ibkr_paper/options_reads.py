@@ -24,7 +24,7 @@ from algo_trader_broker_sdk.options import (
 )
 from algo_trader_broker_sdk.options_capabilities import OptionCapabilities, OptionCapability
 
-VERSION = "0.2.0"
+from ._version import VERSION
 STANDARD_RULE = "ib-spy-qqq-standard-occ-v1"
 STANDARD_SOURCE = "https://www.cboe.com/exchange-traded-stock/etp-options-spec"
 STANDARD_CHECKED_AT = "2026-10-08"

@@ -25,8 +25,8 @@ from algo_trader_broker_sdk.options_capabilities import OptionCapabilities, Opti
 
 from .options_codec import _decimal, _time, _uuid
 from .raw_stream import decode_native
+from ._version import VERSION as ADAPTER_VERSION
 
-ADAPTER_VERSION = "0.1.0"
 STRUCTURES = ("LONG_CALL", "LONG_PUT", "CALL_DEBIT_VERTICAL", "PUT_DEBIT_VERTICAL", "CALL_CREDIT_VERTICAL", "PUT_CREDIT_VERTICAL")
 
 

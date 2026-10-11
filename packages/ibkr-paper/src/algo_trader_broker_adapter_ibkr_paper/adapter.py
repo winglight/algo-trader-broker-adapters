@@ -6,6 +6,8 @@ wrapper only when the plugin entrypoint is selected.
 
 from __future__ import annotations
 
+from ._version import VERSION
+
 import asyncio
 import copy
 from dataclasses import asdict
@@ -296,7 +298,7 @@ class IBKRPaperAdapter(IBOptionReads, IBOptionOrders):
         return BrokerAdapterManifest(
             adapter_id=self.adapter_id,
             display_name="IBKR Paper Adapter",
-            adapter_version="0.2.0",
+            adapter_version=VERSION,
             protocol_version="1.1",
             environment="PAPER",
             entrypoint="algo_trader_broker_adapter_ibkr_paper:create_adapter",
