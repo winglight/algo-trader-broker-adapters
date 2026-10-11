@@ -95,6 +95,13 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_sn
     def subscribe(req_id, contract, generic, snapshot, regulatory, options):
         assert generic == "" and snapshot is False and regulatory is False
 
+        def unavailable():
+            ib.wrapper.lastTime = datetime.now(timezone.utc)
+            ib.wrapper.marketDataType(req_id, 1)
+            ib.wrapper.priceSizeTick(req_id, 1, -1, 0)
+            ib.wrapper.priceSizeTick(req_id, 2, -1, 0)
+            ib.wrapper.tcpDataProcessed()
+
         def receive():
             ib.wrapper.lastTime = datetime.now(timezone.utc)
             ib.wrapper.marketDataType(req_id, 1)
@@ -102,7 +109,8 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_sn
             ib.wrapper.priceSizeTick(req_id, 2, 1.30, 7)
             ib.wrapper.tickOptionComputation(req_id, 13, 0, .25, .55, 1.275, .01, .02, .12, -.03, 590.)
             ib.wrapper.tcpDataProcessed()
-        asyncio.get_running_loop().call_soon(receive)
+        asyncio.get_running_loop().call_soon(unavailable)
+        asyncio.get_running_loop().call_later(.01, receive)
 
     monkeypatch.setattr(ib, "reqContractDetailsAsync", contract_details)
     monkeypatch.setattr(ib, "reqSecDefOptParamsAsync", parameters)
@@ -347,6 +355,8 @@ async def market_data_flow(adapter, ib, snapshot_request, monkeypatch, *, calend
     first = adapter.stream_option_quotes(QuoteSubscription(**base, owner_id="owner-one", lease_seconds=30))
     second = adapter.stream_option_quotes(QuoteSubscription(**base, owner_id="owner-two", lease_seconds=30))
     try:
+        q1, q2 = await asyncio.gather(anext(first), anext(second))
+        assert q1.quality == q2.quality == "MISSING"
         q1, q2 = await asyncio.gather(anext(first), anext(second))
         assert q1.canonical_id == q2.canonical_id == base["bindings"][0].canonical_id
         assert q1.quality == q2.quality == "EXECUTABLE"

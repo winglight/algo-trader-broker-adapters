@@ -60,7 +60,12 @@ async def read_snapshot(ib, request, contracts, *, timeout):
             greeks.register(req_id)
             ib.client.reqMktData(req_id, contract, "", False, False, [])
         deadline = asyncio.get_running_loop().time() + timeout
-        while not all(len(ticks[id(ticker)]) == 2 for _, ticker in subscriptions):
+        # IB may first deliver -1/NaN sides (including when changing to frozen
+        # data), then the actual quote. Missing-side callbacks are not a final
+        # snapshot; retain the request until both prices arrive or time expires.
+        while not all(len(ticks[id(ticker)]) == 2
+                      and all(side[0] is not None for side in ticks[id(ticker)].values())
+                      for _, ticker in subscriptions):
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
                 break
