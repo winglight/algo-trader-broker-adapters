@@ -189,12 +189,15 @@ async def parse(raw, *, account, accounts, resolve_contract, retain, observed=No
         if trade_unresolved:
             page = replace(page, complete=False,
                 unresolved_refs=tuple(sorted(set(page.unresolved_refs + trade_unresolved))))
-        result = await statement_store.record(raw, metadata, page)
         trade_unresolved = ()
+        # Retain every financial work item before the statement can advance
+        # coverage. A crash here leaves raw evidence/work pending, never a
+        # completed day whose cancellation or fee has not been published.
         if proofs:
             trade_unresolved += tuple(await statement_store.trade_cancellations(raw, proofs))
         if fees:
             trade_unresolved += tuple(await statement_store.trade_fees(raw, metadata, fees))
+        result = await statement_store.record(raw, metadata, page)
         if trade_unresolved:
             return replace(result, complete=False,
                 unresolved_refs=tuple(sorted(set(result.unresolved_refs + trade_unresolved))))
