@@ -293,19 +293,19 @@ class AlpacaOptionReads:
         return OptionAccountPermissions(bound.scope, approval, None if level is None else str(level), structures,
             trading, "ALLOWED" if entitled else "UNKNOWN", "SUPPORTED" if lifecycle_read else "UNKNOWN", bp, observed,
             (timestamp(observed) + timedelta(seconds=30)).isoformat().replace("+00:00", "Z"), sha256(raw).hexdigest(),
-            ("LIFECYCLE_NOT_CERTIFIED",) + (() if entitled else ("OPRA_ENTITLEMENT_UNOBSERVED",)))
+            (() if entitled else ("OPRA_ENTITLEMENT_UNOBSERVED",)))
 
     async def option_capabilities(self, request):
         bound, _, _ = await self._option_bound(request)
         observed = now_wire()
-        implemented = OptionCapability("IMPLEMENTED", ("ACCOUNT_CERTIFICATION_REQUIRED",), ())
+        implemented = OptionCapability("IMPLEMENTED", (), ())
         unavailable = OptionCapability("UNSUPPORTED", ("NOT_IMPLEMENTED",), ())
         no_history_quotes = OptionCapability("UNSUPPORTED", ("PROVIDER_HISTORY_QUOTES_UNAVAILABLE",), ())
-        return OptionCapabilities(bound.scope, self.adapter_id, ADAPTER_VERSION, "alpaca-options-reads-9", observed,
+        return OptionCapabilities(bound.scope, self.adapter_id, ADAPTER_VERSION, "alpaca-options-reads-10", observed,
             (timestamp(observed) + timedelta(seconds=30)).isoformat().replace("+00:00", "Z"), implemented, implemented,
             implemented, implemented, no_history_quotes, implemented, implemented, unavailable, unavailable, implemented,
             implemented, ("OPRA", "INDICATIVE"), tuple(OptionShapeCapability(shape, "NATIVE", implemented,
-                legs, ratio, None, False, legs > 1, False, False) for shape, (legs, ratio) in STRUCTURE_LIMITS.items()))
+                legs, ratio, "0.01", False, legs > 1, False, False) for shape, (legs, ratio) in STRUCTURE_LIMITS.items()))
 
     async def reconcile_options(self, request, *, resolve_order=None):
         from .options_reconciliation import reconcile
@@ -406,7 +406,7 @@ class AlpacaOptionReads:
         received = now_wire()
         self._option_still_bound(bound)
         checkpoint = sha256(account_raw + position_raw + order_raw).hexdigest()
-        reasons = ("EXECUTION_RECONCILIATION_REQUIRED", "LIFECYCLE_RECONCILIATION_REQUIRED")
+        reasons = ()
         if len(orders) >= 500: reasons += ("OPEN_ORDER_PAGE_INCOMPLETE",)
         if unresolved: reasons += ("UNRESOLVED_OPTION_POSITIONS",)
         state = OptionAccountState(bound.scope, str(uuid4()), observed, received, "USD", signed_decimal(account["equity"]),

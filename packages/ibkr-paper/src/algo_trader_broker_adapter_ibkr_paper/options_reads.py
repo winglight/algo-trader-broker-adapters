@@ -22,13 +22,23 @@ from algo_trader_broker_sdk.options import (
     QualificationRequest, QualificationResult, SnapshotRequest, check, decimal_wire,
     option_contract_id, timestamp,
 )
-from algo_trader_broker_sdk.options_capabilities import OptionCapabilities, OptionCapability
+from algo_trader_broker_sdk.options_capabilities import OptionCapabilities, OptionCapability, OptionShapeCapability
 
 from ._version import VERSION
 STANDARD_RULE = "ib-spy-qqq-standard-occ-v1"
 STANDARD_SOURCE = "https://www.cboe.com/exchange-traded-stock/etp-options-spec"
 STANDARD_CHECKED_AT = "2026-10-08"
 FEED = "IBKR_LIVE"
+# Existing native OPT/BAG builder support for standard SPY/QQQ contracts.
+# Software support does not attest account approval or guarantee acceptance.
+# Penny prices: https://listingcenter.nasdaq.com/RuleBook/Nasdaq/rules/nasdaq-options-3
+NATIVE_SHAPES = {
+    "LONG_CALL": (1, 1), "LONG_PUT": (1, 1),
+    "CALL_DEBIT_VERTICAL": (2, 1), "PUT_DEBIT_VERTICAL": (2, 1),
+    "CALL_CREDIT_VERTICAL": (2, 1), "PUT_CREDIT_VERTICAL": (2, 1),
+    "CALL_BUTTERFLY": (3, 2), "IRON_CONDOR": (4, 1), "IRON_BUTTERFLY": (4, 1),
+    "LONG_STRADDLE": (2, 1), "LONG_STRANGLE": (2, 1),
+}
 
 
 def now_wire():
@@ -270,13 +280,15 @@ class IBOptionReads:
     async def option_capabilities(self, request):
         async def read(ib, bound):
             observed = now_wire()
-            implemented = OptionCapability("IMPLEMENTED", ("ACCOUNT_CERTIFICATION_REQUIRED",), ())
+            implemented = OptionCapability("IMPLEMENTED", (), ())
             unavailable = OptionCapability("UNSUPPORTED", ("NOT_IMPLEMENTED",), ())
             lifecycle = OptionCapability("IMPLEMENTED", ("LIFECYCLE_SOURCE_UNVERIFIED",), ())
-            return OptionCapabilities(bound.scope, self.adapter_id, VERSION, "ib-options-reads-7", observed,
+            shapes = tuple(OptionShapeCapability(name, "NATIVE", implemented, legs, ratio, "0.01",
+                False, legs > 1, False, False) for name, (legs, ratio) in NATIVE_SHAPES.items())
+            return OptionCapabilities(bound.scope, self.adapter_id, VERSION, "ib-options-reads-8", observed,
                 (timestamp(observed) + timedelta(seconds=30)).isoformat().replace("+00:00", "Z"),
                 implemented, implemented, implemented, implemented, implemented, implemented, lifecycle,
-                unavailable, unavailable, implemented, implemented, (FEED, "provider_native"), ())
+                unavailable, unavailable, implemented, implemented, (FEED, "provider_native"), shapes)
         return await self._option_read(request, read)
 
     async def option_account_permissions(self, request):

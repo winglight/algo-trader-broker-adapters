@@ -34,8 +34,12 @@ def session(binding, detail, request):
     zone = ZoneInfo("America/New_York")
     times = [datetime.strptime(value, "%Y%m%d:%H%M").replace(tzinfo=zone)
              .astimezone(timezone.utc).isoformat().replace("+00:00", "Z") for value in values]
+    # Native limit orders use outsideRth=False. Their effective entry/close
+    # window is this exact contract's RTH session, before the user's buffers.
+    # Exercise is a separate unsupported operation; no exercise cutoff is
+    # invented or made a prerequisite for an ordinary open/close order.
     return OptionTradingSession(binding.canonical_id, request.trade_date, True, *times,
-        None, None, None, ("BROKER_ENTRY_CUTOFF_UNKNOWN", "BROKER_CLOSE_CUTOFF_UNKNOWN", "EXERCISE_CUTOFF_UNKNOWN"))
+        times[1], times[1], None, ())
 
 
 async def read_calendar(adapter, request):

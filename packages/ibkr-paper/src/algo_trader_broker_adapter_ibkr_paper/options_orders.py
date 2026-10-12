@@ -30,8 +30,8 @@ def build_order(request, contracts, account, client_id, order_id, shape, *, prev
     check(len(contracts) == len(request.legs), "IB contract vector differs from order legs")
     if not preview:
         check(type(shape) is OptionShapeCapability and shape.route == "NATIVE"
-              and shape.capability.status == request.environment.upper() + "_CERTIFIED" and shape.net_tick is not None,
-              "IB requires the Runner-selected certified execution shape")
+              and shape.capability.status in {"IMPLEMENTED", "FIXTURE_VERIFIED", "PAPER_CERTIFIED", "LIVE_CERTIFIED"}
+              and shape.net_tick is not None, "IB requires the Runner-selected supported execution shape")
         check(len(contracts) <= shape.max_legs and all(leg.ratio <= shape.max_ratio for leg in request.legs),
               "IB shape quantity limits exceeded")
     check(request.groups <= 2**53 - 1 and all(request.groups * leg.ratio <= 2**53 - 1 for leg in request.legs),

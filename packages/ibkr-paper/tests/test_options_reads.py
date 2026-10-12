@@ -127,10 +127,11 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_sn
     try:
         capabilities = await adapter.option_capabilities(scope)
         assert capabilities.discovery.status == capabilities.quotes.status == "IMPLEMENTED"
-        assert capabilities.shapes == () and capabilities.greeks.status == "IMPLEMENTED"
-        with pytest.raises(BrokerCapabilityError, match="CAPABILITY_NOT_CERTIFIED"):
-            capabilities.require_entry(scope=scope, structure="LONG_CALL", route="NATIVE",
-                feed="IBKR_LIVE", now=datetime.now(timezone.utc))
+        assert capabilities.greeks.status == "IMPLEMENTED"
+        assert len(capabilities.shapes) == 11
+        shape = capabilities.require_entry(scope=scope, structure="LONG_CALL", route="NATIVE",
+            feed="IBKR_LIVE", now=datetime.now(timezone.utc))
+        assert shape.capability.status == "IMPLEMENTED" and shape.net_tick == "0.01"
         query = OptionContractQuery(**values, underlying="SPY", expiry_from="2026-10-16", expiry_to="2026-10-16",
             right="C", strike_min="590", strike_max="595", cursor=None, limit=1)
         first = await adapter.list_option_contracts(query)
@@ -157,7 +158,7 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_sn
         assert all(q.provider == "IBKR" and q.greeks_as_of == q.native_greeks.observed_at
                    and (q.delta, q.gamma, q.vega_per_vol_point, q.theta_per_day, q.iv_decimal)
                    == ("0.55", "0.02", "0.12", "-0.03", "0.25") for q in snapshot.quotes)
-        assert capabilities.greeks.reason_codes == ("ACCOUNT_CERTIFICATION_REQUIRED",)
+        assert capabilities.greeks.reason_codes == ()
         assert all(q.native_greeks.inputs_asof is None and q.native_greeks.units == "PER_SHARE_PER_VOL_POINT_PER_DAY"
                    and q.native_greeks.model_version is None for q in snapshot.quotes)
         assert [json.loads(q.native_greeks.raw_json)["values"]["delta"] for q in snapshot.quotes] == ["0.550000000000045"] * 2
@@ -456,7 +457,8 @@ async def market_data_flow(adapter, ib, snapshot_request, monkeypatch, *, calend
     calendar = await adapter.option_calendar(request)
     assert all((row.session_open_at, row.session_close_at) == ("2026-10-08T13:30:00Z", "2026-10-08T20:15:00Z")
                for row in calendar.sessions)
-    assert all(row.broker_entry_cutoff_at is None and row.reason_codes for row in calendar.sessions)
+    assert all(row.broker_entry_cutoff_at == row.broker_close_cutoff_at == row.session_close_at
+        and row.exercise_cutoff_at is None and not row.reason_codes for row in calendar.sessions)
     closed = await adapter.option_calendar(replace(request, trade_date="2026-10-10"))
     assert all(not row.is_trading_day and row.session_close_at is None for row in closed.sessions)
     if calendar_reader is not None:
@@ -560,9 +562,9 @@ async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None,
         bindings = tuple(adapter._option_catalog[key][0] for key in ("1590", "1595"))
         contracts = [adapter._option_catalog[key][2].contract for key in ("1590", "1595")]
         for combo in (False, True):
-            shape = OptionShapeCapability("CALL_DEBIT_VERTICAL" if combo else "LONG_CALL", "NATIVE",
-                OptionCapability("PAPER_CERTIFIED", ("EXPLICIT_FIXTURE_ONLY",), ("synthetic-ib-shape",)),
-                2 if combo else 1, 1, "0.01", False, combo, False, False)
+            native_capabilities = await adapter.option_capabilities(scope)
+            shape = next(item for item in native_capabilities.shapes
+                if item.structure == ("CALL_DEBIT_VERTICAL" if combo else "LONG_CALL"))
             request = OptionExecutionRequest(**asdict(scope), command_id="ib-bag" if combo else "ib-opt",
                 client_order_id="ato-fixture-bag" if combo else "ato-fixture-opt", plan_hash="b" * 64,
                 authorization_ref="fixture-close-permit" if combo else "fixture-reservation", quote_snapshot_ref="c" * 64,
