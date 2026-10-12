@@ -229,7 +229,7 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_sn
         cash_order = Order(permId=20980, orderRef="fixture-cash-entry", account="DU-OPTIONS-FIXTURE",
             action="BUY", orderType="LMT", totalQuantity=1, lmtPrice=20, tif="DAY", filledQuantity=1)
         def cash_completed(api_only):
-            assert api_only
+            assert api_only is False
             ib.wrapper.completedOrder(cash_contract, cash_order, OrderState(status="Filled"))
             ib.wrapper.completedOrdersEnd()
         def cash_executions(req_id, query):
@@ -276,17 +276,29 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_sn
         assert not page.complete and page.unresolved_refs == ("IB_FLEX_PENDING",)
         # Rebuild the reader, retaining only the durable reference port.
         adapter._flex = flex.FlexReader(settings)
+        page = await adapter.option_lifecycle_events(ActivityQuery(**values, since=None, cursor=None, limit=200),
+            retain_evidence=retain, flex_state=store)
+        assert page.complete
+        # The original current-account read must not touch either retained or
+        # remote Flex data, even when the caller supplies an old report store.
+        store.page = AsyncMock(side_effect=AssertionError("Current account must not read Flex"))
+        store.source_statement = AsyncMock(side_effect=AssertionError("Current account must not read Flex"))
         state = await adapter.option_account_state(scope, retain_lifecycle=retain, flex_state=store)
+        store.page.assert_not_awaited()
+        store.source_statement.assert_not_awaited()
+        store.page = read_statement_page
         assert calls == [("SendRequest", "123"), ("GetStatement", "987"), ("GetStatement", "987")]
         assert list(pending.values()) == [None] and sha256(report).hexdigest() in retained
-        assert len(state.activities) == 1
+        assert not state.activities and not state.fees
+        from algo_trader_broker_adapter_ibkr_paper.options_cash_fees import parse as parse_fees
+        report_fees, _ = await parse_fees(report, account="DU-OPTIONS-FIXTURE", retain=retain)
         assert [(fee.source, fee.activity_id, fee.fee_cash, fee.effective_date,
-                 fee.effective_at, fee.broker_execution_id) for fee in state.fees] == [
+                 fee.effective_at, fee.broker_execution_id) for fee in report_fees] == [
             ("IB_FLEX_ACCOUNT_FEE", "31001", "0.12", "2026-10-07", None, None),
             ("IB_FLEX_ACCOUNT_FEE", "31002", "-0.02", "2026-10-07", None, None)]
         assert not state.fees_complete and "IB_COMMISSION_RECONCILIATION_REQUIRED" in state.fee_quality_reasons
-        assert all(fee.raw_ref in retained for fee in state.fees)
-        lifecycle = state.activities[0]
+        assert all(fee.raw_ref in retained for fee in report_fees)
+        lifecycle = page.events[0]
         assert (lifecycle.kind, lifecycle.signed_option_contracts_delta, lifecycle.delivered_shares,
                 lifecycle.cash_delta, lifecycle.effective_date, lifecycle.effective_at) == (
                     "ASSIGNMENT", 1, -100, "59500", "2026-10-07", None)
@@ -325,7 +337,7 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_sn
         assert [(item.instrument_id,item.symbol,item.signed_quantity) for item in stock.positions] == [('IBKR:100','SPY','-100')]
         assert stock.raw_ref in retained and stock.positions[0].raw_ref in retained
         assert json.loads(retained[stock.raw_ref])['source'] == 'IB_POSITION_MULTI'
-        assert not state.orders_complete and not state.executions_complete and not state.lifecycle_complete
+        assert state.orders_complete and not state.executions_complete and not state.lifecycle_complete
         assert [(r.broker_order_session_key, r.broker_order_id) for r in state.open_order_refs] == [("IBKR_PERM_ID", "19001")]
         assert state.source_checkpoint in retained
         assert len(state.cash_executions) == 1
@@ -517,7 +529,7 @@ async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None,
         asyncio.get_running_loop().call_soon(receive)
 
     def completed_orders(api_only):
-        assert api_only is True
+        assert api_only is False
         def receive():
             for contract, order, state in native_orders.values():
                 if state.status in {"Filled", "Cancelled"}:

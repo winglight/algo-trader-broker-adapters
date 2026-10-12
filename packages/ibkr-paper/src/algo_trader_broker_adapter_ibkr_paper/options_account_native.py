@@ -188,7 +188,8 @@ async def completed_orders(ib, account, *, timeout):
         rows.append(dict(order_id=native_order.orderId, contract=raw_value(contract), order=raw_value(native_order),
                          state=raw_value(state), received_at=now_wire()))
     with observe_callbacks(ib.wrapper, {"completedOrder": order}):
-        future = ib.reqCompletedOrdersAsync(True)
+        # Include manual orders in the broker's available completed-order window.
+        future = ib.reqCompletedOrdersAsync(False)
         try:
             await asyncio.wait_for(future, timeout)
             check(not errors, errors[0] if errors else "Invalid completed orders")

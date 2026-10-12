@@ -80,9 +80,13 @@ download. Callback observations are retained through the existing evidence
 archive when supplied. USD `AvailableFunds` is kept separate from stock
 `BuyingPower`; position conIds are qualified again. Original `avgCost` stays in
 its unverified unit until a matching native cost sample is available. Native permIds are stable order
-references; missing permIds preserve client/order/generation identity. Manual
-order visibility, executions, lifecycle and commission coverage remain explicitly
-incomplete. These reads do not grant option approval or enable trading.
+references; missing permIds preserve client/order/generation identity. A successful
+all-open-order download marks current orders complete, including manual orders.
+Executions retain their bounded history coverage. Current account reads never
+read or download Flex, including retained statements. Real-time order, execution
+and commission callbacks feed the durable Orders ledger. Historical lifecycle
+and fee finality remain separate facts, not ordinary order prerequisites.
+These reads do not grant option approval or enable trading.
 
 ## Guarded option submission
 
