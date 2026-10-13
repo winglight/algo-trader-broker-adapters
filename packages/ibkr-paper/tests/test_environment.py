@@ -62,9 +62,10 @@ def test_connection_order_and_callback_share_explicit_environment(environment, n
             1, 1, '0.01', False, False, False, False)
         _, order = build_order(request, [contract], native_account, 40, 100, shape)
         assert (order.account, order.orderRef, order.totalQuantity) == (native_account, request.client_order_id, 2)
-        other = 'PAPER_CERTIFIED' if environment == 'live' else 'LIVE_CERTIFIED'
+        # Execution uses the explicit native environment, not certification labels.
         with pytest.raises(BrokerContractError):
-            build_order(request, [contract], native_account, 40, 100, replace(shape, capability=replace(shape.capability, status=other)))
+            build_order(replace(request, environment='paper' if environment == 'live' else 'live'),
+                [contract], native_account, 40, 100, shape)
 
         raw = dict(native_account_ref=native_account, kind='openOrder', observed_at=at, contract={'secType': 'OPT'},
             order=dict(account=native_account, permId=123, orderRef=request.client_order_id, whatIf=False), state={'status': 'Submitted'})
