@@ -2537,12 +2537,12 @@ class IBAsyncClient:
                         with suppress(asyncio.CancelledError):
                             await queue_task
                         raise
-                    for task in unfinished:
-                        task.cancel()
-                    for task in unfinished:
-                        if isinstance(task, asyncio.Task):
-                            with suppress(asyncio.CancelledError):
-                                await task
+                    # The error notification future belongs to the whole lease.
+                    # Only an unfinished per-tick queue read can be cancelled.
+                    if queue_task in unfinished:
+                        queue_task.cancel()
+                        with suppress(asyncio.CancelledError):
+                            await queue_task
                     if failure_future is not None and failure_future in done:
                         code, message = failure_future.result()
                         raise IBMarketDataError(
@@ -2553,6 +2553,8 @@ class IBAsyncClient:
                     result = next(iter(done))
                     yield result.result()
             finally:
+                if failure_future is not None and not failure_future.done():
+                    failure_future.cancel()
                 # Avoid augmented assignment on a free variable which causes UnboundLocalError
                 if use_pending:
                     event = pending_event
