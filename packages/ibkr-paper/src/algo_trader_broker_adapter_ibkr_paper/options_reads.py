@@ -7,7 +7,7 @@ excluded. A read is not account permission, calendar or trading certification.
 
 import asyncio
 from collections import OrderedDict, deque
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from hashlib import sha256
@@ -250,6 +250,12 @@ class IBOptionReads:
             for expected in request.contracts:
                 check(expected.canonical_id == option_contract_id(expected.key), "Contract economics differ from canonical identity")
                 key = expected.key
+                cached = next((value for value in self._option_catalog.values()
+                    if value[1].canonical_id == expected.canonical_id and value[1].key == key
+                    and timestamp(value[0].qualified_at).date() == datetime.now(timezone.utc).date()), None)
+                if cached is not None:
+                    results.append(QualificationResult(expected.canonical_id, 'EXACT', cached[0], cached[1], ()))
+                    continue
                 status, contract, binding = "UNSUPPORTED", None, None
                 if standard_key(key):
                     if key.underlying not in underlyings:
@@ -317,11 +323,11 @@ class IBOptionReads:
         contracts = []
         for binding in request.bindings:
             current = self._option_catalog.get(binding.broker_contract_id)
-            check(current is not None and current[0] == binding,
+            check(current is not None and replace(current[0], qualified_at=binding.qualified_at) == binding,
                   "IB read requires the current exact native qualification")
-            if fresh:
-                check(0 <= (datetime.now(timezone.utc) - timestamp(binding.qualified_at)).total_seconds() < 30,
-                      "IB quote requires a fresh native qualification")
+            # Re-reading account positions may refresh qualified_at for the
+            # same economics. Quote freshness belongs to native ticks, not to
+            # the timestamp of an unchanged contract qualification.
             contracts.append(current[2].contract)
         return contracts
 

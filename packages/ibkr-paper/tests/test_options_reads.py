@@ -162,6 +162,11 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_sn
         existing = ib.wrapper.startTicker(900, native, "mktData")
         request = SnapshotRequest(**values, bindings=bindings, feed="IBKR_LIVE", purpose="ENTRY" if delayed_greeks else "RESEARCH",
                                   max_age_ms=5000, max_leg_skew_ms=1000)
+        cached = adapter._option_catalog['1590']
+        adapter._option_catalog['1590'] = (replace(cached[0], qualified_at=(datetime.now(timezone.utc)-timedelta(minutes=1)).isoformat().replace('+00:00','Z')), *cached[1:])
+        assert adapter._option_bound_contracts(request, fresh=True)[0].conId == 1590
+        with pytest.raises(BrokerContractError, match='current exact native qualification'):
+            adapter._option_bound_contracts(replace(request, bindings=(replace(bindings[0],metadata_version='changed'),bindings[1])))
         snapshot = await adapter.option_snapshot(request)
         assert snapshot.complete and not snapshot.missing_contract_ids
         assert all((q.bid, q.ask, q.bid_size, q.ask_size, q.quality) == ("1.25", "1.3", 5, 7, "EXECUTABLE")
