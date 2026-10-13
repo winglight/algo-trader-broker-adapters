@@ -4625,6 +4625,7 @@ def _execution_to_dict(execution: Any) -> dict[str, Any]:
         return {}
     fields = [
         "execId",
+        "acctNumber",
         "orderId",
         "price",
         "shares",
