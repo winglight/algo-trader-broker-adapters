@@ -30,6 +30,11 @@ async def test_standard_contract_discovery_qualification_and_live_snapshot(monke
     await read_flow(monkeypatch, exercise_orders=True)
 
 
+@pytest.mark.asyncio
+async def test_entry_snapshot_waits_for_later_native_greeks(monkeypatch):
+    await read_flow(monkeypatch, delayed_greeks=True)
+
+
 def flex_xml(contract, binding, *, account="DU-OPTIONS-FIXTURE", kind="Assignment", day="20261007"):
     """Synthetic locked EAE layout; not an account-certified IB statement."""
     from xml.etree.ElementTree import Element, SubElement, tostring
@@ -63,7 +68,7 @@ def flex_xml(contract, binding, *, account="DU-OPTIONS-FIXTURE", kind="Assignmen
     return tostring(root)
 
 
-async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_snapshot=None, exercise_orders=False, gate_factory=None, consume_event=None, cancel_sender=None, reconcile_reader=None, preview_reader=None, calendar_reader=None):
+async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_snapshot=None, exercise_orders=False, gate_factory=None, consume_event=None, cancel_sender=None, reconcile_reader=None, preview_reader=None, calendar_reader=None, delayed_greeks=False):
     ib = IB()
     monkeypatch.setattr(ib, "isConnected", lambda: True)
     monkeypatch.setattr(ib, "managedAccounts", lambda: ["DU-OPTIONS-FIXTURE"])
@@ -107,7 +112,13 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_sn
             ib.wrapper.marketDataType(req_id, 1)
             ib.wrapper.priceSizeTick(req_id, 1, 1.25, 5)
             ib.wrapper.priceSizeTick(req_id, 2, 1.30, 7)
-            ib.wrapper.tickOptionComputation(req_id, 13, 0, .25, .550000000000045, 1.275, .01, .02, .12, -.03, 590.)
+            def receive_greeks():
+                ib.wrapper.tickOptionComputation(req_id, 13, 0, .25, .550000000000045, 1.275, .01, .02, .12, -.03, 590.)
+                ib.wrapper.tcpDataProcessed()
+            if delayed_greeks:
+                asyncio.get_running_loop().call_later(.02, receive_greeks)
+            else:
+                receive_greeks()
             ib.wrapper.tcpDataProcessed()
         asyncio.get_running_loop().call_soon(unavailable)
         asyncio.get_running_loop().call_later(.01, receive)
@@ -149,7 +160,7 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_sn
         # Another consumer's ticker for the same conId survives this finite read.
         native = adapter._option_catalog["1590"][2].contract
         existing = ib.wrapper.startTicker(900, native, "mktData")
-        request = SnapshotRequest(**values, bindings=bindings, feed="IBKR_LIVE", purpose="RESEARCH",
+        request = SnapshotRequest(**values, bindings=bindings, feed="IBKR_LIVE", purpose="ENTRY" if delayed_greeks else "RESEARCH",
                                   max_age_ms=5000, max_leg_skew_ms=1000)
         snapshot = await adapter.option_snapshot(request)
         assert snapshot.complete and not snapshot.missing_contract_ids
@@ -174,6 +185,7 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_sn
         assert canceled == [1000, 1001] and ib.wrapper.reqId2Ticker == {900: existing}
         assert ib.wrapper.ticker2ReqId["mktData"][existing] == 900
 
+        delayed_greeks = False
         await market_data_flow(adapter, ib, request, monkeypatch, calendar_reader=calendar_reader)
 
         canceled_accounts, canceled_positions, retained = [], [], {}

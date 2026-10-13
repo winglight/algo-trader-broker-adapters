@@ -65,7 +65,9 @@ async def read_snapshot(ib, request, contracts, *, timeout):
         # snapshot; retain the request until both prices arrive or time expires.
         while not all(len(ticks[id(ticker)]) == 2
                       and all(side[0] is not None for side in ticks[id(ticker)].values())
-                      for _, ticker in subscriptions):
+                      and (request.purpose != "ENTRY" or all(value is not None for value in
+                           normalized_greeks(greeks.observation(req_id, binding, ticker.marketDataType))[:4]))
+                      for binding, (req_id, ticker) in zip(request.bindings, subscriptions)):
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
                 break
