@@ -96,6 +96,16 @@ def contract_from_details(detail, underlying, under_con_id):
 
 
 class IBOptionReads:
+    async def option_account_identities(self):
+        """Handshake account identities; no summary subscription or reconnect."""
+        from .exceptions import IBConnectionError
+        async def read(ib):
+            return tuple(sorted(set(ib.managedAccounts())))
+        try:
+            return await self._client.read_options(read)
+        except IBConnectionError as exc:
+            raise BrokerConnectionError('IB account identity requires the current connection') from exc
+
     def _init_option_reads(self):
         self._option_account_binding = None
         self._option_connection = None
