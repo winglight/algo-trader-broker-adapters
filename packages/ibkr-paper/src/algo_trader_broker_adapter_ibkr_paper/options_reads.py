@@ -257,12 +257,13 @@ class IBOptionReads:
 
         async def read(ib, bound):
             results, underlyings = [], {}
+            now = datetime.now(timezone.utc)
             for expected in request.contracts:
                 check(expected.canonical_id == option_contract_id(expected.key), "Contract economics differ from canonical identity")
                 key = expected.key
                 cached = next((value for value in self._option_catalog.values()
                     if value[1].canonical_id == expected.canonical_id and value[1].key == key
-                    and timestamp(value[0].qualified_at).date() == datetime.now(timezone.utc).date()), None)
+                    and timedelta(0) <= now - timestamp(value[0].qualified_at) < timedelta(days=1)), None)
                 if cached is not None:
                     results.append(QualificationResult(expected.canonical_id, 'EXACT', cached[0], cached[1], ()))
                     continue

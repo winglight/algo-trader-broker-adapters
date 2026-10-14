@@ -163,7 +163,10 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_sn
         request = SnapshotRequest(**values, bindings=bindings, feed="IBKR_LIVE", purpose="ENTRY" if delayed_greeks else "RESEARCH",
                                   max_age_ms=5000, max_leg_skew_ms=1000)
         cached = adapter._option_catalog['1590']
-        adapter._option_catalog['1590'] = (replace(cached[0], qualified_at=(datetime.now(timezone.utc)-timedelta(minutes=1)).isoformat().replace('+00:00','Z')), *cached[1:])
+        before_midnight = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(minutes=1)
+        adapter._option_catalog['1590'] = (replace(cached[0], qualified_at=before_midnight.isoformat().replace('+00:00','Z')), *cached[1:])
+        requalified = await adapter.qualify_option_contracts(QualificationRequest(**values, contracts=contracts))
+        assert requalified.results[0].binding.qualified_at == adapter._option_catalog['1590'][0].qualified_at == before_midnight.isoformat().replace('+00:00','Z')
         assert adapter._option_bound_contracts(request, fresh=True)[0].conId == 1590
         with pytest.raises(BrokerContractError, match='current exact native qualification'):
             adapter._option_bound_contracts(replace(request, bindings=(replace(bindings[0],metadata_version='changed'),bindings[1])))
