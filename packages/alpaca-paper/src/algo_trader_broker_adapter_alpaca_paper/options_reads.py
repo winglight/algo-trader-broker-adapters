@@ -102,11 +102,16 @@ class AlpacaOptionReads:
         from algo_trader_broker_sdk.options import ExerciseInstruction
         return await self._unsupported_option_operation(request, ExerciseInstruction, "OPTION_EXERCISE_UNSUPPORTED")
 
-    async def _option_bound(self, request):
+    async def _option_bound(self, request, *, read_account=False):
         scope = OptionScope(**{name: getattr(request, name) for name in OptionScope.__dataclass_fields__})
         bound = self._option_account_binding
         check(bound is not None and bound.scope == scope and bound.native_account_ref == self._account_id
               and self._connected and scope.environment == self._settings.environment, "Option read requires the current verified account and environment")
+        # Runner has already verified this exact live connection. Quote,
+        # contract and activity reads do not need another funds/account HTTP
+        # request. Account projections alone collect current financial facts.
+        if not read_account:
+            return bound, None, None
         raw = await self._backend.get_option_resource("/v2/account")
         account = decode_native(raw)
         check(type(account) is dict and account.get("id") == bound.native_account_ref, "Native option account changed")
@@ -278,7 +283,7 @@ class AlpacaOptionReads:
         return OptionMarketSnapshot(str(uuid4()), tuple(quotes), tuple(missing), not missing and not data.get("next_page_token"), skew, received)
 
     async def option_account_permissions(self, request):
-        bound, account, raw = await self._option_bound(request)
+        bound, account, raw = await self._option_bound(request, read_account=True)
         observed = now_wire()
         levels = (account.get("options_approved_level"), account.get("options_trading_level"))
         known = all(type(level) is int and level >= 0 for level in levels)
@@ -352,7 +357,7 @@ class AlpacaOptionReads:
         return state
 
     async def _option_account_snapshot(self, request, *, retain_evidence=None):
-        bound, account, account_raw = await self._option_bound(request)
+        bound, account, account_raw = await self._option_bound(request, read_account=True)
         check(account.get("currency") == "USD", "Option account currency must be explicit USD")
         position_raw = await self._backend.get_option_resource("/v2/positions")
         order_raw = await self._backend.get_option_resource("/v2/orders", params=dict(status="open", limit=500, nested="true"))

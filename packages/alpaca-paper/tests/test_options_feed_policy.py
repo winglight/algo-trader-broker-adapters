@@ -40,3 +40,4 @@ async def test_default_feed_and_rest_stream_reference_permission_follow_adapter(
     frame = NativeOptionQuote(b"fixture", dict(t=now,bp="1",ap="1.1",bs=3,**{"as":3}), now)
     stream = normalize_quote(frame, binding, request)
     assert stream.quality == "RESEARCH_ONLY" and stream.reference_pricing_allowed is True
+    assert sum(call.args[0] == '/v2/account' for call in backend.get_option_resource.call_args_list) == 1
