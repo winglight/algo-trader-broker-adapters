@@ -505,12 +505,23 @@ class IBKRPaperAdapter(IBOptionReads, IBOptionOrders):
         if not isinstance(contract, Mapping):
             return contract
         from .contract_builder import ContractParams, IBContractFactory
-
+        # A serialized unqualified descriptor may include the SDK's zero
+        # sentinel. It is not a qualified native identity: retaining it in
+        # metadata would select the conId-only path and drop option economics.
+        metadata = dict(contract)
+        for name in ('conId','con_id','contractId','contract_id'):
+            if metadata.get(name) in (0,'0'):
+                metadata.pop(name)
+        symbol = str(contract.get('symbol') or '')
+        sec_type = str(contract.get('secType') or contract.get('sec_type') or 'STK')
+        currency = str(contract.get('currency') or 'USD')
+        if sec_type in {'CASH','FX'} and len(symbol) == 3 and len(currency) == 3:
+            symbol += currency
         params = ContractParams(
-            symbol=str(contract.get("symbol") or ""),
-            sec_type=str(contract.get("secType") or contract.get("sec_type") or "STK"),
+            symbol=symbol,
+            sec_type=sec_type,
             exchange=str(contract.get("exchange") or "SMART"),
-            currency=str(contract.get("currency") or "USD"),
+            currency=currency,
             primary_exchange=contract.get("primaryExchange") or contract.get("primary_exchange"),
             local_symbol=contract.get("localSymbol") or contract.get("local_symbol"),
             trading_class=contract.get("tradingClass") or contract.get("trading_class"),
@@ -523,7 +534,7 @@ class IBKRPaperAdapter(IBOptionReads, IBOptionOrders):
             ),
             include_expired=contract.get("includeExpired") or contract.get("include_expired"),
             multiplier=contract.get("multiplier"),
-            metadata=contract,
+            metadata=metadata,
         )
         return IBContractFactory().build(params).contract
 
