@@ -1083,7 +1083,9 @@ class IBAsyncClient:
                 req_mkt_data = getattr(ib, "reqMktData", None)
                 if not callable(req_mkt_data):
                     raise IBMarketDataError("IB client does not support market snapshot requests")
-                ticker = req_mkt_data(contract, generic_tick_list or "", True, False)  # type: ignore[misc]
+                # IB snapshot requests only support default ticks. Enrich generic
+                # fields through a bounded streaming request, cancelled below.
+                ticker = req_mkt_data(contract, generic_tick_list or "", not bool(generic_tick_list), False)  # type: ignore[misc]
                 error_event = getattr(ib, "errorEvent", None)
                 error_handler: Callable[..., None] | None = None
                 failure_future: asyncio.Future[tuple[int | None, str]] | None = None
@@ -1169,6 +1171,12 @@ class IBAsyncClient:
                 return request_task.result()
             finally:
                 _event_remove(error_event, on_error)
+                if not competing_error.done():
+                    competing_error.cancel()
+                if not request_task.done():
+                    request_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await request_task
 
         return await self._run_with_ib_async(fetch)
 
@@ -2537,8 +2545,11 @@ class IBAsyncClient:
                         with suppress(asyncio.CancelledError):
                             await queue_task
                         raise
+                    # The error future belongs to the whole subscription. Only
+                    # cancel the per-iteration queue waiter when an error wins.
                     for task in unfinished:
-                        task.cancel()
+                        if task is queue_task:
+                            task.cancel()
                     for task in unfinished:
                         if isinstance(task, asyncio.Task):
                             with suppress(asyncio.CancelledError):
@@ -2564,6 +2575,8 @@ class IBAsyncClient:
                     event = error_event
                     with suppress(Exception):
                         event -= error_handler  # type: ignore[attr-defined]
+                if failure_future is not None and not failure_future.done():
+                    failure_future.cancel()
                 await self._run_with_ib(
                     lambda client: _cancel_market_data(client, ticker, contract)
                 )
