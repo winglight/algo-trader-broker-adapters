@@ -23,6 +23,14 @@ def query(cursor=None):
         range_end="2026-10-05T00:00:00Z", cursor=cursor)
 
 
+def test_recovery_policy_is_the_same_for_paper_and_live_accounts():
+    from algo_trader_broker_adapter_alpaca_paper import AlpacaPaperAdapter
+    paper=AlpacaPaperAdapter({**SETTINGS,'alpaca_environment':'paper'},backend=Backend())
+    live=AlpacaPaperAdapter({**SETTINGS,'alpaca_environment':'live'},backend=Backend())
+    assert paper.option_recovery_policy()==live.option_recovery_policy()
+    assert paper.option_recovery_policy().activity_source==SOURCE
+
+
 def test_original_byte_spans_keep_numeric_spelling_unicode_full_ids_types_and_unknown_activities():
     raw = (' \n[ {"id":"time::same-uuid","activity_type":"FILL","price":1.123456789012,"note":"中😀\\\""},\n'
            '{"id":"time::same-uuid","activity_type":"OPASN","qty":"2"},'

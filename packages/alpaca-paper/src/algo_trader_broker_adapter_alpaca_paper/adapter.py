@@ -195,6 +195,11 @@ class AlpacaPaperAdapter(AlpacaOptionReads):
         raw = await self._backend.get_option_activity_page(request)
         return OptionRawActivityPage(request, SOURCE, raw)
 
+    def option_recovery_policy(self):
+        from algo_trader_broker_sdk.options_backfill import OptionRecoveryPolicy
+        return OptionRecoveryPolicy("ACTIVITY_PAGES", "ALPACA_ACCOUNT_ACTIVITIES",
+            "ALPACA_ACTIVITY_FILL", "ALPACA_ORDER_DETAIL", "FILL")
+
     def index_option_activity_page(self, page):
         from .options_backfill import index_activity_page
         return index_activity_page(page)

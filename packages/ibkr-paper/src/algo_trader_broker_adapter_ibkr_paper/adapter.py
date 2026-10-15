@@ -303,6 +303,10 @@ class IBKRPaperAdapter(IBOptionReads, IBOptionOrders):
             details={"operation": operation},
         )
 
+    def option_recovery_policy(self):
+        from algo_trader_broker_sdk.options_backfill import OptionRecoveryPolicy
+        return OptionRecoveryPolicy("CALLBACK_RECONCILIATION")
+
     def manifest(self) -> BrokerAdapterManifest:
         return BrokerAdapterManifest(
             adapter_id=self.adapter_id,
