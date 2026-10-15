@@ -25,7 +25,8 @@ STATUS = {"Submitted": "ACKNOWLEDGED", "PreSubmitted": "ACKNOWLEDGED", "Filled":
 def execution_revision(exec_id):
     from .account_identity import execution_identity
     original, sequence = execution_identity(exec_id)
-    revision = OptionExecutionRevision("IB_EXECUTION_ID", original, sequence)
+    revision = OptionExecutionRevision("IB_EXECUTION_ID", original, sequence,
+        provider_id="IBKR", order_namespace="IBKR_PERM_ID", native_execution_id=exec_id)
     revision.check_native_id(exec_id)
     return revision
 
