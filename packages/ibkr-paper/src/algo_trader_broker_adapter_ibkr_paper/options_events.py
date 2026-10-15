@@ -154,11 +154,11 @@ async def decode(event, resolve):
 
 
 async def interpret(event, resolve):
-    from .settings import account_matches_environment
+    from .settings import native_account_is_exact
     check(event.source == SOURCE and event.scope.environment in {"paper", "live"}, "Unsupported IB callback source")
     raw = json.loads(event.raw_payload)
     native_account = raw["native_account_ref"]
-    check(account_matches_environment(native_account, event.scope.environment), "IB callback differs from its trading environment")
+    check(native_account_is_exact(native_account), "IB callback requires an exact native account reference")
     kind = raw["kind"]
     if kind in {"openOrder", "completedOrder", "orderStatus"}:
         order, contract, state = raw["order"], raw["contract"], raw["state"]

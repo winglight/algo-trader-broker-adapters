@@ -19,7 +19,8 @@ from algo_trader_broker_adapter_ibkr_paper.options_orders import build_order
 from algo_trader_broker_adapter_ibkr_paper.options_events import SOURCE, decode
 
 
-@pytest.mark.parametrize('environment,native_account', [('paper', 'DU-OPTIONS-FIXTURE'), ('live', 'U-OPTIONS-FIXTURE')])
+@pytest.mark.parametrize('environment',['paper','live'])
+@pytest.mark.parametrize('native_account',['DU-OPTIONS-FIXTURE','U-OPTIONS-FIXTURE','F-OPTIONS-FIXTURE'])
 def test_connection_order_and_callback_share_explicit_environment(environment, native_account, monkeypatch):
     async def scenario():
         settings = IBGatewaySettings(environment=environment, account=native_account, port=14004)
@@ -79,7 +80,14 @@ def test_connection_order_and_callback_share_explicit_environment(environment, n
     asyncio.run(scenario())
 
 
-def test_live_configuration_requires_explicit_native_account():
-    for settings in ({'ib_environment': 'live'}, {'ib_environment': 'live', 'ib_account': 'DU-OPTIONS-FIXTURE'}, {'ib_environment': 'auto'}):
-        with pytest.raises(BrokerContractError):
-            IBKRPaperAdapter(settings, client=object())
+@pytest.mark.parametrize('environment',['paper','live'])
+@pytest.mark.parametrize('account',[None,'DU-OPTIONS-FIXTURE','U-OPTIONS-FIXTURE','F-OPTIONS-FIXTURE'])
+def test_configured_account_is_not_inferred_or_restricted_by_environment(environment,account):
+    IBGatewaySettings(environment=environment,account=account).validate()
+    adapter=IBKRPaperAdapter({'ib_environment':environment,'ib_account':account},client=object())
+    assert adapter.manifest().environment==environment.upper()
+    assert adapter._configured_account==account
+
+
+def test_unknown_environment_is_rejected_as_invalid_configuration():
+    with pytest.raises(BrokerContractError):IBKRPaperAdapter({'ib_environment':'auto'},client=object())

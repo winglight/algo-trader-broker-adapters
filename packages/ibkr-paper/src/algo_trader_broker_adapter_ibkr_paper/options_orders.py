@@ -23,9 +23,9 @@ from .options_reads import now_wire
 
 def build_order(request, contracts, account, client_id, order_id, shape, *, preview=False):
     from ib_async import ComboLeg, Contract, Order
-    from .settings import account_matches_environment
+    from .settings import native_account_is_exact
     check(type(request) is OptionExecutionRequest and request.environment in {"paper", "live"}
-          and account_matches_environment(account, request.environment)
+          and native_account_is_exact(account)
           and request.max_slippage == "0", "IB needs an exact authorized same-environment limit request")
     check(len(contracts) == len(request.legs), "IB contract vector differs from order legs")
     if not preview:

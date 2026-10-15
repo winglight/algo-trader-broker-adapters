@@ -120,10 +120,10 @@ class IBOptionReads:
         self._option_live_observed = None
 
     def bind_option_account(self, verified):
-        from .settings import account_matches_environment
+        from .settings import native_account_is_exact
         check(type(verified) is OptionVerifiedAccount and verified.broker == "IBKR"
               and verified.scope.environment == self._option_environment
-              and account_matches_environment(verified.native_account_ref, self._option_environment)
+              and native_account_is_exact(verified.native_account_ref)
               and (self._configured_account is None or verified.native_account_ref == self._configured_account),
               "Option read requires the configured verified IB account and environment")
         state = self._client.connection_state_snapshot()

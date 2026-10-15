@@ -192,13 +192,13 @@ class IBKRPaperAdapter(IBOptionReads, IBOptionOrders):
         client: Any | None = None,
         supervisor: Any | None = None,
     ) -> None:
-        from .settings import account_matches_environment
+        from .settings import native_account_is_exact
         self._option_environment = str(settings.get("ib_environment", "paper")).strip().lower()
         self._configured_account = _optional_str(settings.get("ib_account"))
         if self._option_environment not in {"paper", "live"}:
             raise BrokerContractError("ib_environment must be paper or live")
-        if self._option_environment == "live" and not account_matches_environment(self._configured_account, self._option_environment):
-            raise BrokerContractError("IB configured environment requires a matching explicit native account")
+        if self._configured_account is not None and not native_account_is_exact(self._configured_account):
+            raise BrokerContractError("IB configured account must be an exact native reference")
         self._init_option_reads()
         from .flex import FlexReader
         self._flex = FlexReader(settings)
@@ -306,6 +306,10 @@ class IBKRPaperAdapter(IBOptionReads, IBOptionOrders):
     def option_recovery_policy(self):
         from algo_trader_broker_sdk.options_backfill import OptionRecoveryPolicy
         return OptionRecoveryPolicy("CALLBACK_RECONCILIATION")
+
+    def decode_option_identity(self, event):
+        from .options_identity import pending_identity
+        return pending_identity(event)
 
     def manifest(self) -> BrokerAdapterManifest:
         return BrokerAdapterManifest(

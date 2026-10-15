@@ -9,13 +9,9 @@ from typing import Mapping
 __all__ = ["IBGatewaySettings"]
 
 
-def account_matches_environment(account: object, environment: str) -> bool:
-    # Limit this integration to explicit retail account identifiers. Port and
-    # market-data type are not proof of a trading environment.
-    return type(account) is str and account.strip() == account and (
-        environment == "paper" and account.startswith("DU") or
-        environment == "live" and account.startswith("U")
-    )
+def native_account_is_exact(account: object) -> bool:
+    # Account authority comes from the verified connection, never a name prefix.
+    return type(account) is str and 0 < len(account) <= 128 and not any(char.isspace() for char in account)
 
 
 @dataclass(slots=True)
@@ -40,8 +36,8 @@ class IBGatewaySettings:
 
         if self.environment not in {"paper", "live"}:
             raise ValueError("IB environment must be paper or live")
-        if self.environment == "live" and not account_matches_environment(self.account, "live"):
-            raise ValueError("IB Live requires an explicit supported native account")
+        if self.account is not None and not native_account_is_exact(self.account):
+            raise ValueError("IB account must be an exact native reference")
 
         if not self.host:
             raise ValueError("IB gateway host must be provided")
