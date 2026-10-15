@@ -58,7 +58,7 @@ class IBOptionEventStream:
             raw = raw_bytes(dict(kind=kind, native_account_ref=self.bound.native_account_ref,
                                  observed_at=now_wire(), **payload))
             native_id = payload.get("execution", {}).get("execId") if isinstance(payload.get("execution"), dict) else None
-            self.pending.append(OptionRawEvent(self.bound.scope, SOURCE, raw, native_id))
+            self.pending.append(OptionRawEvent(self.bound.scope, SOURCE, raw, native_id, delivery='PUSH'))
             if self.failure is None and (self.task is None or self.task.done()):
                 self.task = asyncio.create_task(self.drain())
         except Exception as exc:

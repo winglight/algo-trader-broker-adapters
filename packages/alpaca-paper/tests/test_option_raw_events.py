@@ -41,6 +41,7 @@ async def test_raw_option_bytes_full_id_and_scope_survive_queued_delivery_after_
     await backend.trade_handler(CapturedTradeFrame(RAW, backend.raw_handler))
     assert [event.scope for event in retained] == [SCOPE, changed.scope]
     assert all(event.raw_payload == RAW and event.native_event_id == "prefix::full-native-id" for event in retained)
+    assert all(event.delivery == 'PUSH' for event in retained)
     assert decode_native(retained[0].raw_payload)["data"]["price"] == Decimal("1.123456789012")
     assert stocks == []
     adapter.set_option_event_handler(VERIFIED, None)  # a late detach cannot clear its replacement

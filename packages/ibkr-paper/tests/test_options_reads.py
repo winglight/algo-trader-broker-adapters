@@ -706,6 +706,7 @@ async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None,
         ib.wrapper.commissionReport(corrected_fee)
         await adapter._option_events.flush()
         # Recover from provider downloads, without relying on ib_async's cache.
+        assert all(event.delivery == 'PUSH' for event in evidence if event.source == 'IB_OPTION_CALLBACK')
         ib.wrapper.trades.clear()
         ib.wrapper.permId2Trade.clear()
         ib.wrapper.fills.clear()
@@ -723,6 +724,7 @@ async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None,
         assert reconciled.positions_complete and not reconciled.complete and not reconciled.executions_complete
         assert not reconciled.executions and not reconciled.activities
         detail = await adapter.read_option_order_evidence(OptionNativeOrderQuery(**asdict(scope), order_id=reconciled.orders[1].parent_order_ref))
+        assert detail.delivery == 'READ'
         assert json.loads(detail.raw_payload)["order"]["orderId"] == 0
         assert sum(event.source == "IB_OPTION_SUBMISSION" for event in evidence) == 2
         async def resolve(native_id, symbol):

@@ -138,7 +138,7 @@ class AlpacaPaperAdapter(AlpacaOptionReads):
                     native_id = candidate
             except (ValueError, AttributeError, UnicodeError, RecursionError):
                 pass  # The original malformed bytes still need a receipt.
-            await handler(OptionRawEvent(context.scope, "ALPACA_TRADE_UPDATES", raw, native_id))
+            await handler(OptionRawEvent(context.scope, "ALPACA_TRADE_UPDATES", raw, native_id, delivery='PUSH'))
 
         self._option_event_binding = context
         self._option_evidence_handler = handler
@@ -198,7 +198,8 @@ class AlpacaPaperAdapter(AlpacaOptionReads):
     def option_recovery_policy(self):
         from algo_trader_broker_sdk.options_backfill import OptionRecoveryPolicy
         return OptionRecoveryPolicy("ACTIVITY_PAGES", "ALPACA_ACCOUNT_ACTIVITIES",
-            "ALPACA_ACTIVITY_FILL", "ALPACA_ORDER_DETAIL", "FILL")
+            "ALPACA_ACTIVITY_FILL", "ALPACA_ORDER_DETAIL", "FILL",
+            financial_activity_types=('FEE', 'OPEXC', 'OPASN', 'OPEXP', 'OPTRD'))
 
     def index_option_activity_page(self, page):
         from .options_backfill import index_activity_page
