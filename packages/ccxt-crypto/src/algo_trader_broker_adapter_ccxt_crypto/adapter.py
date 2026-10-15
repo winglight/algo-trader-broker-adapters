@@ -195,6 +195,10 @@ class CCXTCryptoAdapter:
     def capabilities(self) -> BrokerCapabilities:
         return BrokerCapabilities(
             requires_explicit_asset_class=True,
+            latest_price_snapshot_assets=(["CRYPTO_SPOT", "CRYPTO_PERPETUAL"]
+                if self._perpetual is not None else ["CRYPTO_SPOT"]),
+            market_data_sources={asset: "OKX" for asset in
+                ({"CRYPTO_SPOT", "CRYPTO_PERPETUAL"} if self._perpetual is not None else {"CRYPTO_SPOT"})},
             default_time_in_force="GTC",
             adapter_name=self.adapter_id,
             environment="PAPER",
