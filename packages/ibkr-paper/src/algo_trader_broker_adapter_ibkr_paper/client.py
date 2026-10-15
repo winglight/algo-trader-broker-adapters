@@ -1069,6 +1069,9 @@ class IBAsyncClient:
 
         async def fetch_snapshot(ib: IB) -> dict[str, Any]:
             timeout = float(snapshot_timeout or getattr(self._settings, "historical_timeout", 15.0) or 15.0)
+            if contract.secType == 'STK' and not generic_tick_list:
+                from .underlying_quotes import read_stock_snapshot
+                return await read_stock_snapshot(ib, contract, timeout=timeout, serialize=_ticker_to_snapshot)
             ticker: Any | None = None
             req_tickers = getattr(ib, "reqTickersAsync", None)
             if callable(req_tickers) and not generic_tick_list:
@@ -1169,6 +1172,12 @@ class IBAsyncClient:
                 return request_task.result()
             finally:
                 _event_remove(error_event, on_error)
+                # wait() does not propagate cancellation to its children.
+                # A timed-out Runner read must release its native request too.
+                if not request_task.done():
+                    request_task.cancel()
+                    await asyncio.gather(request_task, return_exceptions=True)
+                competing_error.cancel()
 
         return await self._run_with_ib_async(fetch)
 
