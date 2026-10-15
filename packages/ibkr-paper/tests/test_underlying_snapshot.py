@@ -43,6 +43,7 @@ async def test_bbo_returns_without_snapshot_end_and_keeps_existing_stream(monkey
     async def run(fn): return await fn(ib)
     monkeypatch.setattr(client, '_run_with_ib_async', run)
     result = await asyncio.wait_for(client.request_market_snapshot(contract, snapshot_timeout=1), .5)
+    assert result['dataQuality'] == {1:'CURRENT',2:'FROZEN',3:'DELAYED'}[feed]
     assert (result['symbol'], result['dataFeed'], result['bid'], result['ask']) == ('QQQ', expected, '743.85', '743.93')
     assert result['timestamp'] == stamps[0].isoformat() and 'quoteTimestamp' not in result
     assert (result['bidSize'], result['askSize']) == ('5', '7')
@@ -70,7 +71,7 @@ async def test_timeout_and_cancellation_release_only_owned_request(monkeypatch, 
     else:
         result = await client.request_market_snapshot(contract, snapshot_timeout=.01)
         assert result['timestamp'] is None and result['bid'] is None and result['ask'] is None
-        assert result['dataFeed'] == 'UNKNOWN'
+        assert result['dataFeed'] == 'UNKNOWN' and result['dataQuality'] == 'UNKNOWN'
     assert canceled == [1000] and ib.wrapper.reqId2Ticker == {900: existing}
     assert ib.wrapper._reqId2Contract == {900: contract}
     assert len(ib.errorEvent) == initial_handlers

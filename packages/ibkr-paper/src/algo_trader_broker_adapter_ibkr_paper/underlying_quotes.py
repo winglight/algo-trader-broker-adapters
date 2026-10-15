@@ -43,6 +43,7 @@ async def read_stock_snapshot(ib, contract, *, timeout, serialize):
         result = serialize(ticker, contract=contract)
         result.update(symbol=contract.symbol, dataFeed={1: 'IBKR_LIVE', 2: 'IBKR_FROZEN',
             3: 'IBKR_DELAYED', 4: 'IBKR_DELAYED_FROZEN'}.get(ticker.marketDataType, 'UNKNOWN'))
+        result['dataQuality'] = {1:'CURRENT', 2:'FROZEN', 3:'DELAYED', 4:'DELAYED'}.get(ticker.marketDataType, 'UNKNOWN')
         # IB supplies socket receipt times. Never label them exchange quote
         # times, or let a later last/model tick refresh an older BBO side.
         result['timestamp'] = min(side[2] for side in sides.values()).isoformat() if sides else None

@@ -796,6 +796,7 @@ class AlpacaPaperAdapter(AlpacaOptionReads):
                 value(trade, "timestamp") or value(quote, "timestamp")
             ).isoformat(),
             "dataFeed": self._settings.data_feed,
+            "dataQuality": "CURRENT",
             "quoteTimestamp": utc_datetime(value(quote, "timestamp")).isoformat() if quote is not None and value(quote, "timestamp") else None,
         }
 

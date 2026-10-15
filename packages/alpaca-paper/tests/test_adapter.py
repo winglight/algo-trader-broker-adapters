@@ -382,6 +382,7 @@ async def test_market_snapshot_history_and_live_bar_preserve_utc() -> None:
     live_items = [item async for item in live]
 
     assert snapshot["last"] == 201.2
+    assert snapshot["dataQuality"] == "CURRENT"
     assert history[0].time.tzinfo is UTC
     assert live_items[0].close == 201.5
 
