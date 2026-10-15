@@ -22,6 +22,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Iterable, Mapping, T
 from concurrent.futures import ThreadPoolExecutor
 from ib_async import IB
 from ib_async.objects import ExecutionFilter
+from .logging_policy import install_native_logging, mark_expected_scanner_cancellation
 
 from .settings import IBGatewaySettings
 from .exceptions import IBConnectionError, IBMarketDataError, IBOrderError, IBScreenerError
@@ -214,6 +215,7 @@ class IBAsyncClient:
         max_backoff: float = 10.0,
         reconnect_cooldown: float = 3.0,
     ) -> None:
+        install_native_logging()
         self._settings = settings
         self._ib_factory = ib_factory or IB
         self._call_runner = call_runner
@@ -885,6 +887,9 @@ class IBAsyncClient:
             message = str(args[2] or "")
             if req_id is not None and native_req_id not in {None, -1, req_id}:
                 return
+            if code == 165 and "no items retrieved" in message.lower():
+                publish_snapshot()
+                return
             mapped = _map_scanner_error(code, message, closing=closing)
             if mapped is None or error_future.done():
                 return
@@ -930,6 +935,7 @@ class IBAsyncClient:
                 cancelled = True
                 cancel = getattr(ib, "cancelScannerSubscription", None)
                 if callable(cancel):
+                    mark_expected_scanner_cancellation(req_id)
                     with suppress(Exception):
                         cancel(scan_data)
 
@@ -3517,6 +3523,13 @@ class IBAsyncClient:
                     msg,
                 )
             elif code == 1102:
+                connected = False
+                with suppress(Exception):
+                    connected = bool(self._connected.is_set() and ib.isConnected())
+                if not connected:
+                    LOGGER.warning("IB restored notice while client remains disconnected: %s", msg)
+                    asyncio.create_task(self._schedule_reconnect(reason="ib_error_1102_disconnected"))
+                    return
                 LOGGER.info("IB connectivity restored with data maintained (code 1102): %s", msg)
                 self._notify_connection_state(
                     "restored",
