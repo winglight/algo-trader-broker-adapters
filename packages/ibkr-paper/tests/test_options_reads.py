@@ -400,7 +400,16 @@ async def market_data_flow(adapter, ib, snapshot_request, monkeypatch, *, calend
     try:
         q1, q2 = await asyncio.gather(anext(first), anext(second))
         assert q1.quality == q2.quality == "MISSING"
-        q1, q2 = await asyncio.gather(anext(first), anext(second))
+        async def executable(stream):
+            # Book and model callbacks may publish separate intermediate
+            # frames. Verify eventual complete quality within the same native
+            # timeout rather than assuming it is always the second frame.
+            for _ in range(64):
+                quote = await anext(stream)
+                if quote.quality == 'EXECUTABLE':
+                    return quote
+            raise AssertionError('Synthetic native stream never became executable')
+        q1, q2 = await asyncio.wait_for(asyncio.gather(executable(first),executable(second)),2)
         assert q1.canonical_id == q2.canonical_id == base["bindings"][0].canonical_id
         assert q1.quality == q2.quality == "EXECUTABLE"
         assert q1.native_greeks is not None and q2.native_greeks is not None
