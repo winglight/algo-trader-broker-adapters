@@ -160,6 +160,10 @@ class AlpacaPaperAdapter(AlpacaOptionReads):
             return await decode_fill_activity(event, resolve_contract, resolve_order)
         return await decode_trade_update(event, resolve_contract)
 
+    def normalize_option_execution_identity(self, origin, execution_id, order_namespace):
+        from .options_identity import execution_identity
+        return execution_identity(origin, execution_id, order_namespace)
+
     async def read_option_order_evidence(self, request):
         from algo_trader_broker_sdk.options import OptionScope
         from algo_trader_broker_sdk.options_events import OptionNativeOrderQuery

@@ -138,7 +138,10 @@ def execution_origin(source, native, execution_id):
             if str(UUID(execution_id)) != execution_id: return None
         except (ValueError, TypeError, AttributeError):
             return None
-    return OptionExecutionOrigin(source, native["id"], native["asset_id"], native["symbol"])
+    from .options_identity import execution_identity
+    from types import SimpleNamespace
+    origin = SimpleNamespace(source=source, order_id=native["id"], native_contract_id=native["asset_id"], local_symbol=native["symbol"])
+    return execution_identity(origin, execution_id, "ALPACA_ORDER_UUID")
 
 
 async def decode_fill_activity(event, resolve_contract, resolve_order):
