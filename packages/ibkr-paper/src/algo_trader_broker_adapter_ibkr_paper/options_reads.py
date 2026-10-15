@@ -305,7 +305,7 @@ class IBOptionReads:
             return OptionCapabilities(bound.scope, self.adapter_id, VERSION, "ib-options-reads-8", observed,
                 (timestamp(observed) + timedelta(seconds=30)).isoformat().replace("+00:00", "Z"),
                 implemented, implemented, implemented, implemented, implemented, implemented, lifecycle,
-                unavailable, unavailable, implemented, implemented, (FEED, "provider_native"), shapes)
+                unavailable, unavailable, implemented, implemented, (FEED, "provider_native"), shapes, default_feed=FEED)
         return await self._option_read(request, read)
 
     async def option_account_permissions(self, request):

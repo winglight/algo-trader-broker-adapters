@@ -268,7 +268,8 @@ class AlpacaOptionReads:
                 response_hash=sha256(raw).hexdigest())
             quotes.append(OptionQuote(binding.canonical_id, bid, ask, bs, az, at, received, "ALPACA", request.feed,
                 quality, bound.scope.account, *normalized_greeks(item, native_greeks), None, None,
-                native_greeks=native_greeks))
+                native_greeks=native_greeks,
+                reference_pricing_allowed=True if request.feed == "INDICATIVE" else None))
         times = [timestamp(quote.quote_at) for quote in quotes]
         skew = int((max(times) - min(times)).total_seconds() * 1000) if times else 0
         self._option_still_bound(bound)
@@ -305,7 +306,8 @@ class AlpacaOptionReads:
             (timestamp(observed) + timedelta(seconds=30)).isoformat().replace("+00:00", "Z"), implemented, implemented,
             implemented, implemented, no_history_quotes, implemented, implemented, unavailable, unavailable, implemented,
             implemented, ("OPRA", "INDICATIVE"), tuple(OptionShapeCapability(shape, "NATIVE", implemented,
-                legs, ratio, "0.01", False, legs > 1, False, False) for shape, (legs, ratio) in STRUCTURE_LIMITS.items()))
+                legs, ratio, "0.01", False, legs > 1, False, False) for shape, (legs, ratio) in STRUCTURE_LIMITS.items()),
+            default_feed=self._settings.options_feed or "INDICATIVE")
 
     async def reconcile_options(self, request, *, resolve_order=None):
         from .options_reconciliation import reconcile

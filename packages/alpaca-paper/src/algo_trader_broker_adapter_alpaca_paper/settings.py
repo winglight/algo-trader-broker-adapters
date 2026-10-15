@@ -64,8 +64,11 @@ class AlpacaPaperSettings:
     max_concurrency: int = 8
     stream_queue_size: int = 512
     environment: str = "paper"
+    options_feed: str | None = None
 
     def __post_init__(self) -> None:
+        if self.options_feed not in {None, "OPRA", "INDICATIVE"}:
+            raise BrokerContractError("alpaca_options_feed must be OPRA or INDICATIVE")
         if self.environment not in {"paper", "live"}:
             raise BrokerContractError("alpaca_environment must be paper or live", details={"setting": "alpaca_environment"})
 
@@ -90,6 +93,7 @@ class AlpacaPaperSettings:
             api_key_id=_required(settings, "alpaca_api_key_id"),
             secret_key=_required(settings, "alpaca_secret_key"),
             data_feed=data_feed,
+            options_feed=str(settings["alpaca_options_feed"]).strip().upper() if settings.get("alpaca_options_feed") else None,
             request_timeout_seconds=_bounded_float(
                 settings,
                 "alpaca_request_timeout_seconds",

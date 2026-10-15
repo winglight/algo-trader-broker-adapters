@@ -138,7 +138,8 @@ def normalize_quote(native, binding, request):
     elif request.feed == "INDICATIVE": quality = "RESEARCH_ONLY"
     return OptionQuote(binding.canonical_id, bid, ask, whole(fields["bs"]), whole(fields["as"]), at,
         native.received_at, "ALPACA", request.feed, quality, request.account,
-        None, None, None, None, None, None, None, None, None)
+        None, None, None, None, None, None, None, None, None,
+        reference_pricing_allowed=True if request.feed == "INDICATIVE" else None)
 
 
 async def stream_quotes(adapter, request):
