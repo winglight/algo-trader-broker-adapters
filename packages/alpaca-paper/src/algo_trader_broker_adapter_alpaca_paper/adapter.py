@@ -198,6 +198,7 @@ class AlpacaPaperAdapter(AlpacaOptionReads):
     def manifest(self) -> BrokerAdapterManifest:
         return BrokerAdapterManifest(
             adapter_id=self.adapter_id,
+            provider_id="ALPACA",
             display_name="Alpaca Paper Adapter" if self._settings.paper else "Alpaca Live Adapter",
             adapter_version=VERSION,
             protocol_version="1.0",

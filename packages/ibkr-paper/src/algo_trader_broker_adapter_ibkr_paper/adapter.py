@@ -306,6 +306,7 @@ class IBKRPaperAdapter(IBOptionReads, IBOptionOrders):
     def manifest(self) -> BrokerAdapterManifest:
         return BrokerAdapterManifest(
             adapter_id=self.adapter_id,
+            provider_id="IBKR",
             display_name="IBKR Paper Adapter" if self._option_environment == "paper" else "IBKR Live Adapter",
             adapter_version=VERSION,
             protocol_version="1.1",
