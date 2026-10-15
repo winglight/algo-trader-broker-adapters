@@ -133,7 +133,9 @@ async def permissions(adapter, request):
             "DENIED" if read_only or not_ready else "UNKNOWN", "ALLOWED" if entitled else "UNKNOWN",
             "UNKNOWN", "AVAILABLE_FUNDS" if any(item.name == "AvailableFunds" for item in raw_bp) else "UNKNOWN",
             observed, (timestamp(observed) + timedelta(seconds=30)).isoformat().replace("+00:00", "Z"),
-            sha256(raw).hexdigest(), tuple(reasons))
+            sha256(raw).hexdigest(), tuple(reason for reason in reasons if reason in {"IB_ACCOUNT_NOT_READY", "IB_CONNECTION_READ_ONLY"}),
+            approval_authority="ORDER_VALIDATION", trading_authority="ORDER_VALIDATION",
+            advisory_reason_codes=tuple(reason for reason in reasons if reason not in {"IB_ACCOUNT_NOT_READY", "IB_CONNECTION_READ_ONLY"}))
     return await adapter._option_read(request, read)
 
 
@@ -231,8 +233,6 @@ async def account_state(adapter, request, *, retain_evidence=None, resolve_contr
                 reasons.append("NATIVE_ORDER_PERM_ID_PENDING")
         if unresolved:
             reasons.append("UNRESOLVED_OPTION_POSITIONS")
-        if any(item.raw_cost_unit == "UNKNOWN" for item in exact):
-            reasons.append("IB_POSITION_COST_UNIT_UNVERIFIED")
         from .cash_account import collect
         cash = await collect(bound.native_account_ref, working, completed, fills, retain=retain)
         stock_ref = await retain(inventory)
@@ -249,5 +249,6 @@ async def account_state(adapter, request, *, retain_evidence=None, resolve_contr
             # lifecycle flags still describe historical coverage, not whether
             # current Orders-owned fills and positions reconcile.
             checkpoint, tuple(exact), tuple(unresolved), tuple(refs), (), True, True, False, False,
-            tuple(sorted(set(reasons))), fees, False, fee_reasons, cash, stock_inventory)
+            tuple(sorted(set(reasons))), fees, False, fee_reasons, cash, stock_inventory,
+            advisory_quality_reasons=("IB_POSITION_COST_UNIT_UNVERIFIED",) if any(item.raw_cost_unit == "UNKNOWN" for item in exact) else None)
     return await adapter._option_read(request, read)

@@ -265,6 +265,8 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_sn
         monkeypatch.setattr(ib.client, "reqExecutions", cash_executions)
         permissions = await adapter.option_account_permissions(scope)
         assert permissions.approval_status == "UNKNOWN" and permissions.permitted_structures == ()
+        assert permissions.approval_authority == permissions.trading_authority == "ORDER_VALIDATION"
+        assert "IB_OPTION_APPROVAL_UNOBSERVED" in permissions.advisory_reason_codes
         assert permissions.data_entitlement == "ALLOWED" and permissions.bp_semantics == "AVAILABLE_FUNDS"
         from algo_trader_broker_adapter_ibkr_paper import flex
         from types import SimpleNamespace

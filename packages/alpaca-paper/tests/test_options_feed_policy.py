@@ -28,6 +28,9 @@ async def test_default_feed_and_rest_stream_reference_permission_follow_adapter(
     adapter._option_catalog = {binding.broker_contract_id:(binding,None,None)}
     caps = await adapter.option_capabilities(bound.scope)
     assert caps.default_feed == "INDICATIVE"
+    permissions = await adapter.option_account_permissions(bound.scope)
+    assert permissions.approval_authority == permissions.trading_authority == "ACCOUNT_OBSERVATION"
+    assert permissions.reason_codes == () and "OPRA_ENTITLEMENT_UNOBSERVED" in permissions.advisory_reason_codes
     request = SnapshotRequest(**asdict(bound.scope), bindings=(binding,), feed=caps.default_feed,
         purpose="ENTRY", max_age_ms=3000, max_leg_skew_ms=1000)
     snapshot = await adapter.option_snapshot(request)

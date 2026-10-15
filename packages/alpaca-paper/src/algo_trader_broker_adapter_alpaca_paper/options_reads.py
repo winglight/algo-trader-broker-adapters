@@ -294,7 +294,8 @@ class AlpacaOptionReads:
         return OptionAccountPermissions(bound.scope, approval, None if level is None else str(level), structures,
             trading, "ALLOWED" if entitled else "UNKNOWN", "SUPPORTED" if lifecycle_read else "UNKNOWN", bp, observed,
             (timestamp(observed) + timedelta(seconds=30)).isoformat().replace("+00:00", "Z"), sha256(raw).hexdigest(),
-            (() if entitled else ("OPRA_ENTITLEMENT_UNOBSERVED",)))
+            (), approval_authority="ACCOUNT_OBSERVATION", trading_authority="ACCOUNT_OBSERVATION",
+            advisory_reason_codes=(() if entitled else ("OPRA_ENTITLEMENT_UNOBSERVED",)))
 
     async def option_capabilities(self, request):
         bound, _, _ = await self._option_bound(request)
