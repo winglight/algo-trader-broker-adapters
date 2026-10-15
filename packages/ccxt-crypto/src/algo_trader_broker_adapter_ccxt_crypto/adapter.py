@@ -194,6 +194,7 @@ class CCXTCryptoAdapter:
 
     def capabilities(self) -> BrokerCapabilities:
         return BrokerCapabilities(
+            requires_explicit_asset_class=True,
             default_time_in_force="GTC",
             adapter_name=self.adapter_id,
             environment="PAPER",

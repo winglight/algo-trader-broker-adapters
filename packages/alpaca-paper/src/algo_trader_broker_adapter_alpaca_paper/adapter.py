@@ -222,6 +222,7 @@ class AlpacaPaperAdapter(AlpacaOptionReads):
             adapter_name=self.adapter_id,
             environment=self._settings.environment.upper(),
             asset_classes={"STK", "ETF"},
+            requires_explicit_asset_class=True,
             order_types=set(_ORDER_TYPES),
             time_in_force=set(_TIFS),
             market_data_streams={"historical_bars", "realtime_price", "tick_by_tick"},
