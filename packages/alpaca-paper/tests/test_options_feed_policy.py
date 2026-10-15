@@ -28,6 +28,7 @@ async def test_default_feed_and_rest_stream_reference_permission_follow_adapter(
     adapter._option_catalog = {binding.broker_contract_id:(binding,None,None)}
     caps = await adapter.option_capabilities(bound.scope)
     assert caps.default_feed == "INDICATIVE"
+    assert caps.default_history_feed == "provider_native" and caps.history_feeds == ("provider_native",)
     permissions = await adapter.option_account_permissions(bound.scope)
     assert permissions.approval_authority == permissions.trading_authority == "ACCOUNT_OBSERVATION"
     assert permissions.reason_codes == () and "OPRA_ENTITLEMENT_UNOBSERVED" in permissions.advisory_reason_codes

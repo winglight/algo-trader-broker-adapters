@@ -308,7 +308,8 @@ class AlpacaOptionReads:
             implemented, implemented, no_history_quotes, implemented, implemented, unavailable, unavailable, implemented,
             implemented, ("OPRA", "INDICATIVE"), tuple(OptionShapeCapability(shape, "NATIVE", implemented,
                 legs, ratio, "0.01", False, legs > 1, False, False) for shape, (legs, ratio) in STRUCTURE_LIMITS.items()),
-            default_feed=self._settings.options_feed or "INDICATIVE")
+            default_feed=self._settings.options_feed or "INDICATIVE",
+            history_feeds=("provider_native",), default_history_feed="provider_native")
 
     async def reconcile_options(self, request, *, resolve_order=None):
         from .options_reconciliation import reconcile
