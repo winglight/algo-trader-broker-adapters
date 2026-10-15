@@ -4,7 +4,7 @@ from decimal import InvalidOperation
 
 from algo_trader_broker_sdk import BrokerContractError
 from algo_trader_broker_sdk.options import check, timestamp
-from algo_trader_broker_sdk.options_account import NativeCashExecution
+from .account_identity import cash_execution
 
 from .options_events import execution_revision
 from .options_reads import native_decimal
@@ -56,7 +56,7 @@ async def collect(account, working, completed, executions, *, retain):
                       and asset["currency"] == "USD", "Cash execution differs from its original order")
             timestamp(native["time"])
             order_ref = await retain(dict(source="IB_CASH_EXECUTION_ORDER", account=account, observation=matches[-1]))
-            result.append(NativeCashExecution("IB_ACCOUNT_EXECUTION", native["execId"], native["execId"],
+            result.append(cash_execution("IB_ACCOUNT_EXECUTION", native["execId"], native["execId"],
                 "IBKR_PERM_ID:" + str(native["permId"]), "IBKR:" + str(contract["conId"]),
                 contract["symbol"], side, native_decimal(native["shares"]), native_decimal(native["price"]),
                 "USD", native["time"], activity_ref, order_ref))

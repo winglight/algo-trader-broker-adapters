@@ -9,8 +9,9 @@ from uuid import uuid4
 
 from algo_trader_broker_sdk import BrokerContractError
 from algo_trader_broker_sdk.options import check, decimal_wire, timestamp
+from .account_identity import stock_inventory as make_stock_inventory, stock_position
 from algo_trader_broker_sdk.options_account import (
-    NativeBuyingPower, NativeOrderReference, NativeStockInventory, NativeStockPosition, OptionAccountPermissions, OptionAccountPosition,
+    NativeBuyingPower, NativeOrderReference, OptionAccountPermissions, OptionAccountPosition,
     OptionAccountState, UnresolvedOptionPosition,
 )
 
@@ -182,7 +183,7 @@ async def account_state(adapter, request, *, retain_evidence=None, resolve_contr
                         continue
                     check(type(native['conId']) is int and native['conId'] > 0, 'Stock position conId is missing')
                     raw_ref = await retain(dict(source='IB_POSITION_MULTI',account=bound.native_account_ref,**row))
-                    stocks.append(NativeStockPosition('IBKR:' + str(native['conId']),native['symbol'],
+                    stocks.append(stock_position('IBKR:' + str(native['conId']),native['symbol'],
                         signed_decimal(row['quantity']),'USD',raw_ref,row['received_at'],row['received_at']))
                 except (BrokerContractError, KeyError, ValueError, TypeError, InvalidOperation):
                     stock_reasons.append('STOCK_POSITION_UNRESOLVED')
@@ -236,7 +237,7 @@ async def account_state(adapter, request, *, retain_evidence=None, resolve_contr
         from .cash_account import collect
         cash = await collect(bound.native_account_ref, working, completed, fills, retain=retain)
         stock_ref = await retain(inventory)
-        stock_inventory = NativeStockInventory('IB_POSITION_MULTI',tuple(stocks),not stock_reasons,
+        stock_inventory = make_stock_inventory('IB_POSITION_MULTI',tuple(stocks),not stock_reasons,
             tuple(sorted(set(stock_reasons))),inventory['completed_at'],inventory['completed_at'],stock_ref)
         checkpoint = await retain(dict(source="IB_ACCOUNT_SNAPSHOT", values=values, positions=inventory, orders=working,
                                       cost_evidence_refs=cost_refs, completed_orders=completed, executions=fills,

@@ -5,7 +5,7 @@ from hashlib import sha256
 
 from algo_trader_broker_sdk import BrokerContractError
 from algo_trader_broker_sdk.options import check
-from algo_trader_broker_sdk.options_account import NativeCashExecution
+from .account_identity import cash_execution
 
 from .options_codec import _decimal, _time, _uuid
 from .options_lifecycle import records
@@ -57,7 +57,7 @@ async def read(adapter, scope, *, retain_evidence):
                       and item.get("currency", "USD") == "USD", "Cash activity economics are unresolved")
                 prefix, separator, execution = item["id"].rpartition("::")
                 check(bool(prefix) and separator == "::", "Retain the original FILL activity identity")
-                executions.append(NativeCashExecution("ALPACA_ACCOUNT_FILL", item["id"], _uuid(execution),
+                executions.append(cash_execution("ALPACA_ACCOUNT_FILL", item["id"], _uuid(execution),
                     order_id, "ALPACA:" + _uuid(order["asset_id"]), item["symbol"], item["side"].upper(),
                     _decimal(item["qty"]), _decimal(item["price"]), "USD", _time(item["transaction_time"]),
                     activity_ref, order_ref))

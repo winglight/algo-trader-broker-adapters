@@ -17,8 +17,9 @@ from algo_trader_broker_sdk.options import (
     OptionMarketSnapshot, OptionQuote, OptionScope, QualificationBatch, QualificationRequest,
     QualificationResult, SnapshotRequest, check, option_contract_id, timestamp,
 )
+from .account_identity import stock_inventory, stock_position
 from algo_trader_broker_sdk.options_account import (
-    NativeBuyingPower, NativeOrderReference, NativeStockInventory, NativeStockPosition,
+    NativeBuyingPower, NativeOrderReference,
     OptionAccountPermissions, OptionAccountPosition, OptionAccountState, UnresolvedOptionPosition,
 )
 from algo_trader_broker_sdk.options_capabilities import OptionCapabilities, OptionCapability, OptionShapeCapability
@@ -375,7 +376,7 @@ class AlpacaOptionReads:
                     check(position.get('side') in {'long','short'} and
                         (Decimal(quantity) == 0 or (Decimal(quantity) < 0) == (position['side'] == 'short')),
                         'Native stock quantity and direction disagree')
-                    stocks.append(NativeStockPosition('ALPACA:' + _uuid(position['asset_id']), position['symbol'],
+                    stocks.append(stock_position('ALPACA:' + _uuid(position['asset_id']), position['symbol'],
                         quantity, 'USD', pos_hash, observed, observed))
                 except (BrokerContractError, KeyError, ValueError, TypeError, InvalidOperation):
                     stock_reasons.append('STOCK_POSITION_UNRESOLVED')
@@ -416,6 +417,6 @@ class AlpacaOptionReads:
         state = OptionAccountState(bound.scope, str(uuid4()), observed, received, "USD", signed_decimal(account["equity"]),
             signed_decimal(account["cash"]), bp, raw_bp, "OPTIONS_BUYING_POWER" if bp is not None else "UNKNOWN",
             checkpoint, tuple(exact), tuple(unresolved), open_refs, (), True, len(orders) < 500, False, False, reasons,
-            stock_inventory=NativeStockInventory('ALPACA_POSITIONS',tuple(stocks),not stock_reasons,
+            stock_inventory=stock_inventory('ALPACA_POSITIONS',tuple(stocks),not stock_reasons,
                 tuple(sorted(set(stock_reasons))),observed,received,pos_hash))
         return state, bound, order_raw

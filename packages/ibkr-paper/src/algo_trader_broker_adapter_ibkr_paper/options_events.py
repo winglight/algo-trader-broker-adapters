@@ -23,10 +23,9 @@ STATUS = {"Submitted": "ACKNOWLEDGED", "PreSubmitted": "ACKNOWLEDGED", "Filled":
 
 
 def execution_revision(exec_id):
-    check(type(exec_id) is str and re.fullmatch(r"[^\s.]+(?:\.[^\s.]+)+\.[0-9]+", exec_id) is not None,
-          "IB execution lacks a native revision sequence")
-    family, _, suffix = exec_id.rpartition(".")
-    revision = OptionExecutionRevision("IB_EXECUTION_ID", family + ".01", int(suffix))
+    from .account_identity import execution_identity
+    original, sequence = execution_identity(exec_id)
+    revision = OptionExecutionRevision("IB_EXECUTION_ID", original, sequence)
     revision.check_native_id(exec_id)
     return revision
 
