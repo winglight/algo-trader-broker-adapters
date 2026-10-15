@@ -744,6 +744,10 @@ class AlpacaPaperAdapter(AlpacaOptionReads):
             "assetId": text(value(asset, "id")) or None,
         }
 
+    async def qualify_cash_stock(self, contract: Mapping[str, Any], *, limit_price: str):
+        from .cash_qualification import qualify
+        return qualify(await self.request_contract_details(contract), contract, limit_price)
+
     async def request_contract_details(
         self, contract: Mapping[str, Any]
     ) -> list[dict[str, Any]]:
