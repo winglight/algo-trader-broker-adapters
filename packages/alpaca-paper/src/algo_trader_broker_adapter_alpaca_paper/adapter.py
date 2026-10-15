@@ -761,6 +761,10 @@ class AlpacaPaperAdapter(AlpacaOptionReads):
             {"lowEdge": "1", "increment": "0.01"},
         ]}]
 
+    async def request_session_calendar(self, contract, **kwargs):
+        from .session_calendar import request_calendar
+        return await request_calendar(self,contract,**kwargs)
+
     async def request_option_parameters(
         self, *, symbol: str, con_id: int, sec_type: str = "STK", exchange: str = ""
     ) -> list[dict[str, Any]]:

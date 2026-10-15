@@ -591,6 +591,10 @@ class IBKRPaperAdapter(IBOptionReads, IBOptionOrders):
             )
         return await self._client.request_contract_details(qualified)
 
+    async def request_session_calendar(self, contract, **kwargs):
+        from .session_calendar import request_calendar
+        return await request_calendar(self,contract,**kwargs)
+
     async def request_option_parameters(
         self, *, symbol: str, con_id: int, sec_type: str = "STK", exchange: str = ""
     ) -> list[dict[str, Any]]:
