@@ -1092,7 +1092,9 @@ class IBAsyncClient:
                 req_mkt_data = getattr(ib, "reqMktData", None)
                 if not callable(req_mkt_data):
                     raise IBMarketDataError("IB client does not support market snapshot requests")
-                ticker = req_mkt_data(contract, generic_tick_list or "", True, False)  # type: ignore[misc]
+                # IB snapshot requests only support default ticks. Enrich generic
+                # fields through a bounded streaming request, cancelled below.
+                ticker = req_mkt_data(contract, generic_tick_list or "", not bool(generic_tick_list), False)  # type: ignore[misc]
                 error_event = getattr(ib, "errorEvent", None)
                 error_handler: Callable[..., None] | None = None
                 failure_future: asyncio.Future[tuple[int | None, str]] | None = None
@@ -2091,11 +2093,13 @@ class IBAsyncClient:
         initial_bars = list(bars)
         last_stream_bar: HistoricalBar | None = None
         last_emitted_bar_time: datetime | None = None
+        last_emitted_bar: HistoricalBar | None = None
         if emit_history:
             for bar in initial_bars:
                 built_bar = _build_historical_bar(bar)
                 last_stream_bar = built_bar
                 last_emitted_bar_time = _normalise_utc_datetime(built_bar.time)
+                last_emitted_bar = built_bar
                 loop.call_soon_threadsafe(_queue_offer, queue, built_bar)
         elif keep_up_to_date and initial_bars:
             # IB returns the latest in-progress/completed bar together with the
@@ -2110,11 +2114,12 @@ class IBAsyncClient:
                     queue,
                     _build_historical_bar(initial_bar),
                 )
-                last_emitted_bar_time = _normalise_utc_datetime(_build_historical_bar(initial_bar).time)
+                last_emitted_bar = _build_historical_bar(initial_bar)
+                last_emitted_bar_time = _normalise_utc_datetime(last_emitted_bar.time)
             last_stream_bar = _build_historical_bar(initial_bars[-1])
 
         def handle(updated_bars: Any, has_new_bar: bool | None = None) -> None:
-            nonlocal last_stream_bar, last_emitted_bar_time
+            nonlocal last_stream_bar, last_emitted_bar_time, last_emitted_bar
             try:
                 if not updated_bars:
                     return
@@ -2144,12 +2149,19 @@ class IBAsyncClient:
                         and last_emitted_bar_time != previous_time
                     ):
                         last_emitted_bar_time = previous_time
+                        last_emitted_bar = previous
                         loop.call_soon_threadsafe(_queue_offer, queue, previous)
                     return
                 last_stream_bar = payload
-                if last_emitted_bar_time == payload_time:
+                # IB may revise the final trades after the first closed update.
+                # Deduplicate identical values, while forwarding corrections.
+                if last_emitted_bar == payload or (
+                    last_emitted_bar_time is not None
+                    and payload_time < last_emitted_bar_time
+                ):
                     return
                 last_emitted_bar_time = payload_time
+                last_emitted_bar = payload
             loop.call_soon_threadsafe(
                 _queue_offer,
                 queue,
@@ -2581,6 +2593,8 @@ class IBAsyncClient:
                     event = error_event
                     with suppress(Exception):
                         event -= error_handler  # type: ignore[attr-defined]
+                if failure_future is not None and not failure_future.done():
+                    failure_future.cancel()
                 await self._run_with_ib(
                     lambda client: _cancel_market_data(client, ticker, contract)
                 )
@@ -4684,6 +4698,7 @@ def _execution_to_dict(execution: Any) -> dict[str, Any]:
         return {}
     fields = [
         "execId",
+        "acctNumber",
         "orderId",
         "price",
         "shares",
@@ -4798,7 +4813,7 @@ def _historical_bar_is_closed(
         timestamp = timestamp.replace(tzinfo=timezone.utc)
     else:
         timestamp = timestamp.astimezone(timezone.utc)
-    return timestamp + delta <= current + timedelta(seconds=1)
+    return timestamp + delta <= current
 
 
 def _normalise_utc_datetime(value: datetime) -> datetime:
