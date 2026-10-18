@@ -26,6 +26,21 @@ from algo_trader_broker_sdk import dataclass_to_payload
 
 
 @pytest.mark.asyncio
+async def test_cash_secured_put_native_capability(monkeypatch):
+    from types import SimpleNamespace
+    scope = OptionScope('options/1.0', 'a'*64, 'fixture-profile', 1, 'fixture-account', 'paper')
+    adapter = IBKRPaperAdapter({})
+    async def read(request, operation):
+        assert request == scope
+        return await operation(None, SimpleNamespace(scope=scope))
+    monkeypatch.setattr(adapter, '_option_read', read)
+    caps = await adapter.option_capabilities(scope)
+    shape = caps.require_entry(scope=scope, structure='CASH_SECURED_PUT', route='NATIVE',
+        feed='IBKR_LIVE', now=datetime.now(timezone.utc))
+    assert shape.max_legs == shape.max_ratio == 1 and not shape.native_combo
+
+
+@pytest.mark.asyncio
 async def test_standard_contract_discovery_qualification_and_live_snapshot(monkeypatch):
     await read_flow(monkeypatch, exercise_orders=True)
 
@@ -69,6 +84,8 @@ def flex_xml(contract, binding, *, account="DU-OPTIONS-FIXTURE", kind="Assignmen
 
 
 async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_snapshot=None, exercise_orders=False, gate_factory=None, consume_event=None, cancel_sender=None, reconcile_reader=None, preview_reader=None, calendar_reader=None, delayed_greeks=False):
+    expiry = (datetime.now(timezone.utc) + timedelta(days=30)).date()
+    expiry_native, expiry_occ = expiry.strftime("%Y%m%d"), expiry.strftime("%y%m%d")
     ib = IB()
     monkeypatch.setattr(ib, "isConnected", lambda: True)
     monkeypatch.setattr(ib, "managedAccounts", lambda: ["DU-OPTIONS-FIXTURE"])
@@ -85,8 +102,8 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_sn
         else:
             assert (contract.symbol, contract.exchange, contract.tradingClass, contract.multiplier) == ("SPY", "SMART", "SPY", "100")
             strike = int(contract.strike)
-        native = Option("SPY", "20261016", strike, "C", "SMART", multiplier="100", currency="USD",
-                        tradingClass="SPY", conId=1000 + strike, localSymbol=f"SPY   261016C{strike * 1000:08d}")
+        native = Option("SPY", expiry_native, strike, "C", "SMART", multiplier="100", currency="USD",
+                        tradingClass="SPY", conId=1000 + strike, localSymbol=f"SPY   {expiry_occ}C{strike * 1000:08d}")
         return [ContractDetails(contract=native, underConId=100, underSymbol="SPY", underSecType="STK",
                                 validExchanges="SMART,CBOE", minTick=0.01, marketRuleIds="26,26",
                                 timeZoneId="US/Eastern", tradingHours="20261008:0930-20261008:1615",
@@ -95,7 +112,7 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_sn
     async def parameters(*args):
         assert args == ("SPY", "", "STK", 100)
         # Match ib_async's actual securityDefinitionOptionParameter decoder.
-        return [OptionChain("SMART", "100", "SPY", "100", {"20261016"}, {590.0, 595.0})]
+        return [OptionChain("SMART", "100", "SPY", "100", {expiry_native}, {590.0, 595.0})]
 
     def subscribe(req_id, contract, generic, snapshot, regulatory, options):
         assert generic == "" and snapshot is False and regulatory is False
@@ -139,11 +156,13 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_sn
         capabilities = await adapter.option_capabilities(scope)
         assert capabilities.discovery.status == capabilities.quotes.status == "IMPLEMENTED"
         assert capabilities.greeks.status == "IMPLEMENTED"
-        assert len(capabilities.shapes) == 11
+        assert len(capabilities.shapes) == 12
+        assert capabilities.require_entry(scope=scope, structure="CASH_SECURED_PUT", route="NATIVE",
+            feed="IBKR_LIVE", now=datetime.now(timezone.utc)).max_legs == 1
         shape = capabilities.require_entry(scope=scope, structure="LONG_CALL", route="NATIVE",
             feed="IBKR_LIVE", now=datetime.now(timezone.utc))
         assert shape.capability.status == "IMPLEMENTED" and shape.net_tick == "0.01"
-        query = OptionContractQuery(**values, underlying="SPY", expiry_from="2026-10-16", expiry_to="2026-10-16",
+        query = OptionContractQuery(**values, underlying="SPY", expiry_from=expiry.isoformat(), expiry_to=expiry.isoformat(),
             right="C", strike_min="590", strike_max="595", cursor=None, limit=1)
         first = await adapter.list_option_contracts(query)
         assert not first.complete and first.next_cursor
@@ -214,8 +233,8 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_sn
                 # Real decoder and wrapper callbacks, not a prebuilt Account DTO.
                 for strike, qty, cost in ((590, "2", "240"), (595, "-2", "90")):
                     ib.client.decoder.interpret(["71", "1", str(req_id), account, str(1000 + strike),
-                        "SPY", "OPT", "20261016", str(strike), "C", "100", "", "USD",
-                        f"SPY   261016C{strike * 1000:08d}", "SPY", qty, cost, ""])
+                        "SPY", "OPT", expiry_native, str(strike), "C", "100", "", "USD",
+                        f"SPY   {expiry_occ}C{strike * 1000:08d}", "SPY", qty, cost, ""])
                     contract = adapter._option_catalog[str(1000 + strike)][2].contract
                     # Same native account's existing portfolio callback gives
                     # an independent total-cost sample; it is not a new quote.
@@ -334,7 +353,7 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_sn
             return next(item for item in qualified.results if item.binding.broker_contract_id == native
                         and item.binding.local_symbol == symbol)
         for kind, day, shares, cash in (("Exercise", "20261007", 100, "-59000"),
-                                       ("Expiration", "20261016", 0, "0")):
+                                       ("Expiration", expiry_native, 0, "0")):
             page = await parse(flex_xml(contracts[0], bindings[0], kind=kind, day=day),
                 account="DU-OPTIONS-FIXTURE", accounts=adapter._flex.accounts, resolve_contract=resolve, retain=retain)
             assert page.complete and len(page.events) == 1

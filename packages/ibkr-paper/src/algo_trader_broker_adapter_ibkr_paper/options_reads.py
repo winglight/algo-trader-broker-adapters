@@ -34,6 +34,7 @@ FEED = "IBKR_LIVE"
 # Penny prices: https://listingcenter.nasdaq.com/RuleBook/Nasdaq/rules/nasdaq-options-3
 NATIVE_SHAPES = {
     "LONG_CALL": (1, 1), "LONG_PUT": (1, 1),
+    "CASH_SECURED_PUT": (1, 1),
     "CALL_DEBIT_VERTICAL": (2, 1), "PUT_DEBIT_VERTICAL": (2, 1),
     "CALL_CREDIT_VERTICAL": (2, 1), "PUT_CREDIT_VERTICAL": (2, 1),
     "CALL_BUTTERFLY": (3, 2), "IRON_CONDOR": (4, 1), "IRON_BUTTERFLY": (4, 1),
@@ -302,7 +303,7 @@ class IBOptionReads:
             lifecycle = OptionCapability("IMPLEMENTED", ("LIFECYCLE_SOURCE_UNVERIFIED",), ())
             shapes = tuple(OptionShapeCapability(name, "NATIVE", implemented, legs, ratio, "0.01",
                 False, legs > 1, False, False) for name, (legs, ratio) in NATIVE_SHAPES.items())
-            return OptionCapabilities(bound.scope, self.adapter_id, VERSION, "ib-options-reads-8", observed,
+            return OptionCapabilities(bound.scope, self.adapter_id, VERSION, "ib-options-reads-9", observed,
                 (timestamp(observed) + timedelta(seconds=30)).isoformat().replace("+00:00", "Z"),
                 implemented, implemented, implemented, implemented, implemented, implemented, lifecycle,
                 unavailable, unavailable, implemented, implemented, (FEED, "provider_native"), shapes, default_feed=FEED,

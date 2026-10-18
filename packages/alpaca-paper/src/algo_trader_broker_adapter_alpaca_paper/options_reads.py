@@ -30,6 +30,7 @@ from ._version import VERSION as ADAPTER_VERSION
 
 STRUCTURE_LIMITS = {
     "LONG_CALL": (1, 1), "LONG_PUT": (1, 1),
+    "CASH_SECURED_PUT": (1, 1),
     "CALL_DEBIT_VERTICAL": (2, 1), "PUT_DEBIT_VERTICAL": (2, 1),
     "CALL_CREDIT_VERTICAL": (2, 1), "PUT_CREDIT_VERTICAL": (2, 1),
     "CALL_BUTTERFLY": (3, 2), "IRON_CONDOR": (4, 1), "IRON_BUTTERFLY": (4, 1),
@@ -293,7 +294,10 @@ class AlpacaOptionReads:
         trading = "DENIED" if account.get("status") != "ACTIVE" or any(flag is True for flag in flags) else "ALLOWED" if all(flag is False for flag in flags) else "UNKNOWN"
         opra = getattr(self, "_option_opra_observed", None)
         entitled = opra is not None and opra[0] == bound.scope and 0 <= (timestamp(observed) - timestamp(opra[1])).total_seconds() < 30
-        structures = STRUCTURES if level is not None and level >= 3 else STRUCTURES[:2] if level == 2 else ()
+        # Native levels: 1 cash-secured puts; 2 also long calls/puts; 3 spreads.
+        structures = STRUCTURES if level is not None and level >= 3 else (
+            ('LONG_CALL', 'LONG_PUT', 'CASH_SECURED_PUT') if level == 2 else
+            ('CASH_SECURED_PUT',) if level == 1 else ())
         bp = "OPTIONS_BUYING_POWER" if account.get("options_buying_power") is not None else "UNKNOWN"
         lifecycle = getattr(self, "_option_lifecycle_observed", None)
         lifecycle_read = lifecycle is not None and lifecycle[0] == bound.scope and 0 <= (timestamp(observed) - timestamp(lifecycle[1])).total_seconds() < 30
@@ -309,7 +313,7 @@ class AlpacaOptionReads:
         implemented = OptionCapability("IMPLEMENTED", (), ())
         unavailable = OptionCapability("UNSUPPORTED", ("NOT_IMPLEMENTED",), ())
         no_history_quotes = OptionCapability("UNSUPPORTED", ("PROVIDER_HISTORY_QUOTES_UNAVAILABLE",), ())
-        return OptionCapabilities(bound.scope, self.adapter_id, ADAPTER_VERSION, "alpaca-options-reads-10", observed,
+        return OptionCapabilities(bound.scope, self.adapter_id, ADAPTER_VERSION, "alpaca-options-reads-11", observed,
             (timestamp(observed) + timedelta(seconds=30)).isoformat().replace("+00:00", "Z"), implemented, implemented,
             implemented, implemented, no_history_quotes, implemented, implemented, unavailable, unavailable, implemented,
             implemented, ("OPRA", "INDICATIVE"), tuple(OptionShapeCapability(shape, "NATIVE", implemented,

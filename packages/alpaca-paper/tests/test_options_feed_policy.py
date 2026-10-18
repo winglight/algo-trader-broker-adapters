@@ -12,6 +12,27 @@ from .test_option_raw_events import VERIFIED
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('approved,trading,expected', [
+    (1, 1, {'CASH_SECURED_PUT'}),
+    (2, 2, {'LONG_CALL', 'LONG_PUT', 'CASH_SECURED_PUT'}),
+    (3, 1, {'CASH_SECURED_PUT'}),
+    (0, 0, set()),
+    (None, 3, set()),
+])
+async def test_income_permission_uses_the_lower_observed_account_level(approved, trading, expected):
+    account = dict(id=VERIFIED.native_account_ref, options_approved_level=approved,
+        options_trading_level=trading, status='ACTIVE', trading_blocked=False,
+        account_blocked=False, trade_suspended_by_user=False)
+    backend = SimpleNamespace(get_option_resource=AsyncMock(return_value=json.dumps(account).encode()))
+    adapter = AlpacaPaperAdapter(dict(alpaca_api_key_id='fixture', alpaca_secret_key='fixture'), backend=backend)
+    adapter._connected, adapter._account_id = True, VERIFIED.native_account_ref
+    adapter.bind_option_account(VERIFIED)
+    permissions = await adapter.option_account_permissions(VERIFIED.scope)
+    assert set(permissions.permitted_structures) == expected
+    assert permissions.approval_status == ('UNKNOWN' if approved is None else 'DENIED' if approved == 0 else 'ALLOWED')
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("environment", ["paper", "live"])
 async def test_default_feed_and_rest_stream_reference_permission_follow_adapter(environment):
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
