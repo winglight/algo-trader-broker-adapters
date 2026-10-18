@@ -6,12 +6,12 @@ from datetime import datetime, timezone
 from decimal import Decimal
 import math
 
-from algo_trader_broker_sdk import BrokerConnectionError
+from algo_trader_broker_sdk import BrokerConnectionError, BrokerError
 from algo_trader_broker_sdk.options import OptionQuote, QuoteSubscription, check, timestamp
 
 from .options_codec import _decimal, _time
 from .options_reads import whole, now_wire
-from .streams import MultiplexedAlpacaStockStream
+from .streams import MultiplexedAlpacaStockStream, stream_failure
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,7 +42,7 @@ def create_option_stream(settings, feed):
                 for message in messages:
                     check(type(message) is dict, "Invalid native option message")
                     if message.get("T") == "error":
-                        raise BrokerConnectionError("Option quote stream requires a new subscription", code="OPTION_STREAM_GAP")
+                        raise stream_failure(ValueError(message.get('msg','native rejection')))
                     if message.get("T") == "q":
                         handler = self._handlers["quotes"].get(message.get("S"))
                         if handler is not None:
@@ -82,7 +82,7 @@ class SharedOptionStream(MultiplexedAlpacaStockStream):
     def _notify_closed(self, failure):
         if not self._closed:
             self.failed = True
-            failure = failure or BrokerConnectionError("Option quote connection ended", code="OPTION_STREAM_GAP")
+            failure = failure or BrokerError("Option quote connection ended", code="OPTION_STREAM_GAP",details={'recovery':'RECONNECT_STREAM'})
         super()._notify_closed(failure)
 
     @property
@@ -97,7 +97,7 @@ async def merge_quotes(subscriptions, queue_size):
         try:
             async for quote in subscription:
                 await queue.put(quote)
-            await queue.put(BrokerConnectionError("Option quote subscription ended", code="OPTION_STREAM_GAP"))
+            await queue.put(BrokerError("Option quote subscription ended", code="OPTION_STREAM_GAP",details={'recovery':'RECONNECT_STREAM'}))
         except asyncio.CancelledError:
             raise
         except Exception as exc:

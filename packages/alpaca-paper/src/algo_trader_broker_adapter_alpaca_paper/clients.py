@@ -433,16 +433,11 @@ class AlpacaClients:
             return None
 
     async def stream_stock(self, symbol: str, kind: str) -> AlpacaStockSubscription:
-        from alpaca.data.enums import DataFeed
-        from alpaca.data.live import StockDataStream
+        from .streams import create_stock_stream
 
         async with self._stock_stream_lock:
             if self._stock_stream is None:
-                stream = StockDataStream(
-                    self.settings.api_key_id,
-                    self.settings.secret_key,
-                    feed=DataFeed.IEX if self.settings.data_feed == "iex" else DataFeed.SIP,
-                )
+                stream = create_stock_stream(self.settings)
                 self._stock_stream = MultiplexedAlpacaStockStream(
                     stream,
                     queue_size=self.settings.stream_queue_size,

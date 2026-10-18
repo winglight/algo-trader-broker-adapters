@@ -10,11 +10,60 @@ from collections import defaultdict
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 
-from algo_trader_broker_sdk import BrokerConnectionError
+from algo_trader_broker_sdk import BrokerConnectionError, BrokerError
 
 
 LOGGER = logging.getLogger(__name__)
 _END = object()
+
+
+def stream_failure(error):
+    if isinstance(error,BrokerError):
+        return error
+    # Interpret native messages only at the adapter boundary. The shared
+    # runtime consumes typed recovery, never provider wording or credentials.
+    message=str(error).lower()
+    if 'connection limit exceeded' in message:
+        return BrokerError('Alpaca market-data connection limit exceeded',code='MARKET_DATA_CONNECTION_LIMIT',
+            details={'recovery':'SOURCE_CONFIGURATION_CHANGED'})
+    if 'not entitled' in message or 'subscription does not permit' in message:
+        return BrokerError('Alpaca market-data feed is not entitled',code='FEED_NOT_ENTITLED',
+            details={'recovery':'SOURCE_CONFIGURATION_CHANGED'})
+    if isinstance(error,ValueError):
+        return BrokerError('Alpaca market-data stream was rejected',code='MARKET_DATA_STREAM_REJECTED',
+            details={'error_type':type(error).__name__,'recovery':'SOURCE_CONFIGURATION_CHANGED'})
+    return BrokerConnectionError('Alpaca websocket stream stopped unexpectedly',
+        details={'error_type':type(error).__name__})
+
+
+def create_stock_stream(settings):
+    from alpaca.data.enums import DataFeed
+    from alpaca.data.live import StockDataStream
+
+    class NativeStockStream(StockDataStream):
+        async def _dispatch(self,message):
+            if message.get('T')=='error':
+                raise stream_failure(ValueError(message.get('msg','native rejection')))
+            return await super()._dispatch(message)
+
+        async def _run_forever(self):
+            # A denied subscription ends once. Source changes or the owning
+            # runtime can reconnect; the vendor loop must not retry auth forever.
+            self._loop=asyncio.get_running_loop()
+            try:
+                if not self._should_run:return
+                async with asyncio.timeout(settings.request_timeout_seconds):
+                    await self._start_ws()
+                    await self._send_subscribe_msg()
+                self._running=True
+                await self._consume()
+            except ValueError as exc:
+                raise stream_failure(exc) from exc
+            finally:
+                await self.close()
+
+    return NativeStockStream(settings.api_key_id,settings.secret_key,
+        feed=DataFeed.IEX if settings.data_feed=='iex' else DataFeed.SIP)
 
 
 class AlpacaStockSubscription:
@@ -65,10 +114,7 @@ class AlpacaStockSubscription:
                         )
                     return
                 if isinstance(item, BaseException):
-                    raise BrokerConnectionError(
-                        "Alpaca websocket stream stopped unexpectedly",
-                        details={"stream": self._name, "error_type": type(item).__name__},
-                    ) from item
+                    raise stream_failure(item) from item
                 yield item
         finally:
             await self.close()
@@ -304,10 +350,7 @@ class ThreadedAlpacaStream:
                         )
                     return
                 if isinstance(item, BaseException):
-                    raise BrokerConnectionError(
-                        "Alpaca websocket stream stopped unexpectedly",
-                        details={"stream": self._name, "error_type": type(item).__name__},
-                    ) from item
+                    raise stream_failure(item) from item
                 yield item
         finally:
             await self.close()

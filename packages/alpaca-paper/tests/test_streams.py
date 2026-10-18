@@ -6,6 +6,10 @@ import threading
 import pytest
 
 from algo_trader_broker_adapter_alpaca_paper.streams import MultiplexedAlpacaStockStream
+from algo_trader_broker_adapter_alpaca_paper.streams import stream_failure, create_stock_stream
+from algo_trader_broker_sdk.errors import BrokerError, is_transport_failure
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 
 class FakeStockDataStream:
@@ -81,3 +85,29 @@ async def test_stock_stream_multiplexes_consumers_over_one_connection():
 
     await managed.close()
     assert raw.stopped.is_set()
+
+
+@pytest.mark.parametrize('message,code',[
+    ('connection limit exceeded','MARKET_DATA_CONNECTION_LIMIT'),
+    ('not entitled to requested feed','FEED_NOT_ENTITLED'),
+    ('subscription does not permit this feed','FEED_NOT_ENTITLED'),
+    ('unknown auth rejection','MARKET_DATA_STREAM_REJECTED'),
+])
+def test_native_rejections_keep_a_permanent_typed_error(message,code):
+    error=stream_failure(ValueError(message))
+    assert error.code==code and not is_transport_failure(error)
+    assert error.details['recovery']=='SOURCE_CONFIGURATION_CHANGED'
+    assert stream_failure(error) is error
+    assert is_transport_failure(stream_failure(ConnectionResetError()))
+
+
+@pytest.mark.asyncio
+async def test_stock_auth_limit_does_not_run_vendor_retry_loop():
+    stream=create_stock_stream(SimpleNamespace(api_key_id='test-only',secret_key='test-only',data_feed='iex',request_timeout_seconds=1))
+    stream._start_ws=AsyncMock(side_effect=ValueError('connection limit exceeded'))
+    stream.close=AsyncMock()
+    with pytest.raises(BrokerError) as raised:
+        await stream._run_forever()
+    assert raised.value.code=='MARKET_DATA_CONNECTION_LIMIT'
+    stream._start_ws.assert_awaited_once()
+    stream.close.assert_awaited_once()
