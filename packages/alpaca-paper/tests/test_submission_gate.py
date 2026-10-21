@@ -85,3 +85,42 @@ def test_cancelled_queued_worker_cannot_later_submit(monkeypatch):
         native.assert_not_called()
         assert not gate.consumed
     asyncio.run(scenario())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('expired', [False, True])
+async def test_native_option_http_post_requires_fresh_authority_after_queue_wait(expired):
+    import httpx
+    settings = AlpacaPaperSettings('synthetic-key', 'synthetic-secret')
+    backend = AlpacaClients(settings)
+    age_seconds = [1]
+    posted = []
+    async def authority():
+        if age_seconds[0] > 5:
+            raise BrokerOrderError('Original financial evidence expired in queue', code='broker_submission_fenced')
+    def current():
+        if age_seconds[0] > 5:
+            raise BrokerOrderError('Original financial evidence expired before POST', code='broker_submission_fenced')
+    gate = SubmissionGate(AsyncMock(side_effect=authority), Mock(side_effect=current))
+    async def native(request):
+        assert gate.consumed
+        assert request.method == 'POST' and request.url.path == '/v2/orders'
+        posted.append(request.content)
+        return httpx.Response(201, content=b'{"id":"synthetic-accepted"}')
+    backend._option_http_transport = httpx.MockTransport(native)
+    # Hold every native concurrency slot; no authority may be evaluated early.
+    for _ in range(settings.max_concurrency):
+        await backend._semaphore.acquire()
+    task = asyncio.create_task(backend.submit_option_order_raw({'client_order_id':'synthetic-only'}, submission_gate=gate))
+    await asyncio.sleep(0)
+    gate.validate.assert_not_awaited()
+    age_seconds[0] = 6 if expired else 4
+    backend._semaphore.release()
+    if expired:
+        with pytest.raises(BrokerOrderError, match='expired in queue'):
+            await task
+        assert not posted and not gate.consumed
+    else:
+        assert await task == b'{"id":"synthetic-accepted"}'
+        assert len(posted) == 1 and gate.consumed
+    gate.validate.assert_awaited_once()

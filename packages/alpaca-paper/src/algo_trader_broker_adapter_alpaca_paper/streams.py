@@ -155,11 +155,12 @@ class MultiplexedAlpacaStockStream:
         self._lock = threading.Lock()
         self._subscribers: dict[tuple[str, str], set[AlpacaStockSubscription]] = defaultdict(set)
         self._closed = False
+        self.failed = False
 
     async def subscribe(self, symbol: str, kind: str) -> AlpacaStockSubscription:
         if kind not in self._SUBSCRIBE_METHODS:
             raise ValueError(f"Unknown Alpaca stock stream kind: {kind}")
-        if self._closed:
+        if self._closed or self.failed:
             raise BrokerConnectionError("Alpaca stock websocket is closed")
         symbol = symbol.strip().upper()
         if self._loop is None:
@@ -230,6 +231,8 @@ class MultiplexedAlpacaStockStream:
             self._notify_closed(failure)
 
     def _notify_closed(self, failure: BaseException | None) -> None:
+        if not self._closed:
+            self.failed = True
         loop = self._loop
         with self._lock:
             subscribers = tuple(

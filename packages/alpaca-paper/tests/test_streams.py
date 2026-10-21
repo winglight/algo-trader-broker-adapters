@@ -111,3 +111,33 @@ async def test_stock_auth_limit_does_not_run_vendor_retry_loop():
     assert raised.value.code=='MARKET_DATA_CONNECTION_LIMIT'
     stream._start_ws.assert_awaited_once()
     stream.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_explicit_new_subscription_replaces_failed_stock_connection_once(monkeypatch):
+    from algo_trader_broker_adapter_alpaca_paper.clients import AlpacaClients
+    class Rejected(FakeStockDataStream):
+        def run(self):
+            self.started.set()
+            raise stream_failure(ValueError('connection limit exceeded'))
+    failed,healthy=Rejected(),FakeStockDataStream()
+    created=[]
+    def create(_):
+        raw=(failed,healthy)[len(created)]
+        created.append(raw)
+        return raw
+    monkeypatch.setattr('algo_trader_broker_adapter_alpaca_paper.streams.create_stock_stream',create)
+    client=AlpacaClients(SimpleNamespace(max_concurrency=1,stream_queue_size=10))
+    first=await client.stream_stock('SPY','quotes')
+    with pytest.raises(BrokerError) as err:
+        await asyncio.wait_for(anext(first.__aiter__()),1)
+    assert err.value.code=='MARKET_DATA_CONNECTION_LIMIT' and len(created)==1
+    # There is no automatic provider retry; an explicit new consumer recovers.
+    second=await client.stream_stock('SPY','quotes')
+    await asyncio.to_thread(healthy.started.wait,1)
+    assert len(created)==2 and failed.stopped.is_set()
+    await healthy.handlers['quotes']['SPY']({'bid':100})
+    assert await asyncio.wait_for(anext(second.__aiter__()),1)=={'bid':100}
+    await first.close()
+    await second.close()
+    await client.close()

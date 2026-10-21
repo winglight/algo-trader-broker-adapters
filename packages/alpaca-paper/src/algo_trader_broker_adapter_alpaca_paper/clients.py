@@ -436,7 +436,9 @@ class AlpacaClients:
         from .streams import create_stock_stream
 
         async with self._stock_stream_lock:
-            if self._stock_stream is None:
+            if self._stock_stream is None or self._stock_stream.failed:
+                if self._stock_stream is not None:
+                    await self._stock_stream.close()
                 stream = create_stock_stream(self.settings)
                 self._stock_stream = MultiplexedAlpacaStockStream(
                     stream,

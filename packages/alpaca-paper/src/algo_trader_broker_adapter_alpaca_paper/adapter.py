@@ -111,6 +111,8 @@ class AlpacaPaperAdapter(AlpacaOptionReads):
         if self._option_account_binding != verified:
             getattr(self, "_option_catalog", {}).clear()
             self._option_opra_observed = None
+            self._option_identity_observation = None
+            self._option_permission_observation = None
         self._option_account_binding = verified
 
     def set_option_event_handler(self, context: OptionVerifiedAccount, handler: OptionEventHandler | None) -> None:
@@ -146,6 +148,8 @@ class AlpacaPaperAdapter(AlpacaOptionReads):
 
     def _clear_option_event_handler(self):
         self._option_account_binding = None
+        self._option_identity_observation = None
+        self._option_permission_observation = None
         getattr(self, "_option_catalog", {}).clear()
         self._option_opra_observed = None
         if self._option_event_binding is not None:
@@ -630,9 +634,7 @@ class AlpacaPaperAdapter(AlpacaOptionReads):
         if bound is None or bound.scope != scope or bound.native_account_ref != self._account_id or not self._connected:
             raise BrokerContractError("Option submission requires the current verified account")
         await self.ensure_connected()
-        account = await self._backend.get_account()
-        if text(value(account, "id") or value(account, "account_number")) != bound.native_account_ref:
-            raise BrokerContractError("Alpaca native account changed before submission")
+        await self._option_require_native_identity(bound)
         try:
             raw = await self._backend.submit_option_order_raw(order_payload(request), submission_gate=gate)
         except BrokerOrderError as exc:

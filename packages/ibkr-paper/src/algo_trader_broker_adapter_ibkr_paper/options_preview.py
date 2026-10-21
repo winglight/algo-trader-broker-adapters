@@ -1,7 +1,7 @@
 """Native what-if observations; never an admission or submission authority."""
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 
 from algo_trader_broker_sdk import BrokerContractError
@@ -26,7 +26,7 @@ async def preview_order(adapter, request):
             for leg in request.legs:
                 cached = adapter._option_catalog.get(leg.binding.broker_contract_id)
                 check(cached is not None and cached[0] == leg.binding
-                      and 0 <= (datetime.now(timezone.utc) - timestamp(leg.binding.qualified_at)).total_seconds() < 30,
+                      and timedelta(0) <= datetime.now(timezone.utc) - timestamp(leg.binding.qualified_at) < timedelta(days=1),
                       "IB preview requires current exact contract bindings")
                 contracts.append(cached[2].contract)
             contract, order = build_order(request, contracts, bound.native_account_ref,

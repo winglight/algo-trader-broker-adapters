@@ -5,6 +5,7 @@ reads are evidence, not Paper certification or an execution authorization.
 """
 
 from collections import OrderedDict, deque
+import asyncio
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -117,8 +118,22 @@ class AlpacaOptionReads:
         account = decode_native(raw)
         check(type(account) is dict and account.get("id") == bound.native_account_ref, "Native option account changed")
         self._option_still_bound(bound)
+        at=datetime.now(timezone.utc)
+        self._option_identity_observation = (bound, self._backend, at)
+        self._option_permission_observation = (bound, self._backend, at, account, raw)
         self._remember_option_read(raw)
         return bound, account, raw
+
+    async def _option_require_native_identity(self, bound):
+        self._option_still_bound(bound)
+        observed = getattr(self, '_option_identity_observation', None)
+        if observed and observed[0] == bound and observed[1] is self._backend:
+            age = (datetime.now(timezone.utc)-observed[2]).total_seconds()
+            if 0 <= age <= 5:
+                return
+        # Only identity may reuse this observation. Financial reads never use
+        # it, and the independent Risk send gate still enforces its own clocks.
+        await self._option_bound(bound.scope, read_account=True)
 
     def _option_still_bound(self, bound):
         check(self._option_account_binding == bound and self._connected and self._account_id == bound.native_account_ref,
@@ -223,7 +238,7 @@ class AlpacaOptionReads:
             check(current is not None and (current[0].canonical_id, current[0].local_symbol, current[0].adapter_id,
                   current[0].adapter_version, current[0].account_scope, current[0].environment) ==
                   (binding.canonical_id, binding.local_symbol, binding.adapter_id, binding.adapter_version, bound.scope.account, bound.scope.environment)
-                  and 0 <= (datetime.now(timezone.utc) - timestamp(binding.qualified_at)).total_seconds() < 30,
+                  and 0 <= (datetime.now(timezone.utc) - timestamp(binding.qualified_at)).total_seconds() < 300,
                   "Option data requires the current exact native qualification")
 
     async def option_history(self, request):
@@ -284,8 +299,14 @@ class AlpacaOptionReads:
         return OptionMarketSnapshot(str(uuid4()), tuple(quotes), tuple(missing), not missing and not data.get("next_page_token"), skew, received)
 
     async def option_account_permissions(self, request):
-        bound, account, raw = await self._option_bound(request, read_account=True)
-        observed = now_wire()
+        bound,_,_=await self._option_bound(request)
+        previous=getattr(self,'_option_permission_observation',None)
+        if previous and previous[0]==bound and previous[1] is self._backend and 0<=(datetime.now(timezone.utc)-previous[2]).total_seconds()<=5:
+            account,raw=previous[3:]
+            observed=previous[2].isoformat().replace('+00:00','Z')
+        else:
+            bound,account,raw=await self._option_bound(request,read_account=True)
+            observed=self._option_permission_observation[2].isoformat().replace('+00:00','Z')
         levels = (account.get("options_approved_level"), account.get("options_trading_level"))
         known = all(type(level) is int and level >= 0 for level in levels)
         level = min(levels) if known else None
@@ -314,7 +335,7 @@ class AlpacaOptionReads:
         unavailable = OptionCapability("UNSUPPORTED", ("NOT_IMPLEMENTED",), ())
         no_history_quotes = OptionCapability("UNSUPPORTED", ("PROVIDER_HISTORY_QUOTES_UNAVAILABLE",), ())
         return OptionCapabilities(bound.scope, self.adapter_id, ADAPTER_VERSION, "alpaca-options-reads-11", observed,
-            (timestamp(observed) + timedelta(seconds=30)).isoformat().replace("+00:00", "Z"), implemented, implemented,
+            (timestamp(observed) + timedelta(minutes=5)).isoformat().replace("+00:00", "Z"), implemented, implemented,
             implemented, implemented, no_history_quotes, implemented, implemented, unavailable, unavailable, implemented,
             implemented, ("OPRA", "INDICATIVE"), tuple(OptionShapeCapability(shape, "NATIVE", implemented,
                 legs, ratio, "0.01", False, legs > 1, False, False) for shape, (legs, ratio) in STRUCTURE_LIMITS.items()),
@@ -361,10 +382,20 @@ class AlpacaOptionReads:
         return state
 
     async def _option_account_snapshot(self, request, *, retain_evidence=None):
-        bound, account, account_raw = await self._option_bound(request, read_account=True)
+        await self._option_bound(request)
+        async def captured(awaitable):
+            result = await awaitable
+            return result, now_wire()
+        reads = await asyncio.gather(
+            captured(self._option_bound(request, read_account=True)),
+            captured(self._backend.get_option_resource("/v2/positions")),
+            captured(self._backend.get_option_resource("/v2/orders", params=dict(status="open", limit=500, nested="true"))),
+            return_exceptions=True)
+        for result in reads:
+            if isinstance(result, BaseException):
+                raise result
+        ((bound, account, account_raw), account_at), (position_raw, positions_at), (order_raw, orders_at) = reads
         check(account.get("currency") == "USD", "Option account currency must be explicit USD")
-        position_raw = await self._backend.get_option_resource("/v2/positions")
-        order_raw = await self._backend.get_option_resource("/v2/orders", params=dict(status="open", limit=500, nested="true"))
         positions, orders = decode_native(position_raw), decode_native(order_raw)
         check(type(positions) is list and type(orders) is list, "Native account collections are invalid")
         check(len(positions) <= 10000, "Native positions exceed account evidence bound")
@@ -372,7 +403,7 @@ class AlpacaOptionReads:
         if retain_evidence is not None:
             check(await retain_evidence(position_raw) == pos_hash, "Position archive changed native collection")
         self._remember_option_read(order_raw)
-        exact, unresolved, observed = [], [], now_wire()
+        exact, unresolved, observed = [], [], min(account_at, positions_at, orders_at)
         stocks, stock_reasons = [], [] if retain_evidence is not None else ["STOCK_RAW_ARCHIVE_UNAVAILABLE"]
         for position in positions:
             asset_class = position.get("asset_class")

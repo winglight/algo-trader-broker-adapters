@@ -28,6 +28,9 @@ async def test_income_permission_uses_the_lower_observed_account_level(approved,
     adapter._connected, adapter._account_id = True, VERIFIED.native_account_ref
     adapter.bind_option_account(VERIFIED)
     permissions = await adapter.option_account_permissions(VERIFIED.scope)
+    again = await adapter.option_account_permissions(VERIFIED.scope)
+    assert again.observed_at == permissions.observed_at
+    assert backend.get_option_resource.await_count == 1
     assert set(permissions.permitted_structures) == expected
     assert permissions.approval_status == ('UNKNOWN' if approved is None else 'DENIED' if approved == 0 else 'ALLOWED')
 
