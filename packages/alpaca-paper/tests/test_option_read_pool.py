@@ -1,5 +1,6 @@
 import httpx
 import pytest
+from algo_trader_broker_sdk import BrokerConnectionError
 from algo_trader_broker_adapter_alpaca_paper.clients import AlpacaClients
 from algo_trader_broker_adapter_alpaca_paper.settings import AlpacaPaperSettings
 
@@ -26,3 +27,21 @@ async def test_read_connections_are_reused_but_every_native_response_is_captured
         pools = list(client._option_read_clients.values())
         await client.close()
     assert all(pool.is_closed for pool in pools) and not client._option_read_clients
+
+
+@pytest.mark.asyncio
+async def test_failed_read_keeps_only_typed_status_and_never_retries_or_exposes_native_body():
+    calls=[]
+    def native(request):
+        calls.append(request)
+        return httpx.Response(429, content=b'private-native-body')
+    client=AlpacaClients(AlpacaPaperSettings.from_mapping(dict(alpaca_api_key_id='fixture-key',alpaca_secret_key='fixture-secret')),
+        option_http_transport=httpx.MockTransport(native))
+    try:
+        with pytest.raises(BrokerConnectionError) as caught:
+            await client.get_option_resource('/v2/account')
+        assert caught.value.details == {'operation':'option_trading_read','error_type':'HTTPStatusError','status_code':429}
+        assert len(calls)==1
+        assert all(secret not in str(caught.value.to_payload()) for secret in ['private-native-body','fixture-key','fixture-secret'])
+    finally:
+        await client.close()

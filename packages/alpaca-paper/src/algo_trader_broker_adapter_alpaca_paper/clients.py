@@ -269,8 +269,15 @@ class AlpacaClients:
                                 raise BrokerConnectionError("Option resource exceeds the native evidence limit")
                             raw.extend(chunk)
                         return bytes(raw)
-            except (httpx.HTTPError, TimeoutError):
-                raise BrokerConnectionError("Alpaca option read failed") from None
+            except (httpx.HTTPError, TimeoutError) as exc:
+                # Preserve typed diagnostics without retaining request headers,
+                # URLs, response bodies or credentials. Read failures remain
+                # failures; this does not retry or cache a native response.
+                raise BrokerConnectionError("Alpaca option read failed", details={
+                    "operation": "option_data_read" if data else "option_trading_read",
+                    "error_type": type(exc).__name__,
+                    "status_code": getattr(getattr(exc, "response", None), "status_code", None),
+                }) from None
 
     async def get_order_by_client_id(self, client_order_id: str) -> Any | None:
         self._load()
