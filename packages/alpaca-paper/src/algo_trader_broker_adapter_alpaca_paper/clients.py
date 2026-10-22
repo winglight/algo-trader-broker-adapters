@@ -472,10 +472,10 @@ class AlpacaClients:
                 yield item
         finally:
             await source.aclose()
-            async with self._option_stream_lock:
-                if managed.unused and self._option_streams.get(feed) is managed:
-                    self._option_streams.pop(feed)
-                    await managed.close()
+            # Symbol subscriptions have their own refcounts. Keep the feed
+            # connection for the next basket rather than race a new native
+            # handshake against the provider releasing the previous socket.
+            # Failed feeds are replaced above; client shutdown owns closure.
 
     async def start_trade_updates(
         self,

@@ -9,7 +9,7 @@ from algo_trader_broker_adapter_alpaca_paper.streams import MultiplexedAlpacaSto
 from algo_trader_broker_adapter_alpaca_paper.streams import stream_failure, create_stock_stream
 from algo_trader_broker_sdk.errors import BrokerError, is_transport_failure
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 
 class FakeStockDataStream:
@@ -84,6 +84,33 @@ async def test_stock_stream_multiplexes_consumers_over_one_connection():
     assert raw.unsubscribe_calls[-1] == ("trades", "AAPL")
 
     await managed.close()
+    assert raw.stopped.is_set()
+
+
+@pytest.mark.asyncio
+async def test_sequential_option_baskets_reuse_feed_socket_until_client_shutdown(monkeypatch):
+    from algo_trader_broker_adapter_alpaca_paper.clients import AlpacaClients
+    from algo_trader_broker_adapter_alpaca_paper.settings import AlpacaPaperSettings
+    raw = FakeStockDataStream()
+    factory = Mock(return_value=raw)
+    monkeypatch.setattr('algo_trader_broker_adapter_alpaca_paper.options_stream.create_option_stream', factory)
+    client = AlpacaClients(AlpacaPaperSettings.from_mapping(dict(alpaca_api_key_id='fixture', alpaca_secret_key='fixture')))
+    try:
+        for symbol in ('SPY261027C00774000', 'SPY261027P00774000'):
+            source = client.stream_option_quotes((symbol,), 'INDICATIVE')
+            pending = asyncio.create_task(anext(source))
+            for _ in range(100):
+                if symbol in raw.handlers['quotes']:
+                    break
+                await asyncio.sleep(.001)
+            await raw.handlers['quotes'][symbol](symbol)
+            assert await asyncio.wait_for(pending, 1) == symbol
+            await source.aclose()
+            assert not raw.stopped.is_set()
+            assert not raw.handlers['quotes']
+        factory.assert_called_once()
+    finally:
+        await client.close()
     assert raw.stopped.is_set()
 
 
