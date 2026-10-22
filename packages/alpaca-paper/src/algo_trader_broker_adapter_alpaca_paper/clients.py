@@ -13,6 +13,7 @@ from algo_trader_broker_sdk import BrokerConnectionError, BrokerOrderError
 
 from .mapping import value
 from .settings import AlpacaPaperSettings
+from .read_pacing import NativeReadPacing
 from .raw_stream import create_trading_stream
 from .streams import (
     AlpacaStockSubscription,
@@ -39,6 +40,7 @@ class AlpacaClients:
         self._raw_trade_handler = None
         self._option_http_transport = option_http_transport
         self._option_read_clients = {}
+        self._option_read_pacing = {False: NativeReadPacing(), True: NativeReadPacing()}
         self._option_streams = {}
         self._option_stream_lock = asyncio.Lock()
 
@@ -248,7 +250,8 @@ class AlpacaClients:
         import httpx
         from algo_trader_broker_sdk import BrokerCapabilityError
 
-        async with self._semaphore:
+        pacing = self._option_read_pacing[data]
+        async with pacing.slot(), self._semaphore:
             client = self._option_read_clients.get(data)
             if client is None:
                 client = httpx.AsyncClient(base_url=OPTION_DATA_BASE_URL if data else self.settings.trading_base_url,
@@ -260,9 +263,13 @@ class AlpacaClients:
             try:
                 async with asyncio.timeout(self.settings.request_timeout_seconds):
                     async with client.stream("GET", path, params=params) as response:
+                        pacing.observed(response.headers, response.status_code)
                         if response.status_code in {401, 403}:
                             raise BrokerCapabilityError("Alpaca denied the requested option resource", code="OPTION_RESOURCE_DENIED")
                         response.raise_for_status()
+                        if response.status_code != 200:
+                            raise BrokerConnectionError('Alpaca read requires a complete native response',
+                                details={'status_code': response.status_code})
                         raw = bytearray()
                         async for chunk in response.aiter_bytes(chunk_size=65536):
                             if len(raw) + len(chunk) > 8 * 1024 * 1024:
@@ -378,25 +385,12 @@ class AlpacaClients:
         return await self._get_option_raw("/v2/orders/" + _uuid(request.order_id), {"nested": "true"})
 
     async def _get_option_raw(self, path, params) -> bytes:
-        import httpx
-
-        try:
-            async with self._semaphore, asyncio.timeout(self.settings.request_timeout_seconds):
-                async with httpx.AsyncClient(base_url=self.settings.trading_base_url, follow_redirects=False,
-                    headers={"APCA-API-KEY-ID": self.settings.api_key_id, "APCA-API-SECRET-KEY": self.settings.secret_key},
-                    timeout=self.settings.request_timeout_seconds) as client:
-                    async with client.stream("GET", path, params=params) as response:
-                        if response.status_code != 200:
-                            raise BrokerConnectionError("Alpaca activity page request failed", details={"status_code": response.status_code})
-                        raw = bytearray()
-                        async for chunk in response.aiter_bytes(chunk_size=65536):
-                            if len(raw) + len(chunk) > 8 * 1024 * 1024:
-                                raise BrokerConnectionError("Alpaca activity page exceeds native evidence limit")
-                            raw.extend(chunk)
-                        if not raw: raise BrokerConnectionError("Alpaca activity page is empty, not an empty JSON array")
-                        return bytes(raw)
-        except (httpx.HTTPError, TimeoutError):
-            raise BrokerConnectionError("Alpaca activity page transport failed") from None
+        # Activity/order evidence shares the same actual Trading API quota as
+        # balances/positions. Preserve original bounded bytes and one attempt.
+        raw = await self.get_option_resource(path, params=params)
+        if not raw:
+            raise BrokerConnectionError('Alpaca activity page is empty, not an empty JSON array')
+        return raw
 
     async def get_bars(
         self,
