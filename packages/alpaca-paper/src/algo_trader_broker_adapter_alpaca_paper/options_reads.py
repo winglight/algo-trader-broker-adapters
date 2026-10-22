@@ -107,6 +107,9 @@ class AlpacaOptionReads:
     async def _option_bound(self, request, *, read_account=False):
         scope = OptionScope(**{name: getattr(request, name) for name in OptionScope.__dataclass_fields__})
         bound = self._option_account_binding
+        if bound is not None and bound.scope != scope:
+            bound = next((original for original, current in self._option_recovery_bindings.items()
+                          if original.scope == scope and current == bound), None)
         check(bound is not None and bound.scope == scope and bound.native_account_ref == self._account_id
               and self._connected and scope.environment == self._settings.environment, "Option read requires the current verified account and environment")
         # Runner has already verified this exact live connection. Quote,
@@ -136,7 +139,9 @@ class AlpacaOptionReads:
         await self._option_bound(bound.scope, read_account=True)
 
     def _option_still_bound(self, bound):
-        check(self._option_account_binding == bound and self._connected and self._account_id == bound.native_account_ref,
+        check((self._option_account_binding == bound or
+               bound in self._option_recovery_bindings and self._option_recovery_bindings[bound] == self._option_account_binding)
+              and self._connected and self._account_id == bound.native_account_ref,
               "Option account connection changed during native read")
 
     def _remember_option_read(self, raw):
@@ -430,14 +435,23 @@ class AlpacaOptionReads:
             reason = "CONTRACT_METADATA_UNRESOLVED"
             try:
                 check(asset_class == "us_option", "Unclassified native asset")
-                raw = await self._backend.get_option_resource("/v2/options/contracts/" + native_id)
-                self._remember_option_read(raw)
-                item = decode_native(raw)
-                contract = contract_from_native(item)
+                cached = getattr(self, '_option_catalog', {}).get(native_id)
+                if cached is not None:
+                    try:
+                        self._validate_option_bindings(bound, (cached[0],))
+                    except BrokerContractError:
+                        cached = None
+                if cached is None:
+                    raw = await self._backend.get_option_resource("/v2/options/contracts/" + native_id)
+                    self._remember_option_read(raw)
+                    item = decode_native(raw)
+                    contract = contract_from_native(item)
+                    binding = self._remember_contract(bound.scope, item, contract, raw, now_wire())
+                else:
+                    binding, contract, item = cached
                 check(item["id"] == native_id and item["symbol"] == symbol, "Position and native contract disagree")
                 contracts = whole(Decimal(quantity).copy_abs()) * (-1 if Decimal(quantity) < 0 else 1)
                 check(position.get("side") == ("short" if contracts < 0 else "long"), "Position direction is invalid")
-                binding = self._remember_contract(bound.scope, item, contract, raw, observed)
                 cost = None if position.get("cost_basis") is None else signed_decimal(position["cost_basis"])
                 unit = "CASH_TOTAL" if cost is not None and Decimal(cost) * contracts >= 0 else "UNKNOWN"
                 exact.append(OptionAccountPosition(contract, binding, native_id, contracts, cost, unit, pos_hash, pos_hash, observed, observed))

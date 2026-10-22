@@ -102,18 +102,34 @@ class AlpacaPaperAdapter(AlpacaOptionReads):
         self._stream_reconnect_task: asyncio.Task[None] | None = None
         self._option_event_binding: OptionVerifiedAccount | None = None
         self._option_account_binding: OptionVerifiedAccount | None = None
+        self._option_recovery_bindings = {}
         self._option_evidence_handler = None
 
     def bind_option_account(self, verified):
         if (type(verified) is not OptionVerifiedAccount or verified.broker != "ALPACA" or verified.scope.environment != self._settings.environment
                 or not self._connected or verified.native_account_ref != self._account_id):
             raise BrokerContractError("Option request differs from the connected verified Alpaca account")
+        if verified in self._option_recovery_bindings and self._option_recovery_bindings[verified] == self._option_account_binding:
+            return
         if self._option_account_binding != verified:
+            self._option_recovery_bindings.clear()
             getattr(self, "_option_catalog", {}).clear()
             self._option_opra_observed = None
             self._option_identity_observation = None
             self._option_permission_observation = None
         self._option_account_binding = verified
+
+    def register_option_recovery(self, original, current):
+        if (type(original) is not OptionVerifiedAccount or type(current) is not OptionVerifiedAccount
+                or not original.broker == current.broker == 'ALPACA'
+                or original.scope.environment != current.scope.environment or current.scope.environment != 'paper'
+                or original.native_account_ref != current.native_account_ref
+                or (original.scope.account, original.scope.profile_id, original.scope.execution_target) !=
+                   (current.scope.account, current.scope.profile_id, current.scope.execution_target)
+                or original.scope.expected_generation >= current.scope.expected_generation):
+            raise BrokerContractError('Recovery requires the same native PAPER account and a newer connection')
+        self.bind_option_account(current)
+        self._option_recovery_bindings[original] = current
 
     def set_option_event_handler(self, context: OptionVerifiedAccount, handler: OptionEventHandler | None) -> None:
         if type(context) is not OptionVerifiedAccount:
@@ -148,6 +164,7 @@ class AlpacaPaperAdapter(AlpacaOptionReads):
 
     def _clear_option_event_handler(self):
         self._option_account_binding = None
+        self._option_recovery_bindings.clear()
         self._option_identity_observation = None
         self._option_permission_observation = None
         getattr(self, "_option_catalog", {}).clear()
@@ -630,9 +647,10 @@ class AlpacaPaperAdapter(AlpacaOptionReads):
         if type(request) is not OptionExecutionRequest:
             raise BrokerContractError("Option submission requires a typed exact command")
         scope = OptionScope(**{name: getattr(request, name) for name in OptionScope.__dataclass_fields__})
-        bound, sink = self._option_account_binding, self._option_evidence_handler
-        if bound is None or bound.scope != scope or bound.native_account_ref != self._account_id or not self._connected:
-            raise BrokerContractError("Option submission requires the current verified account")
+        bound, _, _ = await self._option_bound(scope)
+        sink, event_binding = self._option_evidence_handler, self._option_event_binding
+        if bound != self._option_account_binding and not all(leg.position_effect == 'CLOSE' for leg in request.legs):
+            raise BrokerContractError('A recovered option scope can only reduce exposure')
         await self.ensure_connected()
         await self._option_require_native_identity(bound)
         try:
@@ -642,7 +660,7 @@ class AlpacaPaperAdapter(AlpacaOptionReads):
                 return rejected_state(request)
             raise
         if sink is not None:
-            await sink(OptionRawEvent(scope, "ALPACA_ORDER_DETAIL", raw))
+            await sink(OptionRawEvent(event_binding.scope, "ALPACA_ORDER_DETAIL", raw))
         return order_state(request, raw)
 
     async def cancel_option_order_guarded(self, request, gate, *, original):
@@ -653,9 +671,8 @@ class AlpacaPaperAdapter(AlpacaOptionReads):
         if type(request) is not OptionCancelRequest or type(original) is not OptionExecutionRequest:
             raise BrokerContractError("Cancellation requires the typed request and retained original option command")
         scope = OptionScope(**{name: getattr(request, name) for name in OptionScope.__dataclass_fields__})
-        bound, sink = self._option_account_binding, self._option_evidence_handler
-        if bound is None or bound.scope != scope or bound.native_account_ref != self._account_id or not self._connected:
-            raise BrokerContractError("Cancellation requires the current verified account")
+        bound, _, _ = await self._option_bound(scope)
+        sink, event_binding = self._option_evidence_handler, self._option_event_binding
         if any(getattr(original, field) != getattr(scope, field) for field in OptionScope.__dataclass_fields__):
             raise BrokerContractError("Original option order belongs to another connection")
         parent = _uuid(request.parent_order_ref)
@@ -665,7 +682,7 @@ class AlpacaPaperAdapter(AlpacaOptionReads):
             raise BrokerContractError("Alpaca native account changed before cancellation")
         raw = await self._backend.get_option_resource("/v2/orders/" + parent, params={"nested": "true"})
         if sink is not None:
-            await sink(OptionRawEvent(scope, "ALPACA_ORDER_DETAIL", raw))
+            await sink(OptionRawEvent(event_binding.scope, "ALPACA_ORDER_DETAIL", raw))
         if order_state(original, raw).parent_order_ref != parent:
             raise BrokerContractError("Cancellation parent differs from the original exact order")
         status = await self._backend.cancel_option_order_raw(parent, submission_gate=gate)
