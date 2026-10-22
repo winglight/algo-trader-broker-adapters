@@ -378,7 +378,11 @@ class AlpacaPaperAdapter(AlpacaOptionReads):
     async def _publish_positions(self) -> list[PositionItem]:
         native = await self._backend.get_positions()
         account_id = self._account_id or ""
-        positions = [map_position(item, account_id=account_id) for item in native]
+        # The legacy position port is an equity port. Option holdings are
+        # independently retained by option_account_state; publishing OCC
+        # symbols as STK starts invalid stock subscriptions and recovery.
+        positions = [map_position(item, account_id=account_id) for item in native
+                     if text(value(item, 'asset_class')).lower() != 'us_option']
         if self._position_update_handler is not None:
             await self._position_update_handler(positions)
         return positions

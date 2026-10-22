@@ -241,6 +241,18 @@ async def test_lifecycle_account_positions_and_pnl() -> None:
 
 
 @pytest.mark.asyncio
+async def test_native_option_positions_do_not_enter_the_legacy_stock_position_port():
+    adapter, backend = await connected()
+    backend.positions.append(dict(symbol='SPY261027C00774000', qty='1', avg_entry_price='1.49', asset_class='us_option'))
+    try:
+        positions = await adapter.get_positions()
+        assert [position.symbol for position in positions] == ['AAPL']
+        assert len(backend.positions) == 2
+    finally:
+        await adapter.close()
+
+
+@pytest.mark.asyncio
 async def test_submit_rejects_client_order_id_over_vendor_limit_before_api_call() -> None:
     adapter, backend = await connected()
     request = StockOrderRequest(
