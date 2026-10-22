@@ -38,6 +38,7 @@ class AlpacaClients:
         self._stock_stream_lock = asyncio.Lock()
         self._raw_trade_handler = None
         self._option_http_transport = option_http_transport
+        self._option_read_clients = {}
         self._option_streams = {}
         self._option_stream_lock = asyncio.Lock()
 
@@ -248,23 +249,28 @@ class AlpacaClients:
         from algo_trader_broker_sdk import BrokerCapabilityError
 
         async with self._semaphore:
-            async with httpx.AsyncClient(base_url=OPTION_DATA_BASE_URL if data else self.settings.trading_base_url,
+            client = self._option_read_clients.get(data)
+            if client is None:
+                client = httpx.AsyncClient(base_url=OPTION_DATA_BASE_URL if data else self.settings.trading_base_url,
                 headers={"APCA-API-KEY-ID": self.settings.api_key_id, "APCA-API-SECRET-KEY": self.settings.secret_key},
-                timeout=self.settings.request_timeout_seconds, follow_redirects=False, transport=self._option_http_transport) as client:
-                try:
-                    async with asyncio.timeout(self.settings.request_timeout_seconds):
-                        async with client.stream("GET", path, params=params) as response:
-                            if response.status_code in {401, 403}:
-                                raise BrokerCapabilityError("Alpaca denied the requested option resource", code="OPTION_RESOURCE_DENIED")
-                            response.raise_for_status()
-                            raw = bytearray()
-                            async for chunk in response.aiter_bytes(chunk_size=65536):
-                                if len(raw) + len(chunk) > 8 * 1024 * 1024:
-                                    raise BrokerConnectionError("Option resource exceeds the native evidence limit")
-                                raw.extend(chunk)
-                            return bytes(raw)
-                except (httpx.HTTPError, TimeoutError):
-                    raise BrokerConnectionError("Alpaca option read failed") from None
+                timeout=self.settings.request_timeout_seconds, follow_redirects=False, transport=self._option_http_transport)
+                self._option_read_clients[data] = client
+            # Reuse TLS connections, never responses or evidence timestamps.
+            # Native sends retain their separate single-attempt boundary.
+            try:
+                async with asyncio.timeout(self.settings.request_timeout_seconds):
+                    async with client.stream("GET", path, params=params) as response:
+                        if response.status_code in {401, 403}:
+                            raise BrokerCapabilityError("Alpaca denied the requested option resource", code="OPTION_RESOURCE_DENIED")
+                        response.raise_for_status()
+                        raw = bytearray()
+                        async for chunk in response.aiter_bytes(chunk_size=65536):
+                            if len(raw) + len(chunk) > 8 * 1024 * 1024:
+                                raise BrokerConnectionError("Option resource exceeds the native evidence limit")
+                            raw.extend(chunk)
+                        return bytes(raw)
+            except (httpx.HTTPError, TimeoutError):
+                raise BrokerConnectionError("Alpaca option read failed") from None
 
     async def get_order_by_client_id(self, client_order_id: str) -> Any | None:
         self._load()
@@ -510,6 +516,9 @@ class AlpacaClients:
         streams, self._option_streams = tuple(self._option_streams.values()), {}
         for stream in streams:
             await stream.close()
+        clients, self._option_read_clients = tuple(self._option_read_clients.values()), {}
+        for client in clients:
+            await client.aclose()
 
 
 def duration_window(duration: str, end: datetime | str | None) -> tuple[datetime, datetime]:
