@@ -2,6 +2,7 @@
 
 from decimal import InvalidOperation
 from hashlib import sha256
+from collections import OrderedDict
 
 from algo_trader_broker_sdk import BrokerContractError
 from algo_trader_broker_sdk.options import check
@@ -15,6 +16,10 @@ from .raw_stream import decode_native
 async def read(adapter, scope, *, retain_evidence):
     bound, _, _ = await adapter._option_bound(scope)
     executions, cursor, seen, orders = [], None, set(), {}
+    non_cash = getattr(adapter, '_option_non_cash_orders', None)
+    if non_cash is None:
+        non_cash = adapter._option_non_cash_orders = OrderedDict()
+    identity = (bound.scope.account, bound.scope.profile_id, bound.scope.environment, bound.native_account_ref)
 
     async def retain(raw):
         reference = await retain_evidence(raw)
@@ -38,6 +43,14 @@ async def read(adapter, scope, *, retain_evidence):
                 order_id = _uuid(item["order_id"])
             except (BrokerContractError, KeyError, ValueError, TypeError):
                 continue
+            known = (identity, order_id)
+            if known in non_cash:
+                # An exact native order UUID cannot change from us_option to
+                # us_equity. This retained classification only excludes it
+                # from CASH fills; option execution/position evidence still
+                # comes from its own fresh journal and account observations.
+                non_cash.move_to_end(known)
+                continue
             if order_id not in orders:
                 order_raw = await adapter._backend.get_option_resource("/v2/orders/" + order_id, params={"nested": "true"})
                 order_ref = await retain(order_raw)
@@ -49,6 +62,10 @@ async def read(adapter, scope, *, retain_evidence):
                       "Cash activity order changed account or native identity")
                 # Option activities continue through the existing option journal.
                 if order.get("asset_class") != "us_equity":
+                    if order.get('asset_class') == 'us_option':
+                        non_cash[known] = True
+                        if len(non_cash) > 1024:
+                            non_cash.popitem(last=False)
                     continue
                 check(order.get("order_class") in {None, "", "simple"} and not order.get("legs")
                       and item.get("type") in {"fill", "partial_fill"}
