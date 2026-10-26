@@ -206,7 +206,15 @@ class AlpacaClients:
                                 raw.extend(chunk)
                             if response.status_code not in {200, 201}:
                                 definite = 400 <= response.status_code < 500 and response.status_code != 408
-                                raise BrokerOrderError("Alpaca rejected the option order" if definite else "Option order outcome requires reconciliation",
+                                message = 'Alpaca rejected the option order'
+                                if definite:
+                                    try:
+                                        problem = json.loads(raw)
+                                        if isinstance(problem, dict) and isinstance(problem.get('message'), str):
+                                            message = problem['message'].strip()[:4096] or message
+                                    except (ValueError, UnicodeError):
+                                        pass
+                                raise BrokerOrderError(message if definite else "Option order outcome requires reconciliation",
                                     code="broker_order_error" if definite else "broker_order_outcome_unknown",
                                     details={"status_code": response.status_code})
                             if not raw:

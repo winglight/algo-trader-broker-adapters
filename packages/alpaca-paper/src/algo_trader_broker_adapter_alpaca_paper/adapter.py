@@ -661,7 +661,7 @@ class AlpacaPaperAdapter(AlpacaOptionReads):
             raw = await self._backend.submit_option_order_raw(order_payload(request), submission_gate=gate)
         except BrokerOrderError as exc:
             if exc.code == "broker_order_error":
-                return rejected_state(request)
+                return rejected_state(request, str(exc))
             raise
         if sink is not None:
             await sink(OptionRawEvent(event_binding.scope, "ALPACA_ORDER_DETAIL", raw))

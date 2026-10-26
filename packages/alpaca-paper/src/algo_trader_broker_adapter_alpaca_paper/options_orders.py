@@ -71,10 +71,10 @@ def order_state(request, raw):
         request.groups - matched, tuple(legs), residual, _time(order["updated_at"] or order["created_at"]))
 
 
-def rejected_state(request):
+def rejected_state(request, reason=None):
     return OptionOrderState(request.command_id, request.client_order_id, None, "REJECTED", request.groups, 0, request.groups,
         tuple(OptionLegOrderState(leg.leg_id, leg.binding.canonical_id, None, 0, request.groups * leg.ratio) for leg in request.legs),
-        False, datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
+        False, datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"), rejection_reason=reason)
 
 
 async def decode_order_evidence(event, resolve_contract):
