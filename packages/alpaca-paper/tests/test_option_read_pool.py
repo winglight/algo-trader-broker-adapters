@@ -40,8 +40,39 @@ async def test_failed_read_keeps_only_typed_status_and_never_retries_or_exposes_
     try:
         with pytest.raises(BrokerConnectionError) as caught:
             await client.get_option_resource('/v2/account')
-        assert caught.value.details == {'operation':'option_trading_read','error_type':'HTTPStatusError','status_code':429}
+        assert caught.value.details == {'operation':'option_trading_read','resource_kind':'ACCOUNT','error_type':'HTTPStatusError','status_code':429}
         assert len(calls)==1
         assert all(secret not in str(caught.value.to_payload()) for secret in ['private-native-body','fixture-key','fixture-secret'])
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('path,kind', [
+    ('/v2/account', 'ACCOUNT'),
+    ('/v2/account/activities', 'ACCOUNT_ACTIVITIES'),
+    ('/v2/positions', 'POSITIONS'),
+    ('/v2/orders', 'ORDERS'),
+    ('/v2/options/contracts', 'OPTION_CONTRACTS'),
+    ('/v2/orders/private-order-id', 'ORDER_DETAIL'),
+    ('/v2/options/contracts/private-option-symbol', 'OPTION_CONTRACT_DETAIL'),
+    ('/unrecognized/private-account-id', 'OTHER'),
+])
+async def test_failed_native_read_classifies_resource_without_retaining_private_input(path, kind):
+    calls = []
+    def native(request):
+        calls.append(request)
+        return httpx.Response(404, content=b'private-response-body')
+    client = AlpacaClients(AlpacaPaperSettings.from_mapping(dict(
+        alpaca_api_key_id='private-key', alpaca_secret_key='private-secret')),
+        option_http_transport=httpx.MockTransport(native))
+    try:
+        with pytest.raises(BrokerConnectionError) as caught:
+            await client.get_option_resource(path, params={'page_token': 'private-cursor'})
+        assert caught.value.details == {'operation': 'option_trading_read', 'resource_kind': kind,
+            'error_type': 'HTTPStatusError', 'status_code': 404}
+        assert len(calls) == 1
+        assert 'private-' not in str(caught.value.to_payload())
+        assert '/v2/' not in str(caught.value.to_payload())
     finally:
         await client.close()

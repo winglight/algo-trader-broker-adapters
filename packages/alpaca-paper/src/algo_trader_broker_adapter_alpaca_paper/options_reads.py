@@ -359,6 +359,7 @@ class AlpacaOptionReads:
         activities, lifecycle_events, unresolved, cursor = None, [], [], None
         fees, fee_reasons = (), ()
         cash_executions = None
+        cash_advisories = set()
         if retain_lifecycle is not None:
             seen = set()
             for _ in range(100):
@@ -374,7 +375,8 @@ class AlpacaOptionReads:
             from .options_fees import read
             fees, fee_reasons = await read(self, request, retain_evidence=retain_lifecycle)
             from .options_cash_activities import read as read_cash
-            cash_executions = await read_cash(self, request, retain_evidence=retain_lifecycle)
+            cash_executions = await read_cash(self, request, retain_evidence=retain_lifecycle,
+                advisory_reasons=cash_advisories)
         # Read money after booked activities; Risk additionally matches every
         # retained native order/asset/execution before removing duplicate funds.
         state, _, _ = await self._option_account_snapshot(request, retain_evidence=retain_lifecycle)
@@ -382,7 +384,10 @@ class AlpacaOptionReads:
             reasons = state.quality_reasons
             if cursor is not None: reasons += ("LIFECYCLE_PAGE_INCOMPLETE",)
             if unresolved: reasons += ("LIFECYCLE_RECORDS_UNRESOLVED",)
-            state = replace(state, activities=tuple(lifecycle_events), quality_reasons=reasons,
+            state = replace(state, activities=tuple(lifecycle_events),
+                quality_reasons=tuple(sorted(set(reasons) | cash_advisories)),
+                advisory_quality_reasons=(tuple(sorted(set(state.advisory_quality_reasons or ()) | cash_advisories))
+                    if cash_advisories else state.advisory_quality_reasons),
                 fees=fees, fee_quality_reasons=fee_reasons, cash_executions=cash_executions)
         return state
 

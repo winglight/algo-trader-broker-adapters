@@ -26,6 +26,24 @@ from .streams import (
 OPTION_DATA_BASE_URL = "https://data.alpaca.markets"
 
 
+def option_resource_kind(path):
+    """Log only fixed categories, never a native identifier, URL or query."""
+    fixed = {
+        "/v2/account": "ACCOUNT",
+        "/v2/account/activities": "ACCOUNT_ACTIVITIES",
+        "/v2/positions": "POSITIONS",
+        "/v2/orders": "ORDERS",
+        "/v2/options/contracts": "OPTION_CONTRACTS",
+    }
+    if path in fixed:
+        return fixed[path]
+    for prefix, kind in (("/v2/orders/", "ORDER_DETAIL"),
+                         ("/v2/options/contracts/", "OPTION_CONTRACT_DETAIL")):
+        if path.startswith(prefix) and path[len(prefix):] and not any(c in path[len(prefix):] for c in "/?#"):
+            return kind
+    return "OTHER"
+
+
 class AlpacaClients:
     """Small async facade around alpaca-py and the documented activities REST API."""
 
@@ -290,6 +308,7 @@ class AlpacaClients:
                 # failures; this does not retry or cache a native response.
                 raise BrokerConnectionError("Alpaca option read failed", details={
                     "operation": "option_data_read" if data else "option_trading_read",
+                    "resource_kind": option_resource_kind(path),
                     "error_type": type(exc).__name__,
                     "status_code": getattr(getattr(exc, "response", None), "status_code", None),
                 }) from None
