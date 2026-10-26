@@ -13,6 +13,7 @@ class NativeReadPacing:
         self.clock, self.wall_clock, self.sleep = clock, wall_clock, sleep
         self.not_before = 0.0
         self.failures = 0
+        self.interval = 0.0
 
     @asynccontextmanager
     async def slot(self):
@@ -20,7 +21,11 @@ class NativeReadPacing:
             remaining = self.not_before-self.clock()
             if remaining > 0:
                 await self.sleep(remaining)
-            yield
+            # Reserve a start slot, then release the scheduling lock before
+            # waiting for the provider. Independent quotes must not serialize
+            # their entire network round trips behind this quota coordinator.
+            self.not_before = self.clock()+self.interval
+        yield
 
     def observed(self, headers, status):
         delay = 0.0
@@ -56,4 +61,5 @@ class NativeReadPacing:
                 pass
         elif 200 <= status < 300:
             self.failures = 0
-        self.not_before = max(self.not_before, self.clock()+min(300.0, max(0.0, delay)))
+        self.interval = min(300.0, max(0.0, delay))
+        self.not_before = max(self.not_before, self.clock()+self.interval)

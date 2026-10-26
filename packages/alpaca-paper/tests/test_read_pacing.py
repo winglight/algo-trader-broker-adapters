@@ -55,3 +55,31 @@ async def test_missing_quota_headers_back_off_only_after_real_rejection():
     async with gate.slot():
         gate.observed(httpx.Headers(),200)
     assert waits == [1,2]
+
+
+@pytest.mark.asyncio
+async def test_slow_network_read_does_not_hold_quota_scheduling_lock():
+    gate,now,waits=budget()
+    entered=asyncio.Event()
+    release=asyncio.Event()
+    async def slow_read():
+        async with gate.slot():
+            entered.set()
+            await release.wait()
+    task=asyncio.create_task(slow_read())
+    await entered.wait()
+    try:
+        async with asyncio.timeout(1):
+            async with gate.slot():
+                gate.observed(httpx.Headers({'X-RateLimit-Remaining':'2','X-RateLimit-Reset':'1006'}),200)
+        async with gate.slot():
+            assert now[0]==1003
+        assert waits==[3]
+        # A real rejection still governs the next start, even when another
+        # request is waiting for its response outside the scheduling lock.
+        gate.observed(httpx.Headers({'Retry-After':'9'}),429)
+        async with gate.slot():
+            assert now[0]==1012
+    finally:
+        release.set()
+        await task
