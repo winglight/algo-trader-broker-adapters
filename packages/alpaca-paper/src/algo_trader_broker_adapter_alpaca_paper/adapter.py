@@ -333,6 +333,10 @@ class AlpacaPaperAdapter(AlpacaOptionReads):
             reconnect_reason=self._reconnect_reason,
         )
 
+    def option_stream_identities(self):
+        from .stream_identity import option_stream_identities
+        return option_stream_identities(self._settings)
+
     def set_trade_update_handler(
         self, handler: Callable[[TradeUpdate], Awaitable[None]] | None
     ) -> None:
@@ -974,24 +978,30 @@ class AlpacaPaperAdapter(AlpacaOptionReads):
                 )
                 yield RealTimePrice(symbol=symbol, close=initial.get("close"), timestamp=utc_datetime(initial.get("timestamp")), **state)
             quote_stream = await self._backend.stream_stock(symbol, "quotes")
-            trade_stream = await self._backend.stream_stock(symbol, "trades")
             queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue(maxsize=self._settings.stream_queue_size)
 
             async def pump(kind: str, source: AsyncIterator[Any]) -> None:
                 try:
                     async for item in source:
                         await queue.put((kind, item))
-                finally:
+                except Exception as exc:
+                    await queue.put(("error", exc))
+                else:
                     await queue.put(("closed", kind))
 
-            tasks = [
-                asyncio.create_task(pump("quote", quote_stream)),
-                asyncio.create_task(pump("trade", trade_stream)),
-            ]
+            trade_stream = None
+            tasks = []
             try:
+                trade_stream = await self._backend.stream_stock(symbol, "trades")
+                tasks = [
+                    asyncio.create_task(pump("quote", quote_stream)),
+                    asyncio.create_task(pump("trade", trade_stream)),
+                ]
                 closed_streams = 0
                 while closed_streams < 2:
                     kind, item = await queue.get()
+                    if kind == "error":
+                        raise item
                     if kind == "closed":
                         closed_streams += 1
                         continue
@@ -1016,6 +1026,9 @@ class AlpacaPaperAdapter(AlpacaOptionReads):
             finally:
                 for task in tasks:
                     task.cancel()
+                # A cancelled producer must not block trying to enqueue a
+                # terminal marker into an abandoned, full merge queue.
+                await asyncio.gather(*tasks, return_exceptions=True)
                 for source in (quote_stream, trade_stream):
                     close = getattr(source, "close", None)
                     if callable(close):

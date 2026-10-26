@@ -11,6 +11,7 @@ from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 from algo_trader_broker_sdk import BrokerConnectionError, BrokerError
+from .stream_handshake import NATIVE_STREAM_REASONS, SingleAttemptMarketHandshake
 
 
 LOGGER = logging.getLogger(__name__)
@@ -30,17 +31,56 @@ def stream_failure(error):
         return BrokerError('Alpaca market-data feed is not entitled',code='FEED_NOT_ENTITLED',
             details={'recovery':'SOURCE_CONFIGURATION_CHANGED'})
     if isinstance(error,ValueError):
+        reason = {
+            'connected message not received': 'CONNECTED_ACK_MISSING',
+            'failed to authenticate': 'AUTHENTICATED_ACK_MISSING',
+            'auth failed': 'AUTHENTICATION_FAILED',
+            'handler must be a coroutine function': 'CALLBACK_NOT_COROUTINE',
+            'only iex and sip feeds ar supported': 'STOCK_FEED_UNSUPPORTED',
+        }.get(message.strip(), 'VALUE_ERROR_UNCLASSIFIED')
         return BrokerError('Alpaca market-data stream was rejected',code='MARKET_DATA_STREAM_REJECTED',
-            details={'error_type':type(error).__name__,'recovery':'SOURCE_CONFIGURATION_CHANGED'})
+            details={'error_type':type(error).__name__,'reason':reason,'recovery':'SOURCE_CONFIGURATION_CHANGED'})
     return BrokerConnectionError('Alpaca websocket stream stopped unexpectedly',
         details={'error_type':type(error).__name__})
+
+
+def source_stream_failure(error, *, stream_kind, feed, phase=None):
+    """Attach only fixed source labels; never native URL, credentials or IDs."""
+    sources = {
+        ('STOCK', 'IEX'): 'alpaca-paper.stock-data',
+        ('STOCK', 'SIP'): 'alpaca-paper.stock-data',
+        ('OPTION', 'OPRA'): 'alpaca-paper.option-opra',
+        ('OPTION', 'INDICATIVE'): 'alpaca-paper.option-indicative',
+    }
+    failure = stream_failure(error)
+    name = sources.get((stream_kind, feed))
+    if name is not None and failure.details.get('stream_name') != name:
+        failure.details.update(stream_kind=stream_kind, feed=feed, stream_name=name)
+        labels = f'stream_kind={stream_kind}; feed={feed}; stream_name={name}'
+        phase = failure.details.get('phase', phase)
+        if phase in {'CONNECT', 'AUTH', 'CONNECT_AUTH', 'SUBSCRIBE', 'CONSUME'}:
+            failure.details['phase'] = phase
+            labels += f'; phase={phase}'
+        reason = failure.details.get('reason')
+        if reason in {'CONNECTED_ACK_MISSING', 'AUTHENTICATED_ACK_MISSING', 'AUTHENTICATION_FAILED',
+                'CALLBACK_NOT_COROUTINE', 'STOCK_FEED_UNSUPPORTED', 'VALUE_ERROR_UNCLASSIFIED',
+                'NATIVE_ERROR_UNCLASSIFIED', *NATIVE_STREAM_REASONS.values()}:
+            labels += f'; reason={reason}'
+        native_code = failure.details.get('native_code')
+        if type(native_code) is int and native_code in NATIVE_STREAM_REASONS:
+            labels += f'; native_code={native_code}'
+        # The domain boundary preserves code/message, but not arbitrary broker
+        # details. Keep the same fixed labels observable there without widening
+        # its schema or changing retry classification.
+        failure.args = (f'{failure} [{labels}]',)
+    return failure
 
 
 def create_stock_stream(settings):
     from alpaca.data.enums import DataFeed
     from alpaca.data.live import StockDataStream
 
-    class NativeStockStream(StockDataStream):
+    class NativeStockStream(SingleAttemptMarketHandshake, StockDataStream):
         async def _dispatch(self,message):
             if message.get('T')=='error':
                 raise stream_failure(ValueError(message.get('msg','native rejection')))
@@ -50,15 +90,19 @@ def create_stock_stream(settings):
             # A denied subscription ends once. Source changes or the owning
             # runtime can reconnect; the vendor loop must not retry auth forever.
             self._loop=asyncio.get_running_loop()
+            phase = 'CONNECT_AUTH'
             try:
                 if not self._should_run:return
                 async with asyncio.timeout(settings.request_timeout_seconds):
                     await self._start_ws()
+                    phase = 'SUBSCRIBE'
                     await self._send_subscribe_msg()
                 self._running=True
+                phase = 'CONSUME'
                 await self._consume()
-            except ValueError as exc:
-                raise stream_failure(exc) from exc
+            except Exception as exc:
+                raise source_stream_failure(exc, stream_kind='STOCK',
+                    feed='IEX' if settings.data_feed == 'iex' else 'SIP', phase=phase) from exc
             finally:
                 await self.close()
 
@@ -83,7 +127,7 @@ class AlpacaStockSubscription:
         self._overflow = False
 
     def deliver(self, item: Any) -> None:
-        if self._closed:
+        if self._closed or self._overflow:
             return
         try:
             self._queue.put_nowait(item)
@@ -93,10 +137,11 @@ class AlpacaStockSubscription:
                 "Alpaca stream queue overflow",
                 extra={"event": "alpaca.stream.queue_overflow", "stream": self._name},
             )
-            try:
+            # The first lost update ends this consumer. Do not keep replacing
+            # its terminal marker or log once per subsequent market update.
+            # Buffered prices cannot represent continuous coverage after loss.
+            while not self._queue.empty():
                 self._queue.get_nowait()
-            except asyncio.QueueEmpty:
-                pass
             self._queue.put_nowait(_END)
 
     def __aiter__(self) -> AsyncIterator[Any]:

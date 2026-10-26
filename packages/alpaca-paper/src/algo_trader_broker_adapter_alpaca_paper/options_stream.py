@@ -11,7 +11,8 @@ from algo_trader_broker_sdk.options import OptionQuote, QuoteSubscription, check
 
 from .options_codec import _decimal, _time
 from .options_reads import whole, now_wire
-from .streams import MultiplexedAlpacaStockStream, stream_failure
+from .streams import MultiplexedAlpacaStockStream, stream_failure, source_stream_failure
+from .stream_handshake import SingleAttemptMarketHandshake
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,7 +27,7 @@ def create_option_stream(settings, feed):
     from alpaca.data.enums import OptionsFeed
     from alpaca.data.live.option import OptionDataStream
 
-    class ExactOptionStream(OptionDataStream):
+    class ExactOptionStream(SingleAttemptMarketHandshake, OptionDataStream):
         async def _consume(self):
             while self._should_run:
                 if not self._stop_stream_queue.empty():
@@ -52,13 +53,18 @@ def create_option_stream(settings, feed):
             # Authentication and subscription stay with alpaca-py. A native
             # disconnect ends this stream; no hidden reconnect fills its gap.
             self._loop = asyncio.get_running_loop()
+            phase = 'CONNECT_AUTH'
             try:
                 if not self._should_run: return
                 async with asyncio.timeout(settings.request_timeout_seconds):
                     await self._start_ws()
+                    phase = 'SUBSCRIBE'
                     await self._send_subscribe_msg()
                 self._running = True
+                phase = 'CONSUME'
                 await self._consume()
+            except Exception as exc:
+                raise source_stream_failure(exc, stream_kind='OPTION', feed=feed, phase=phase) from exc
             finally:
                 await self.close()
 
