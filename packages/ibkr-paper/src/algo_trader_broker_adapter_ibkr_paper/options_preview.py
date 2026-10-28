@@ -5,12 +5,14 @@ from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 
 from algo_trader_broker_sdk import BrokerContractError
-from algo_trader_broker_sdk.options import OptionExecutionRequest, OrderPreview, check, timestamp
+from algo_trader_broker_sdk.options import (
+    NativeOptionCostObservation, OptionExecutionRequest, OrderPreview, check,
+    option_request_hash, timestamp,
+)
 
 from .options_account import signed_decimal
 from .options_account_native import account_values, observe_callbacks, raw_bytes, raw_value
 from .options_orders import build_order, matches_open_close, wait_transport
-from .options_quotes import amount
 from .options_reads import now_wire
 
 
@@ -62,6 +64,8 @@ async def preview_order(adapter, request):
                 account=values, contract=contract, order=order, observations=result, errors=errors)))
             check(not errors and len(result) == 1, "IB preview did not return one unambiguous what-if response")
             native_contract, native_order, state = result[0]
+            check(state.get("status") not in {"Inactive", "Cancelled", "ApiCancelled", "Rejected"}
+                  and not state.get("rejectReason"), "IB what-if response rejected the exact order")
             check(native_order["whatIf"] is True and native_order["account"] == bound.native_account_ref
                   and native_order["orderId"] == order.orderId and native_order["clientId"] == order.clientId
                   and native_order["orderRef"] == request.client_order_id
@@ -92,11 +96,28 @@ async def preview_order(adapter, request):
                 warnings.append("IB_USD_MARGIN_UNAVAILABLE")
             else:
                 margin = str(max(Decimal(0), Decimal(margin)))
-            fee = amount(state["commission"]) if state["commissionCurrency"] == "USD" else None
+            # Preserve actual API property names. TWS API 10.33 renamed commission
+            # fields to commissionAndFees; this does not prove a future all-in cap.
+            from ib_async import __version__
+            server_version = ib.client.serverVersion()
+            api_version = f"ib_async/{__version__};tws_server/{server_version}"
+            native_fields = {name: state[name] for name in (
+                "commission", "minCommission", "maxCommission", "commissionCurrency",
+                "commissionAndFees", "minCommissionAndFees", "maxCommissionAndFees",
+                "commissionAndFeesCurrency",
+            ) if name in state}
+            native_costs = NativeOptionCostObservation.from_native(
+                scope=bound.scope, request_hash=option_request_hash(request),
+                observed_at=observed, api_version=api_version, native_fields=native_fields)
+            native_costs.require_request(request)
+            fee = native_costs.estimate_cash
             if fee is None:
                 warnings.append("IB_USD_COMMISSION_UNAVAILABLE")
+            if native_costs.max_cash is None:
+                warnings.append("IB_USD_MAX_COMMISSION_UNAVAILABLE")
             if state["warningText"]:
                 warnings.append(state["warningText"])
-            return OrderPreview("BROKER_WHAT_IF", margin, fee, "USD", tuple(warnings), observed)
+            return OrderPreview("BROKER_WHAT_IF", margin, fee, "USD", tuple(warnings), observed, native_costs)
 
     return await adapter._option_read(request, read)
+
