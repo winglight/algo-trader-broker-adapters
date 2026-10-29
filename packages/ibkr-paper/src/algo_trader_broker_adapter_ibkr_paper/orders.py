@@ -254,6 +254,8 @@ class OrderResult:
     avg_fill_price: float | None
     contract: dict[str, object]
     perm_id: str | None = None
+    protective_order_id: int | None = None
+    protective_stop_price: float | None = None
 
 
 def _build_order(
