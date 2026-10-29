@@ -21,7 +21,7 @@ def test_guarded_native_bracket_stages_parent_and_protection_before_transmit(mar
         client._trade_update_handler = client._account_update_handler = None
         async def observed(ib, contract, order, *, submitted_trade=None):
             assert submitted_trade is not None
-            return OrderResult(order.orderId, 'Submitted', 0, 1, None, {'conId': 123})
+            return OrderResult(order.orderId, 'Submitted', 0, 1, None, {'conId': 123}, perm_id=str(order.orderId+1000))
         client._place_order_async = observed
         gate = SubmissionGate(AsyncMock(), lambda: None)
         contract = Future(symbol='MNQ', exchange='CME', conId=123)
@@ -54,4 +54,22 @@ def test_rejected_native_gate_never_stages_either_leg():
                 LimitOrder('BUY', 1, 30000, account='DU_TEST', openClose='O', orderRef='entry'),
                 submission_gate=gate, protective_stop_price=29960)
         assert not sent and not gate.consumed
+    asyncio.run(scenario())
+
+
+def test_pending_local_child_is_not_reported_as_broker_confirmed_protection():
+    async def scenario():
+        sent=[];ids=iter([101,102])
+        ib=SimpleNamespace(isConnected=lambda:True,client=SimpleNamespace(getReqId=lambda:next(ids)),
+            placeOrder=lambda c,o:sent.append(o) or SimpleNamespace(order=o))
+        client=object.__new__(IBAsyncClient);client.ensure_connected=AsyncMock(return_value=ib)
+        client._trade_update_handler=client._account_update_handler=None
+        client._place_order_async=AsyncMock(return_value=OrderResult(102,'PendingSubmit',0,1,None,{'conId':123},perm_id='0'))
+        gate=SubmissionGate(AsyncMock(),lambda:None)
+        with pytest.raises(IBOrderError,match='outcome is unknown'):
+            await client._submit_order(Future(symbol='MNQ',exchange='CME',conId=123),
+                LimitOrder('BUY',1,30000,account='DU_TEST',openClose='O',orderRef='entry'),
+                submission_gate=gate,protective_stop_price=29960)
+        assert len(sent)==2
+        client._place_order_async.assert_awaited_once()
     asyncio.run(scenario())

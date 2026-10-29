@@ -2737,8 +2737,9 @@ class IBAsyncClient:
                 if parent_trade is None or child_trade is None:
                     raise IBOrderError('Native bracket acknowledgement is unavailable')
                 child = await self._place_order_async(ib, contract, protection, submitted_trade=child_trade)
-                if child.status in {'Inactive', 'Cancelled', 'ApiCancelled', 'Rejected'}:
-                    raise IBOrderError('Native protective child rejected; original bracket requires recovery')
+                if (child.status not in {'Submitted','PreSubmitted','Filled'}
+                        or not str(child.perm_id or '').isdigit() or int(child.perm_id) <= 0):
+                    raise IBOrderError('Native protective child was not confirmed by IB; original bracket requires recovery')
                 result = await self._place_order_async(ib, contract, order, submitted_trade=parent_trade)
                 result.protective_order_id = protection.orderId
                 result.protective_stop_price = protective_stop_price
