@@ -2736,7 +2736,8 @@ class IBAsyncClient:
                 child_trade = ib.placeOrder(contract, protection)
                 if parent_trade is None or child_trade is None:
                     raise IBOrderError('Native bracket acknowledgement is unavailable')
-                child = await self._place_order_async(ib, contract, protection, submitted_trade=child_trade)
+                child = await self._place_order_async(ib, contract, protection, submitted_trade=child_trade,
+                                                      require_native_ack=True)
                 if (child.status not in {'Submitted','PreSubmitted','Filled'}
                         or not str(child.perm_id or '').isdigit() or int(child.perm_id) <= 0):
                     raise IBOrderError('Native protective child was not confirmed by IB; original bracket requires recovery')
@@ -2749,7 +2750,8 @@ class IBAsyncClient:
             raise IBOrderError("IB order outcome is unknown; reconcile before retrying",
                                code="broker_order_outcome_unknown") from exc
 
-    async def _place_order_async(self, ib: IB, contract: Any, order: Any, *, submitted_trade=None) -> OrderResult:
+    async def _place_order_async(self, ib: IB, contract: Any, order: Any, *, submitted_trade=None,
+                                 require_native_ack=False) -> OrderResult:
         place_order_async = getattr(ib, "placeOrderAsync", None)
         if submitted_trade is not None:
             trade = submitted_trade
@@ -2779,11 +2781,17 @@ class IBAsyncClient:
         timeout_seconds = 2.0
         deadline = time.monotonic() + timeout_seconds
         try:
-            while trade is not None and not _has_trade_submission_ack(trade, order):
+            acknowledged = _has_confirmed_native_order if require_native_ack else _has_trade_submission_ack
+            while trade is not None and not acknowledged(trade, order):
+                if time.monotonic() >= deadline:
+                    break
+                state = getattr(getattr(trade, 'orderStatus', None), 'status', None)
+                if require_native_ack and state in {'Cancelled', 'ApiCancelled', 'Inactive', 'Rejected'}:
+                    break
                 wait_async = getattr(ib, "waitOnUpdateAsync", None)
                 try:
                     if callable(wait_async):
-                        await wait_async()
+                        await asyncio.wait_for(wait_async(), timeout=max(0.001, deadline-time.monotonic()))
                     else:
                         await self._await_ib_update(ib, deadline)
                 except asyncio.CancelledError:
@@ -2803,7 +2811,7 @@ class IBAsyncClient:
         order_obj = getattr(trade, "order", order)
         if self._trade_update_handler is not None:
             self._emit_trade_snapshot(trade, "trade.placeOrder")
-        perm_id_raw = getattr(order_obj, "permId", None)
+        perm_id_raw = getattr(order_obj, "permId", None) or getattr(status, 'permId', None)
         perm_id = str(perm_id_raw) if perm_id_raw not in (None, "") else None
         return OrderResult(
             order_id=int(getattr(order_obj, "orderId", 0) or 0),
@@ -3871,6 +3879,15 @@ def _is_trade_done(trade: Any) -> bool:
     return False
 
 
+def _has_confirmed_native_order(trade: Any, fallback_order: Any | None = None) -> bool:
+    status = getattr(trade, 'orderStatus', None)
+    if getattr(status, 'status', None) not in {'Submitted', 'PreSubmitted', 'Filled'}:
+        return False
+    order = getattr(trade, 'order', None) or fallback_order
+    perm_id = getattr(order, 'permId', None) or getattr(status, 'permId', None)
+    return str(perm_id or '').isdigit() and int(perm_id) > 0
+
+
 def _has_trade_submission_ack(trade: Any, fallback_order: Any | None = None) -> bool:
     if trade is None:
         return True
@@ -4666,6 +4683,8 @@ def _order_to_dict(order: Any) -> dict[str, Any]:
         return {}
     fields = [
         "orderId",
+        "parentId",
+        "orderRef",
         "clientId",
         "permId",
         "action",

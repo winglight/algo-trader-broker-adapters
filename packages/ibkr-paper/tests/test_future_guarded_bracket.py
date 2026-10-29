@@ -19,8 +19,9 @@ def test_guarded_native_bracket_stages_parent_and_protection_before_transmit(mar
         client = object.__new__(IBAsyncClient)
         client.ensure_connected = AsyncMock(return_value=ib)
         client._trade_update_handler = client._account_update_handler = None
-        async def observed(ib, contract, order, *, submitted_trade=None):
+        async def observed(ib, contract, order, *, submitted_trade=None, require_native_ack=False):
             assert submitted_trade is not None
+            assert require_native_ack == (order.orderType == 'STP')
             return OrderResult(order.orderId, 'Submitted', 0, 1, None, {'conId': 123}, perm_id=str(order.orderId+1000))
         client._place_order_async = observed
         gate = SubmissionGate(AsyncMock(), lambda: None)
@@ -37,6 +38,44 @@ def test_guarded_native_bracket_stages_parent_and_protection_before_transmit(mar
         assert sent[1].account == 'DU_TEST' and sent[1].totalQuantity == 1
         assert result.protective_order_id == 102
     asyncio.run(scenario())
+
+
+def test_protective_child_waits_for_native_ack_after_local_order_id_is_assigned():
+    async def scenario():
+        from ib_async import StopOrder
+        child=StopOrder('SELL',1,29960,orderId=102,permId=0)
+        trade=SimpleNamespace(order=child,orderStatus=SimpleNamespace(status='PendingSubmit',filled=0,
+                              remaining=1,avgFillPrice=0),contract=Future(symbol='MNQ',conId=123))
+        async def native_update():
+            trade.orderStatus.status='PreSubmitted';child.permId=1102
+        ib=SimpleNamespace(waitOnUpdateAsync=AsyncMock(side_effect=native_update))
+        client=object.__new__(IBAsyncClient);client._trade_update_handler=None
+        result=await client._place_order_async(ib,trade.contract,child,submitted_trade=trade,require_native_ack=True)
+        ib.waitOnUpdateAsync.assert_awaited_once()
+        assert result.status=='PreSubmitted' and result.perm_id=='1102'
+    asyncio.run(scenario())
+
+
+def test_permanent_id_without_accepted_child_status_does_not_end_ack_wait():
+    async def scenario():
+        from ib_async import StopOrder
+        child=StopOrder('SELL',1,29960,orderId=102,permId=1102)
+        trade=SimpleNamespace(order=child,orderStatus=SimpleNamespace(status='PendingSubmit',filled=0,
+                              remaining=1,avgFillPrice=0),contract=Future(symbol='MNQ',conId=123))
+        async def native_update():trade.orderStatus.status='Submitted'
+        ib=SimpleNamespace(waitOnUpdateAsync=AsyncMock(side_effect=native_update))
+        client=object.__new__(IBAsyncClient);client._trade_update_handler=None
+        result=await client._place_order_async(ib,trade.contract,child,submitted_trade=trade,require_native_ack=True)
+        ib.waitOnUpdateAsync.assert_awaited_once();assert result.status=='Submitted'
+    asyncio.run(scenario())
+
+
+def test_native_child_snapshot_keeps_parent_and_order_reference_for_late_event_recovery():
+    from ib_async import StopOrder
+    from algo_trader_broker_adapter_ibkr_paper.client import _order_to_dict
+    child=StopOrder('SELL',1,29960,orderId=102,parentId=101,orderRef='fprot-reference')
+    data=_order_to_dict(child)
+    assert data['parentId']==101 and data['orderRef']=='fprot-reference'
 
 
 def test_rejected_native_gate_never_stages_either_leg():
