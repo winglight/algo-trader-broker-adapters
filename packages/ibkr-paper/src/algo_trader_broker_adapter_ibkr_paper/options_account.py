@@ -146,6 +146,14 @@ async def account_state(adapter, request, *, retain_evidence=None, resolve_contr
         # callback ledger. Do not read or download Flex here, even if retained.
         # Historical import remains a separate explicit reporting operation.
         fees, fee_reasons = (), ("IB_COMMISSION_RECONCILIATION_REQUIRED",)
+        async def retain(value):
+            raw = raw_bytes(value)
+            digest = sha256(raw).hexdigest()
+            if retain_evidence is not None:
+                check(await retain_evidence(raw) == digest, "Account evidence archive changed native hash")
+            adapter._option_account_evidence.append(raw)
+            return digest
+
         async with adapter._option_account_read_lock:
             # Funds/positions have separate IDs; open orders has a shared end
             # marker and is read only when no other download is in progress.
@@ -153,6 +161,9 @@ async def account_state(adapter, request, *, retain_evidence=None, resolve_contr
             working = await open_orders(ib, bound.native_account_ref, timeout=adapter._qualification_timeout)
             completed = await completed_orders(ib, bound.native_account_ref, timeout=adapter._qualification_timeout)
             fills = await executions(ib, bound.native_account_ref, timeout=adapter._qualification_timeout)
+            from .options_account_orders import option_working_orders
+            option_orders, order_reasons, order_asset_refs = await option_working_orders(
+                adapter, ib, bound, working, retain=retain)
             # Funds follow the execution observation used to prove cash booking.
             values = await account_values(ib, bound.native_account_ref, timeout=adapter._qualification_timeout)
         read_money, raw_bp, not_ready = money_values(values)
@@ -161,17 +172,9 @@ async def account_state(adapter, request, *, retain_evidence=None, resolve_contr
         cost_refs = []
         exact, unresolved, underlyings = [], [], {}
         stocks, stock_reasons = [], [] if retain_evidence is not None else ['STOCK_RAW_ARCHIVE_UNAVAILABLE']
-        reasons = []
+        reasons = list(order_reasons)
         if not_ready:
             reasons.append("IB_ACCOUNT_NOT_READY")
-
-        async def retain(value):
-            raw = raw_bytes(value)
-            digest = sha256(raw).hexdigest()
-            if retain_evidence is not None:
-                check(await retain_evidence(raw) == digest, "Account evidence archive changed native hash")
-            adapter._option_account_evidence.append(raw)
-            return digest
 
         for row in inventory["positions"]:
             native = row["contract"]
@@ -227,7 +230,7 @@ async def account_state(adapter, request, *, retain_evidence=None, resolve_contr
                 unresolved.append(UnresolvedOptionPosition(position_ref, str(con_id), asset or "UNKNOWN", quantity,
                     raw_ref, raw_ref, ("CONTRACT_METADATA_UNRESOLVED",)))
         refs = []
-        for row in working["orders"]:
+        for row in option_orders:
             ref, pending = native_order_reference(row, bound.scope)
             refs.append(ref)
             if pending:
@@ -240,6 +243,7 @@ async def account_state(adapter, request, *, retain_evidence=None, resolve_contr
         stock_inventory = make_stock_inventory('IB_POSITION_MULTI',tuple(stocks),not stock_reasons,
             tuple(sorted(set(stock_reasons))),inventory['completed_at'],inventory['completed_at'],stock_ref)
         checkpoint = await retain(dict(source="IB_ACCOUNT_SNAPSHOT", values=values, positions=inventory, orders=working,
+                                      open_order_asset_evidence_refs=order_asset_refs,
                                       cost_evidence_refs=cost_refs, completed_orders=completed, executions=fills,
                                       lifecycle_refs=[], lifecycle_unresolved=[],
                                       account_fee_refs=[item.raw_ref for item in fees], account_fee_unresolved=fee_reasons))

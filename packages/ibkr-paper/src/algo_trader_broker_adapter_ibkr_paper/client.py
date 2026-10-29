@@ -3929,7 +3929,9 @@ def _trade_to_update(
 
     adapter_order_id_raw = _safe_get(order, "orderId") or _safe_get(status, "orderId")
     adapter_order_id_int = _optional_int(adapter_order_id_raw)
-    adapter_order_id = adapter_order_id_int if adapter_order_id_int is not None else adapter_order_id_raw
+    # IB historical completed rows erase the session id to zero. Preserve that
+    # raw value below, but never let it replace a known positive native id.
+    adapter_order_id = adapter_order_id_int if adapter_order_id_int is not None and adapter_order_id_int > 0 else None
 
     client_order_id: str | None = None
     client_ref = _safe_get(order, "orderRef") or _safe_get(order, "clientOrderId")
@@ -4664,6 +4666,7 @@ def _contract_to_dict(contract: Any) -> dict[str, Any]:
         "symbol",
         "secType",
         "currency",
+        "multiplier",
         "exchange",
         "primaryExchange",
         "localSymbol",
