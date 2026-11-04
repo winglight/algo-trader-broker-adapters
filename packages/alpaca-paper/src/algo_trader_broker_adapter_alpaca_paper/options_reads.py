@@ -158,7 +158,7 @@ class AlpacaOptionReads:
             self._option_catalog = OrderedDict()
         self._option_catalog[item["id"]] = (binding, contract, item)
         self._option_catalog.move_to_end(item["id"])
-        while len(self._option_catalog) > 1000:
+        while len(self._option_catalog) > 20000:
             self._option_catalog.popitem(last=False)
         return binding
 
@@ -181,7 +181,7 @@ class AlpacaOptionReads:
                            ("strike_price_lte", request.strike_max), ("page_token", request.cursor)):
             if value is not None: params[key] = value
         items, cursor, raw = await self._contract_page(params)
-        contracts, unsupported, observed = [], False, now_wire()
+        contracts, bindings, unsupported, observed = [], [], False, now_wire()
         for item in items:
             try:
                 contract = contract_from_native(item)
@@ -190,10 +190,10 @@ class AlpacaOptionReads:
                 continue
             check(contract.key.underlying == request.underlying and request.expiry_from <= contract.key.expiry <= request.expiry_to,
                   "Native catalog changed requested bounds")
-            self._remember_contract(bound.scope, item, contract, raw, observed)
+            bindings.append(self._remember_contract(bound.scope, item, contract, raw, observed))
             contracts.append(contract)
         self._option_still_bound(bound)
-        return ContractPage(tuple(contracts), cursor, cursor is None and not unsupported, observed)
+        return ContractPage(tuple(contracts), cursor, cursor is None and not unsupported, now_wire(), bindings=tuple(bindings))
 
     async def qualify_option_contracts(self, request):
         check(type(request) is QualificationRequest, "Expected an exact qualification request")

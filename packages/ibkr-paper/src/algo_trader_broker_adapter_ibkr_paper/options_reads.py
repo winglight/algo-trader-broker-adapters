@@ -192,7 +192,7 @@ class IBOptionReads:
             contract.canonical_id, str(c.conId), c.localSymbol, "SMART", now_wire(), version)
         self._option_catalog[str(c.conId)] = (binding, contract, detail)
         self._option_catalog.move_to_end(str(c.conId))
-        while len(self._option_catalog) > 1000:
+        while len(self._option_catalog) > 20000:
             self._option_catalog.popitem(last=False)
         return binding
 
@@ -227,7 +227,7 @@ class IBOptionReads:
                 check(len(expiries) * len(strikes) * len(rights) <= 10000, "Narrow the IB contract query bounds")
                 candidates = [(expiry, strike, right) for expiry in expiries for strike in strikes for right in rights]
                 offset, unresolved = 0, False
-            contracts = []
+            contracts, bindings = [], []
             for expiry, strike, right in candidates[offset:offset + request.limit]:
                 key = OptionContractKey(request.underlying, f"{expiry[:4]}-{expiry[4:6]}-{expiry[6:]}", right,
                                        strike, "USD", 100, "AMERICAN", "PHYSICAL", "STANDARD_100_SHARES")
@@ -241,11 +241,12 @@ class IBOptionReads:
                 try:
                     contract = contract_from_details(details[0], request.underlying, under_id)
                     check(contract.key == key, "IB qualification changed requested economics")
-                    self._remember_contract(bound, details[0], contract)
+                    binding=self._remember_contract(bound, details[0], contract)
                 except BrokerContractError:
                     unresolved = True
                     continue
                 contracts.append(contract)
+                bindings.append(binding)
             offset += request.limit
             cursor = None
             if offset < len(candidates):
@@ -254,7 +255,7 @@ class IBOptionReads:
                                              timestamp(observed) + timedelta(minutes=2), unresolved)
                 while len(self._option_pages) > 32:
                     self._option_pages.popitem(last=False)
-            return ContractPage(tuple(contracts), cursor, cursor is None and not unresolved, now_wire())
+            return ContractPage(tuple(contracts), cursor, cursor is None and not unresolved, now_wire(), bindings=tuple(bindings))
 
         return await self._option_read(request, read)
 
