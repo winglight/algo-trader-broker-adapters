@@ -1,4 +1,6 @@
-# algo-trader broker adapters
+# ATI Algotrading System · Broker Adapters
+
+Product names: **ATI Algotrading System** (English) / **ATI交易系统** (Chinese). Studio, Cloud, Local Runtime and SDK identify features or components of this system.
 
 Independent, open-source broker adapter packages for the algo-trader Broker SDK
 1.x, plus the compatibility index for selectable ATI Local Runtime profiles.
