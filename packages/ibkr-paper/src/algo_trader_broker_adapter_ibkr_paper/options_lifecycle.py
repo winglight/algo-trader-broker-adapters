@@ -3,6 +3,7 @@
 from collections import Counter
 from dataclasses import replace
 from datetime import date
+import re
 from decimal import Decimal, InvalidOperation, localcontext
 from hashlib import sha256
 
@@ -115,7 +116,7 @@ async def parse(raw, *, account, accounts, resolve_contract, retain, observed=No
             number(row["commisionsAndTax"])
             underlying, expiry, right, strike = row["underlyingSymbol"], day(row["expiry"]), row["putCall"], number(row["strike"])
             strike_code = strike * 1000
-            check(underlying in {"SPY", "QQQ"} and right in {"C", "P"} and strike_code == int(strike_code)
+            check(bool(re.fullmatch(r"[A-Z][A-Z0-9.]{0,5}", underlying)) and right in {"C", "P"} and strike_code == int(strike_code)
                   and 0 < strike_code < 100000000 and whole(row["multiplier"]) == 100, "Nonstandard Flex option contract")
             symbol = f"{underlying:<6}{expiry.replace('-', '')[2:]}{right}{int(strike_code):08d}"
             resolved = await resolve_contract(row["conid"], symbol)

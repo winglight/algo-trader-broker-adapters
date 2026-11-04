@@ -1,6 +1,6 @@
 """Scoped IB option discovery and quotes on the adapter's existing connection.
 
-P0 economics use the versioned standard SPY/QQQ OCC identity below. IB does not
+Economics use exact native standard OCC identities. IB does not
 return a full deliverable record; adjusted roots and nonstandard classes are
 excluded. A read is not account permission, calendar or trading certification.
 """
@@ -29,7 +29,7 @@ STANDARD_RULE = "ib-spy-qqq-standard-occ-v1"
 STANDARD_SOURCE = "https://www.cboe.com/exchange-traded-stock/etp-options-spec"
 STANDARD_CHECKED_AT = "2026-10-08"
 FEED = "IBKR_LIVE"
-# Existing native OPT/BAG builder support for standard SPY/QQQ contracts.
+# Native OPT/BAG support is selected by exact standard contract metadata.
 # Software support does not attest account approval or guarantee acceptance.
 # Penny prices: https://listingcenter.nasdaq.com/RuleBook/Nasdaq/rules/nasdaq-options-3
 NATIVE_SHAPES = {
@@ -71,7 +71,7 @@ def native_contract(key):
 
 
 def standard_key(key):
-    return (key.underlying in {"SPY", "QQQ"}
+    return (bool(re.fullmatch(r"[A-Z][A-Z0-9.]{0,5}", key.underlying))
             and (key.currency, key.multiplier, key.exercise_style, key.settlement, key.deliverable_id)
             == ("USD", 100, "AMERICAN", "PHYSICAL", "STANDARD_100_SHARES"))
 
@@ -82,7 +82,7 @@ def contract_from_details(detail, underlying, under_con_id):
           and c.currency == "USD" and native_decimal(c.multiplier) == "100"
           and detail.underConId == under_con_id and detail.underSymbol == underlying
           and detail.underSecType == "STK" and type(c.conId) is int and c.conId > 0,
-          "IB contract is outside the standard ETF option universe")
+          "IB contract is outside the standard equity option universe")
     check(c.exchange == "SMART" and "SMART" in detail.validExchanges.split(","), "SMART option route missing")
     expiry = c.lastTradeDateOrContractMonth
     check(bool(re.fullmatch(r"\d{8}", expiry)), "IB option expiry must be an exact date")
@@ -164,7 +164,7 @@ class IBOptionReads:
 
     async def _underlying(self, ib, symbol):
         from ib_async import Stock
-        check(symbol in {"SPY", "QQQ"}, "P0 supports SPY/QQQ options")
+        check(bool(re.fullmatch(r"[A-Z][A-Z0-9.]{0,5}", symbol)), "Standard OCC underlying symbol required")
         details = await asyncio.wait_for(ib.reqContractDetailsAsync(Stock(symbol, "SMART", "USD")),
                                          self._qualification_timeout)
         check(len(details) == 1, "Underlying must qualify uniquely")
@@ -182,6 +182,11 @@ class IBOptionReads:
                         conId=c.conId, localSymbol=c.localSymbol, key=asdict(contract.key),
                         underConId=detail.underConId, tradingClass=c.tradingClass, validExchanges=detail.validExchanges,
                         minTick=native_decimal(detail.minTick), marketRuleIds=detail.marketRuleIds)
+        if contract.key.underlying not in {"SPY", "QQQ"}:
+            # Preserve historical SPY/QQQ qualification metadata hashes.
+            metadata.update(rule="ib-standard-equity-occ-v1",
+                source_url="https://www.theocc.com/clearance-and-settlement/clearing/equity-options-product-specifications",
+                checked_at="2026-11-04")
         version = sha256(json.dumps(metadata, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         binding = BrokerOptionBinding(self.adapter_id, VERSION, bound.scope.environment, bound.scope.account,
             contract.canonical_id, str(c.conId), c.localSymbol, "SMART", now_wire(), version)

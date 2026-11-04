@@ -1,4 +1,4 @@
-"""Native calendar plus versioned Alpaca Trading API rules for P0 SPY/QQQ.
+"""Native calendar plus reviewed Alpaca standard-equity and ETF cutoff rules.
 
 Rule validity is ATI's review window, not a promise that the broker cannot
 change its policy. Unknown special-session cutoffs remain explicitly missing.
@@ -46,6 +46,9 @@ async def read_calendar(adapter, request):
     raw_hash = adapter._remember_option_read(raw)
     observed = now_wire()
     valid_rule = timestamp(RULE_CHECKED) <= timestamp(observed) < timestamp(RULE_VALID_UNTIL) and RULE_CHECKED[:10] <= request.trade_date < RULE_VALID_UNTIL[:10]
+    generic = any(adapter._option_catalog[b.broker_contract_id][1].key.underlying not in {"SPY", "QQQ"} for b in request.bindings)
+    generic_checked = "2026-11-04T00:00:00Z"
+    generic_valid = valid_rule and timestamp(generic_checked) <= timestamp(observed) and generic_checked[:10] <= request.trade_date
     sessions = []
     for binding in request.bindings:
         _, contract, _ = adapter._option_catalog[binding.broker_contract_id]
@@ -57,9 +60,7 @@ async def read_calendar(adapter, request):
         else:
             opened, closed = (wire_time(request.trade_date, data[0][name]) for name in ("open", "close"))
             check(opened < closed, "Native session interval is invalid")
-            if contract.key.underlying not in {"SPY", "QQQ"}:
-                reasons.append("CALENDAR_PRODUCT_UNSUPPORTED")
-            elif not valid_rule:
+            if not (valid_rule if contract.key.underlying in {"SPY", "QQQ"} else generic_valid):
                 reasons.append("CALENDAR_RULE_REVIEW_REQUIRED")
             elif contract.key.expiry < request.trade_date:
                 reasons.append("CONTRACT_EXPIRED")
@@ -70,9 +71,9 @@ async def read_calendar(adapter, request):
                 entry = closed
                 if contract.key.expiry == request.trade_date:
                     if data[0]["open"] in {"09:30", "09:30:00"} and data[0]["close"] in {"16:00", "16:00:00"}:
-                        # Official support explicitly names SPY/QQQ and says
-                        # orders after 15:30 are rejected; apply to both intents.
-                        entry = close = wire_time(request.trade_date, "15:30")
+                        # Reviewed official support: 15:15 for general stock options;
+                        # SPY/QQQ have the explicitly documented 15:30 exception.
+                        entry = close = wire_time(request.trade_date, "15:30" if contract.key.underlying in {"SPY", "QQQ"} else "15:15")
                     else:
                         entry = close = None
                         reasons.append("EXPIRY_SPECIAL_SESSION_CUTOFF_UNKNOWN")
@@ -83,6 +84,9 @@ async def read_calendar(adapter, request):
     expires = expiry.isoformat().replace("+00:00", "Z")
     sources = (OptionCalendarSource("https://docs.alpaca.markets/us/reference/legacycalendar", observed, observed, expires,
         "native-sha256:" + raw_hash),) + tuple(OptionCalendarSource(url, RULE_CHECKED, RULE_CHECKED, RULE_VALID_UNTIL, RULE_REVISION) for url in RULE_URLS)
+    if generic:
+        sources += tuple(OptionCalendarSource(url, generic_checked, generic_checked, RULE_VALID_UNTIL,
+            "alpaca-standard-equity-cutoff-2026-11-04") for url in RULE_URLS)
     adapter._option_still_bound(bound)
-    revision = sha256((raw_hash + RULE_REVISION).encode()).hexdigest()
+    revision = sha256((raw_hash + RULE_REVISION + ("+equity-2026-11-04" if generic else "")).encode()).hexdigest()
     return OptionCalendar(bound.scope, request.trade_date, "America/New_York", observed, expires, revision, sources, tuple(sessions))

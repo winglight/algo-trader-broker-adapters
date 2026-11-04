@@ -69,9 +69,7 @@ async def test_real_http_client_uses_same_paper_credentials_bounded_unfiltered_q
     def handler(request):
         requests.append(request)
         return httpx.Response(200, content=raw)
-    original = httpx.AsyncClient
-    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: original(**kwargs, transport=httpx.MockTransport(handler)))
-    client = AlpacaClients(AlpacaPaperSettings.from_mapping(SETTINGS))
+    client = AlpacaClients(AlpacaPaperSettings.from_mapping(SETTINGS), option_http_transport=httpx.MockTransport(handler))
     assert await client.get_option_activity_page(query("prior::full")) == raw
     assert len(requests) == 1
     request = requests[0]
@@ -91,9 +89,7 @@ async def test_transport_errors_redirects_and_resource_limits_do_not_retry_or_ex
         if failure == "timeout": raise httpx.ReadTimeout("fixture secret should not leak", request=request)
         return httpx.Response(302 if failure == "redirect" else 429 if failure == "rate" else 200,
             headers={"location": "https://untrusted.invalid"}, content=b"" if failure == "empty" else b"x" * (8388609 if failure == "size" else 1))
-    original = httpx.AsyncClient
-    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: original(**kwargs, transport=httpx.MockTransport(handler)))
-    client = AlpacaClients(AlpacaPaperSettings.from_mapping(SETTINGS))
+    client = AlpacaClients(AlpacaPaperSettings.from_mapping(SETTINGS), option_http_transport=httpx.MockTransport(handler))
     with pytest.raises(BrokerConnectionError) as error: await client.get_option_activity_page(query())
     assert "secret should not leak" not in str(error.value) and len(requests) == 1
 
@@ -125,9 +121,7 @@ async def test_native_order_http_uses_exact_uuid_and_retains_original_response_b
     def handler(request):
         requests.append(request)
         return httpx.Response(200, content=raw)
-    original = httpx.AsyncClient
-    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: original(**kwargs, transport=httpx.MockTransport(handler)))
-    client = AlpacaClients(AlpacaPaperSettings.from_mapping(SETTINGS))
+    client = AlpacaClients(AlpacaPaperSettings.from_mapping(SETTINGS), option_http_transport=httpx.MockTransport(handler))
     request = OptionNativeOrderQuery(**dataclass_to_payload(SCOPE), order_id="00000000-0000-4000-8000-000000000001")
     assert await client.get_option_order_evidence(request) == raw
     assert str(requests[0].url) == "https://paper-api.alpaca.markets/v2/orders/00000000-0000-4000-8000-000000000001?nested=true"

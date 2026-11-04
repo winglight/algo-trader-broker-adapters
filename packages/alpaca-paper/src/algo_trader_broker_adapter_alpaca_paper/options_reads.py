@@ -1,11 +1,12 @@
 """Native option catalog, quotes and account reads on the existing Paper client.
 
-The P0 catalog is limited to standard SPY/QQQ equity deliverables. Successful
+The catalog accepts exact standard equity deliverables. Successful
 reads are evidence, not Paper certification or an execution authorization.
 """
 
 from collections import OrderedDict, deque
 import asyncio
+import re
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -62,7 +63,7 @@ def contract_from_native(item):
     check(type(item) is dict, "Missing native contract metadata")
     _uuid(item["id"])
     underlying = item["underlying_symbol"]
-    check(underlying in {"SPY", "QQQ"} and item.get("root_symbol") == underlying, "Unsupported underlying or adjusted root")
+    check(bool(re.fullmatch(r"[A-Z][A-Z0-9.]{0,9}", underlying)) and item.get("root_symbol") == underlying, "Unsupported underlying or adjusted root")
     check(item["style"] == "american" and whole(item["multiplier"]) == 100 and whole(item["size"]) == 100,
           "Unsupported option economics")
     deliverables = item.get("deliverables")
@@ -173,7 +174,7 @@ class AlpacaOptionReads:
     async def list_option_contracts(self, request):
         check(type(request) is OptionContractQuery, "Expected an exact contract query")
         bound, _, _ = await self._option_bound(request)
-        check(request.underlying in {"SPY", "QQQ"}, "P0 supports SPY/QQQ contracts")
+        check(bool(re.fullmatch(r"[A-Z][A-Z0-9.]{0,9}", request.underlying)), "A normalized underlying symbol is required")
         params = dict(underlying_symbols=request.underlying, status="active", expiration_date_gte=request.expiry_from,
             expiration_date_lte=request.expiry_to, limit=request.limit)
         for key, value in (("type", {"C": "call", "P": "put"}.get(request.right)), ("strike_price_gte", request.strike_min),
@@ -201,7 +202,7 @@ class AlpacaOptionReads:
         for expected in request.contracts:
             check(expected.canonical_id == option_contract_id(expected.key), "Requested contract identity does not match its economics")
             key = expected.key
-            if (key.underlying not in {"SPY", "QQQ"} or (key.currency, key.multiplier, key.exercise_style, key.settlement, key.deliverable_id) !=
+            if (not re.fullmatch(r"[A-Z][A-Z0-9.]{0,9}", key.underlying) or (key.currency, key.multiplier, key.exercise_style, key.settlement, key.deliverable_id) !=
                     ("USD", 100, "AMERICAN", "PHYSICAL", "STANDARD_100_SHARES")):
                 results.append(QualificationResult(expected.canonical_id, "UNSUPPORTED", None, None, ("NONSTANDARD_CONTRACT",)))
                 continue
@@ -260,10 +261,12 @@ class AlpacaOptionReads:
 
     async def option_snapshot(self, request):
         from .options_greeks import snapshot_greeks, normalized_greeks
+        from .options_observations import day_volumes,catalog_oi,last_trade,quote_volume
         check(type(request) is SnapshotRequest, "Expected an exact snapshot request")
         bound, _, _ = await self._option_bound(request)
         check(request.feed in {"OPRA", "INDICATIVE"}, "Options require an explicit OPRA or indicative feed")
         self._validate_option_bindings(bound, request.bindings)
+        volumes=await day_volumes(self,request.bindings) if request.purpose=="RESEARCH" else {}
         raw = await self._backend.get_option_resource("/v1beta1/options/snapshots", data=True,
             params=dict(symbols=",".join(binding.local_symbol for binding in request.bindings), feed=request.feed.lower(), limit=1000))
         data = decode_native(raw)
@@ -294,9 +297,10 @@ class AlpacaOptionReads:
             native_greeks = snapshot_greeks(item, binding, feed=request.feed, received=received,
                 response_hash=sha256(raw).hexdigest())
             quotes.append(OptionQuote(binding.canonical_id, bid, ask, bs, az, at, received, "ALPACA", request.feed,
-                quality, bound.scope.account, *normalized_greeks(item, native_greeks), None, None,
+                quality, bound.scope.account, *normalized_greeks(item, native_greeks), *catalog_oi(self._option_catalog[binding.broker_contract_id][2]),
                 native_greeks=native_greeks,
-                reference_pricing_allowed=True if request.feed == "INDICATIVE" else None))
+                reference_pricing_allowed=True if request.feed == "INDICATIVE" else None,
+                **last_trade(item),**quote_volume(volumes,binding.local_symbol,at)))
         times = [timestamp(quote.quote_at) for quote in quotes]
         skew = int((max(times) - min(times)).total_seconds() * 1000) if times else 0
         self._option_still_bound(bound)

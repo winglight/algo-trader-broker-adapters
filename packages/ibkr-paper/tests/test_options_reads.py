@@ -115,7 +115,7 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_sn
         return [OptionChain("SMART", "100", "SPY", "100", {expiry_native}, {590.0, 595.0})]
 
     def subscribe(req_id, contract, generic, snapshot, regulatory, options):
-        assert generic == "" and snapshot is False and regulatory is False
+        assert generic == "100,101" and snapshot is False and regulatory is False
 
         def unavailable():
             ib.wrapper.lastTime = datetime.now(timezone.utc)

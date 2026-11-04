@@ -30,7 +30,7 @@ def size(value):
 async def read_snapshot(ib, request, contracts, *, timeout):
     from ib_async import Ticker
 
-    subscriptions, ticks, changed = [], {}, asyncio.Event()
+    subscriptions, ticks, observations, changed = [], {}, {}, asyncio.Event()
     started = datetime.now(timezone.utc)
     greeks = GreekCapture(ib)
 
@@ -42,6 +42,7 @@ async def read_snapshot(ib, request, contracts, *, timeout):
             if tick.tickType in {0, 1, 2, 3} and tick.time.tzinfo is not None and tick.time >= started:
                 side = "bid" if tick.tickType in {0, 1} else "ask"
                 sides[side] = (amount(tick.price), size(tick.size), tick.time)
+        capture_observations(ticker, observations[id(ticker)], started)
         changed.set()
 
     try:
@@ -53,12 +54,13 @@ async def read_snapshot(ib, request, contracts, *, timeout):
             ticker = Ticker(contract=contract, defaults=ib.wrapper.defaults)
             ticker.marketDataType = 0  # Require a received native type callback.
             ticks[id(ticker)] = {}
+            observations[id(ticker)] = {}
             ticker.updateEvent += update
             ib.wrapper.reqId2Ticker[req_id] = ticker
             ib.wrapper._reqId2Contract[req_id] = contract
             subscriptions.append((req_id, ticker))
             greeks.register(req_id)
-            ib.client.reqMktData(req_id, contract, "", False, False, [])
+            ib.client.reqMktData(req_id, contract, "100,101", False, False, [])
         deadline = asyncio.get_running_loop().time() + timeout
         # IB may first deliver -1/NaN sides (including when changing to frozen
         # data), then the actual quote. Missing-side callbacks are not a final
@@ -85,7 +87,7 @@ async def read_snapshot(ib, request, contracts, *, timeout):
                 continue
             all_side_times.extend((sides["bid"][2], sides["ask"][2]))
             quotes.append(quote_from_sides(binding, ticker, sides, request, received=received,
-                native_greeks=greeks.observation(req_id, binding, ticker.marketDataType)))
+                native_greeks=greeks.observation(req_id, binding, ticker.marketDataType), observations=observations[id(ticker)]))
         skew = int((max(all_side_times) - min(all_side_times)).total_seconds() * 1000) if all_side_times else 0
         return OptionMarketSnapshot(str(uuid4()), tuple(quotes), tuple(missing), not missing, skew, received)
     finally:
@@ -105,7 +107,20 @@ async def read_snapshot(ib, request, contracts, *, timeout):
             raise cleanup_error
 
 
-def quote_from_sides(binding, ticker, sides, request, *, received=None, native_greeks=None):
+def capture_observations(ticker, target, started):
+    """Volume uses its tick receipt clock; last trade retains the provider clock."""
+    for tick in ticker.ticks:
+        if tick.tickType in {8, 29, 30} and tick.time.tzinfo is not None and tick.time >= started:
+            volume = size(tick.size)
+            if volume is not None and volume >= 0:
+                target.update(volume=volume, volume_as_of=tick.time.isoformat().replace('+00:00', 'Z'))
+    at = getattr(ticker, 'lastTimestamp', None)
+    price = amount(getattr(ticker, 'last', None))
+    if price is not None and at is not None and at.tzinfo is not None:
+        target.update(last_trade_price=price, last_trade_at=at.isoformat().replace('+00:00', 'Z'))
+
+
+def quote_from_sides(binding, ticker, sides, request, *, received=None, native_greeks=None, observations=None):
     received = received or now_wire()
     bid, bs, bid_time = sides["bid"]
     ask, az, ask_time = sides["ask"]
@@ -122,4 +137,4 @@ def quote_from_sides(binding, ticker, sides, request, *, received=None, native_g
         quality = "RESEARCH_ONLY"
     return OptionQuote(binding.canonical_id, bid, ask, bs, az,
         at.isoformat().replace("+00:00", "Z"), received, "IBKR", request.feed,
-        quality, request.account, *normalized_greeks(native_greeks), None, None, native_greeks)
+        quality, request.account, *normalized_greeks(native_greeks), None, None, native_greeks, **(observations or {}))
