@@ -1454,8 +1454,7 @@ class IBAsyncClient:
             raise IBOrderError(str(exc)) from exc
         return await self._submit_order(contract, order, submission_gate=submission_gate)
 
-    async def place_future_order(self, request: FutureOrderRequest, *, submission_gate=None,
-                                 protective_stop_price=None, protective_reference_price=None) -> OrderResult:
+    async def place_future_order(self, request: FutureOrderRequest, *, submission_gate=None) -> OrderResult:
         """Submit an order for a futures contract."""
 
         try:
@@ -1468,9 +1467,7 @@ class IBAsyncClient:
             raise IBOrderError(
                 f"Failed to qualify futures contract before submit: {_contract_to_dict(contract)}"
             ) from exc
-        return await self._submit_order(contract, order, submission_gate=submission_gate,
-                                        protective_stop_price=protective_stop_price,
-                                        protective_reference_price=protective_reference_price)
+        return await self._submit_order(contract, order, submission_gate=submission_gate)
 
     async def place_option_order(self, request: OptionOrderRequest) -> OrderResult:
         """Submit an order for an option contract."""
@@ -2690,8 +2687,7 @@ class IBAsyncClient:
         except Exception as exc:  # pragma: no cover - network failure
             raise IBMarketDataError("Failed to qualify contract") from exc
 
-    async def _submit_order(self, contract: Any, order: Any, *, submission_gate=None,
-                            protective_stop_price=None, protective_reference_price=None) -> OrderResult:
+    async def _submit_order(self, contract: Any, order: Any, *, submission_gate=None) -> OrderResult:
         # Connection establishment may retry reads. Once native submission is
         # attempted, a reconnect must never repeat the order side effect.
         ib = await self.ensure_connected()
@@ -2702,26 +2698,6 @@ class IBAsyncClient:
         if contract.secType == "STK" and order.openClose == "C":
             from .cash_control import validate_close
             await validate_close(ib, contract, order)
-        protection = None
-        if protective_stop_price is not None:
-            from decimal import Decimal
-            from hashlib import sha256
-            from ib_async import StopOrder
-            valid_stop = (Decimal(str(protective_stop_price)) % Decimal('.25') == 0
-                          and protective_stop_price > 0)
-            reference = order.lmtPrice if order.orderType == 'LMT' else protective_reference_price
-            if not (submission_gate is not None and contract.secType == 'FUT' and contract.symbol == 'MNQ'
-                    and order.orderType in {'MKT','LMT'} and order.openClose == 'O' and order.totalQuantity == 1
-                    and reference is not None and reference > 0
-                    and valid_stop and ((protective_stop_price < reference) if order.action == 'BUY'
-                                        else (protective_stop_price > reference))):
-                raise IBOrderError('Guarded MNQ bracket requires one bounded entry and a protective stop')
-            order.orderId = ib.client.getReqId()
-            order.transmit = False
-            protection = StopOrder('SELL' if order.action == 'BUY' else 'BUY', 1, protective_stop_price,
-                orderId=ib.client.getReqId(), parentId=order.orderId, account=order.account,
-                tif='GTC', openClose='C', transmit=True,
-                orderRef='fprot-' + sha256(str(order.orderRef).encode()).hexdigest()[:40])
         if submission_gate is not None:
             await submission_gate.prepare()
             if not ib.isConnected():
@@ -2729,33 +2705,14 @@ class IBAsyncClient:
                 raise IBConnectionError("IB disconnected before guarded submission")
             submission_gate.consume()
         try:
-            if protection is not None:
-                # Stage parent and child consecutively in the native event loop.
-                # Only the child transmits the bracket; no await separates them.
-                parent_trade = ib.placeOrder(contract, order)
-                child_trade = ib.placeOrder(contract, protection)
-                if parent_trade is None or child_trade is None:
-                    raise IBOrderError('Native bracket acknowledgement is unavailable')
-                child = await self._place_order_async(ib, contract, protection, submitted_trade=child_trade,
-                                                      require_native_ack=True)
-                if (child.status not in {'Submitted','PreSubmitted','Filled'}
-                        or not str(child.perm_id or '').isdigit() or int(child.perm_id) <= 0):
-                    raise IBOrderError('Native protective child was not confirmed by IB; original bracket requires recovery')
-                result = await self._place_order_async(ib, contract, order, submitted_trade=parent_trade)
-                result.protective_order_id = protection.orderId
-                result.protective_stop_price = protective_stop_price
-                return result
             return await self._place_order_async(ib, contract, order)
         except Exception as exc:  # pragma: no cover - runtime failure
             raise IBOrderError("IB order outcome is unknown; reconcile before retrying",
                                code="broker_order_outcome_unknown") from exc
 
-    async def _place_order_async(self, ib: IB, contract: Any, order: Any, *, submitted_trade=None,
-                                 require_native_ack=False) -> OrderResult:
+    async def _place_order_async(self, ib: IB, contract: Any, order: Any) -> OrderResult:
         place_order_async = getattr(ib, "placeOrderAsync", None)
-        if submitted_trade is not None:
-            trade = submitted_trade
-        elif callable(place_order_async):
+        if callable(place_order_async):
             trade = await place_order_async(contract, order)
         else:
             trade = ib.placeOrder(contract, order)
@@ -2781,12 +2738,8 @@ class IBAsyncClient:
         timeout_seconds = 2.0
         deadline = time.monotonic() + timeout_seconds
         try:
-            acknowledged = _has_confirmed_native_order if require_native_ack else _has_trade_submission_ack
-            while trade is not None and not acknowledged(trade, order):
+            while trade is not None and not _has_trade_submission_ack(trade, order):
                 if time.monotonic() >= deadline:
-                    break
-                state = getattr(getattr(trade, 'orderStatus', None), 'status', None)
-                if require_native_ack and state in {'Cancelled', 'ApiCancelled', 'Inactive', 'Rejected'}:
                     break
                 wait_async = getattr(ib, "waitOnUpdateAsync", None)
                 try:
@@ -3877,15 +3830,6 @@ def _is_trade_done(trade: Any) -> bool:
             return True
 
     return False
-
-
-def _has_confirmed_native_order(trade: Any, fallback_order: Any | None = None) -> bool:
-    status = getattr(trade, 'orderStatus', None)
-    if getattr(status, 'status', None) not in {'Submitted', 'PreSubmitted', 'Filled'}:
-        return False
-    order = getattr(trade, 'order', None) or fallback_order
-    perm_id = getattr(order, 'permId', None) or getattr(status, 'permId', None)
-    return str(perm_id or '').isdigit() and int(perm_id) > 0
 
 
 def _has_trade_submission_ack(trade: Any, fallback_order: Any | None = None) -> bool:

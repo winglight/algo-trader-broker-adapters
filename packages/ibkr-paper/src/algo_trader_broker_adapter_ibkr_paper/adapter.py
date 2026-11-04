@@ -467,12 +467,6 @@ class IBKRPaperAdapter(IBOptionReads, IBOptionOrders):
 
         payload = asdict(request)
         adapter_parameters = payload.pop("adapter_parameters", {})
-        protection = None
-        reference = None
-        if gate is not None:
-            adapter_parameters = dict(adapter_parameters)
-            protection = adapter_parameters.pop('protectiveStopPrice', None)
-            reference = adapter_parameters.pop('protectiveReferencePrice', None)
         if adapter_parameters:
             raise BrokerOrderError(
                 "IBKR Paper does not accept unrecognized adapter_parameters",
@@ -488,17 +482,8 @@ class IBKRPaperAdapter(IBOptionReads, IBOptionOrders):
             except (TypeError, ValueError) as exc:
                 raise BrokerOrderError("IBKR order identifier must be numeric") from exc
         kwargs = {} if gate is None else {'submission_gate': gate}
-        if protection is not None:
-            kwargs['protective_stop_price'] = float(protection)
-            kwargs['protective_reference_price'] = float(reference) if reference is not None else None
         result = await self._client.place_future_order(IBFutureOrderRequest(**payload), **kwargs)
-        mapped = _map_ib_order_result(result, open_close=payload.get("open_close"))
-        if getattr(result, 'protective_order_id', None) is not None:
-            mapped.adapter_metadata.setdefault('extensions', {})['nativeFuturesProtection'] = {
-                'adapterOrderId': str(result.protective_order_id),
-                'stopPrice': str(result.protective_stop_price), 'orderType': 'STP',
-                'parentAdapterOrderId': str(result.order_id)}
-        return mapped
+        return _map_ib_order_result(result, open_close=payload.get("open_close"))
 
     async def place_option_order(self, request: OptionOrderRequest) -> OrderResult:
         raise options_trading_not_supported()
