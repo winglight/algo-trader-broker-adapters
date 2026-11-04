@@ -239,6 +239,7 @@ class IBAsyncClient:
         self._position_listener: Callable[..., None] | None = None
         self._account_value_listener: Callable[..., None] | None = None
         self._account_updates_subscribed = False
+        self._account_summary_load: tuple[IB, asyncio.Task] | None = None
         self._pnl_listener: Callable[[Any], None] | None = None
         self._pnl_subscription_lock = asyncio.Lock()
         self._pnl_subscriptions: dict[tuple[str, str], tuple[str, str | None]] = {}
@@ -774,7 +775,29 @@ class IBAsyncClient:
             target = account or (accounts[0] if accounts else None)
             if not target:
                 return []
-            summary = await ib.accountSummaryAsync(target)
+            # ib_async starts a new "All" subscription whenever its native
+            # cache is empty. Concurrent first reads must share that request
+            # (IB allows only two active summary subscriptions). Individual
+            # HTTP cancellation must not cancel the shared native load.
+            pending = self._account_summary_load
+            loading = pending is not None and pending[0] is ib and not pending[1].done()
+            if loading or not ib.wrapper.acctSummary:
+                if pending is None or pending[0] is not ib:
+                    task = asyncio.create_task(ib.accountSummaryAsync())
+                    task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+                    self._account_summary_load = (ib, task)
+                else:
+                    task = pending[1]
+                summary = await asyncio.shield(task)
+                # An empty/failed load is not retried on this same connection:
+                # its subscription may still exist. Reconnection gets a new
+                # IB object. Never turn an old result into a fresh snapshot.
+                if not ib.wrapper.acctSummary:
+                    summary = []
+                else:
+                    summary = await ib.accountSummaryAsync(target)
+            else:
+                summary = await ib.accountSummaryAsync(target)
             items: list[AccountSummaryItem] = []
             for entry in summary:
                 items.append(
