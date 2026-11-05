@@ -227,6 +227,8 @@ class IBAsyncClient:
         )
         self._executor_loop: asyncio.AbstractEventLoop | None = None
         self._connect_lock = asyncio.Lock()
+        self._positions_lock = asyncio.Lock()
+        self._positions_request: tuple[IB, asyncio.Future] | None = None
         self._connected = asyncio.Event()
         self._client_id = settings.client_id
         self._trade_update_handler: Callable[[TradeUpdate], Awaitable[None]] | None = None
@@ -1444,7 +1446,24 @@ class IBAsyncClient:
         """Retrieve open positions for the connected account."""
 
         async def fetch(ib: IB) -> list[PositionItem]:
-            positions = await ib.reqPositionsAsync()
+            # IB correlates all position replies with one fixed key. Starting
+            # another read before positionEnd would overwrite the first future.
+            async with self._positions_lock:
+                previous = self._positions_request
+                if previous is not None and previous[0] is ib and not previous[1].done():
+                    await asyncio.shield(previous[1])
+                if self._ib is not ib or not ib.isConnected():
+                    raise ConnectionError("IB session changed before position read")
+                pending = asyncio.ensure_future(ib.reqPositionsAsync())
+                pending.add_done_callback(lambda future: None if future.cancelled() else future.exception())
+                self._positions_request = (ib, pending)
+                # A cancelled HTTP/writer caller does not cancel the native
+                # request; its positionEnd must drain before another read.
+                try:
+                    positions = await asyncio.shield(pending)
+                finally:
+                    if pending.done():
+                        self._positions_request = None
             result: list[PositionItem] = []
             for pos in positions:
                 contract = getattr(pos, "contract", None)

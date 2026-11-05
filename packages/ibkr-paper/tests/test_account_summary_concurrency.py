@@ -1,9 +1,9 @@
 """Exercise ib_async's actual lazy summary cache without a broker connection."""
 import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
-from ib_async import IB
+from ib_async import Future, IB
 from ib_async.objects import AccountValue
 from algo_trader_broker_adapter_ibkr_paper.client import IBAsyncClient
 from algo_trader_broker_adapter_ibkr_paper.settings import IBGatewaySettings
@@ -23,6 +23,35 @@ def client_for(ib):
 
 def value(account, amount):
     return AccountValue(account, 'NetLiquidation', str(amount), 'USD', '')
+
+
+@pytest.mark.asyncio
+async def test_position_end_drains_cancelled_read_before_starting_a_fresh_native_snapshot():
+    ib = native()
+    ib.isConnected = lambda: True
+    ib.client.reqPositions = Mock()
+    client = client_for(ib)
+    client._ib = ib
+    first = asyncio.create_task(client.get_positions())
+    await asyncio.sleep(0)
+    ib.client.reqPositions.assert_called_once()
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+
+    second = asyncio.create_task(client.get_positions())
+    await asyncio.sleep(0)
+    ib.client.reqPositions.assert_called_once()
+    contract = Future("MNQ", "202612", "CME", conId=42)
+    ib.wrapper.position("fixture-a", contract, -1, 100)
+    ib.wrapper.positionEnd()
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert ib.client.reqPositions.call_count == 2
+    assert not second.done()
+    ib.wrapper.position("fixture-a", contract, -2, 100)
+    ib.wrapper.positionEnd()
+    assert (await second)[0].position == -2
 
 
 @pytest.mark.asyncio
