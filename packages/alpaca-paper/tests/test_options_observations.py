@@ -38,6 +38,9 @@ async def test_daily_zero_volume_has_independent_clock_session_and_cache():
     assert quote_volume(volumes,'synthetic_occ','2026-11-03T15:00:00Z')=={}
     assert await day_volumes(adapter,bindings)==volumes
     backend.get_option_resource.assert_awaited_once()
+    cutoff=datetime.fromisoformat(backend.get_option_resource.await_args.kwargs['params']['end'].replace('Z','+00:00'))
+    assert (datetime.now(timezone.utc)-cutoff).total_seconds()>=900
+    assert observed['volume_as_of']==backend.get_option_resource.await_args.kwargs['params']['end']
 
 
 @pytest.mark.asyncio

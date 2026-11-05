@@ -43,10 +43,11 @@ async def day_volumes(adapter,bindings):
     missing=[symbol for symbol in wanted if symbol not in cache or (now-cache[symbol][0]).total_seconds()>=30]
     if missing:
         start=(now-timedelta(days=8)).isoformat().replace('+00:00','Z')
+        cutoff=now-timedelta(minutes=15,seconds=1)
         try:
-            async with asyncio.timeout(2):
+            async with asyncio.timeout(8):
                 raw=await adapter._backend.get_option_resource('/v1beta1/options/bars',data=True,
-                    params=dict(symbols=','.join(missing),start=start,end=now.isoformat().replace('+00:00','Z'),
+                    params=dict(symbols=','.join(missing),start=start,end=cutoff.isoformat().replace('+00:00','Z'),
                         timeframe='1Day',limit=10000,sort='asc'))
             body=decode_native(raw)
             check(isinstance(body,dict) and isinstance(body.get('bars'),dict) and not body.get('next_page_token'),
@@ -60,7 +61,7 @@ async def day_volumes(adapter,bindings):
                     at=_time(bar['t']);day=timestamp(at).astimezone(NY).date().isoformat()
                     check(day not in days,'Daily volume repeats a session')
                     days[day]=dict(volume=integer(bar['v']),volume_date=day,
-                        volume_as_of=observed.isoformat().replace('+00:00','Z'))
+                        volume_as_of=cutoff.isoformat().replace('+00:00','Z'))
                 cache[symbol]=(observed,days)
         except (BrokerError,ValueError,TypeError,KeyError,TimeoutError):
             # Volume is independent from quotes. Missing bars stay unknown;
