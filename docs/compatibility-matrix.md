@@ -3,7 +3,7 @@
 | Package | Adapter version | Broker SDK | Vendor client | Environment | Asset classes |
 | --- | --- | --- | --- | --- | --- |
 | Built-in `projectx_topstep` profile ([main repository](https://github.com/winglight/algo-trader/tree/main/src/broker_adapters/projectx_topstep)) | 0.1.0 dry-run; 0.2.0 read-only | Built into the matching Local Runtime release | ProjectX REST + SignalR protocol | Local dry-run or provider read-only in public installations | FUT (MNQ only) |
-| `algo-trader-broker-adapter-ibkr-paper` | 0.2.0 | `>=1,<2` | `ib_async>=2.0.1,<3` | Paper | STK, FUT |
+| `algo-trader-broker-adapter-ibkr-paper` (public support baseline) | 0.2.0 | `>=1,<2` | `ib_async>=2.0.1,<3` | Paper | STK, FUT |
 | `algo-trader-broker-adapter-alpaca-paper` | 0.1.0 | `>=1,<2` | `alpaca-py==0.43.5` | Paper | STK, ETF |
 | `algo-trader-broker-adapter-ccxt-crypto` | 0.1.0 | `>=1,<2` | `ccxt==4.5.56` | OKX Demo/Paper | CRYPTO_SPOT, CRYPTO_PERPETUAL |
 
@@ -57,14 +57,16 @@
 - A non-empty persisted `client_order_id` is required before submission.
 - Vendor SDK upgrades require a new adapter patch version and contract tests.
 
-## IB V9.2 option foundation
+## IBKR 0.4.0rc1 candidate
 
-The existing IB package includes verified-account, bounded SPY/QQQ contract
-reads and `IBKR_LIVE` snapshots. The direct read flow is fixture-verified with
-`ib_async 2.0.1`; the declared trading asset classes above are unchanged. Full
-`options/1.0` activation and account/Greeks/calendar/source certification remain
-pending; implemented native order/read ports are detailed below. Local's legacy entrypoint delegates
-to the package and retains its manifest identity.
+The default branch implements explicit Paper and Live account scopes, defaulting
+to Paper. It adds bounded SPY/QQQ contract reads, `IBKR_LIVE` quote snapshots and
+guarded OPT/BAG order paths under `options/1.0`. The synthetic walkthrough uses
+`ib_async 2.0.1` without connecting to Gateway or submitting a real order.
+Account certification and activation still require M4/M5, including permissions,
+limits and emergency-exit evidence. The table above describes the public
+support baseline. See the [package README](../packages/ibkr-paper/README.md) for
+configuration and certification requirements.
 
 The IB read foundation also maps fresh account funds, net option inventory and
 API open-order references into the public Account DTOs. AvailableFunds and stock

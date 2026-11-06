@@ -1,5 +1,10 @@
 # IBKR Paper adapter
 
+The public support baseline is `0.2.0` for stock and futures workflows on Paper
+accounts. This README documents the default branch's `0.4.0rc1` candidate. See
+the [compatibility matrix](../../docs/compatibility-matrix.md) for the scope of
+each version.
+
 ## Explicit trading environment (0.4.0rc1)
 
 The existing package, class and adapter ID support `ib_environment=paper|live`,
@@ -37,8 +42,6 @@ This package implements the same Broker SDK 1.x contract as the built-in
 `ibkr_paper` adapter. Installing the package does not activate it. The main
 application must explicitly set `BROKER_RUNNER_IBKR_PAPER_PROVIDER=package`.
 
-Only IBKR Paper accounts are in scope. Live trading is not enabled by this package.
-
 ## V9.2 option read foundation
 
 Position carrying costs now use the same account's retained `updatePortfolio`
@@ -53,9 +56,10 @@ The existing adapter now has scoped `list_option_contracts`,
 `qualify_option_contracts`, `option_snapshot`, `option_capabilities`,
 `option_account_permissions`, `option_account_state`, `stream_option_quotes`,
 `option_history` and `option_calendar` ports.
-They require Runner's verified Paper account and the current connection; reads
-never reconnect or replay themselves. Discovery uses bounded SPY/QQQ SMART
-parameters and exact ContractDetails qualification. Bindings retain conId,
+They require a Runner-verified account matching the configured environment and
+the current connection. Reads never reconnect or replay themselves. Discovery
+uses bounded SPY/QQQ SMART parameters and exact ContractDetails qualification.
+Bindings retain conId,
 localSymbol and a metadata hash. The P0 standard-product rule is explicit and
 versioned; unknown/adjusted roots and nonstandard multipliers are excluded.
 IB ContractDetails is not a full deliverable or account-permission record.
