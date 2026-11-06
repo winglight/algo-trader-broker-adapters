@@ -504,6 +504,9 @@ class IBKRPaperAdapter(IBOptionReads, IBOptionOrders):
     async def request_open_orders(self) -> list[TradeUpdate]:
         return await self._client.request_open_orders()
 
+    async def count_open_orders_for_deployment(self) -> int:
+        return await self._client.count_open_orders_for_deployment()
+
     async def request_executions(self, since: datetime | str | None = None) -> list[TradeUpdate]:
         return await self._client.request_executions(since)
 

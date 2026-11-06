@@ -228,6 +228,7 @@ class IBAsyncClient:
         self._executor_loop: asyncio.AbstractEventLoop | None = None
         self._connect_lock = asyncio.Lock()
         self._positions_lock = asyncio.Lock()
+        self._open_orders_lock = asyncio.Lock()
         self._positions_request: tuple[IB, asyncio.Future] | None = None
         self._connected = asyncio.Event()
         self._client_id = settings.client_id
@@ -1671,10 +1672,29 @@ class IBAsyncClient:
 
         await self._run_with_ib_async(cancel)
 
+    async def count_open_orders_for_deployment(self) -> int:
+        """Count a completed native download, including orders from other clients."""
+        async def read(ib: IB) -> int:
+            if "openOrders" in ib.wrapper._futures:
+                raise IBConnectionError("Native open-order download already in progress")
+            request = ib.reqAllOpenOrdersAsync()
+            try:
+                trades = await asyncio.wait_for(request, timeout=4)
+                return sum(not trade.order.whatIf for trade in trades)
+            finally:
+                if ib.wrapper._futures.get("openOrders") is request:
+                    ib.wrapper._endReq("openOrders")
+
+        async with self._open_orders_lock:
+            return await self._read_connected_session(read)
+
     async def request_open_orders(self) -> list[TradeUpdate]:
         """Retrieve open orders from IB and convert them into trade updates."""
 
         async def fetch(ib: IB) -> list[TradeUpdate]:
+            in_progress = getattr(ib.wrapper, "_futures", {}).get("openOrders")
+            if in_progress is not None:
+                await asyncio.wait_for(asyncio.shield(in_progress), timeout=4)
             method = getattr(ib, "reqOpenOrdersAsync", None)
             if not callable(method):
                 LOGGER.debug("IB client does not expose reqOpenOrdersAsync; skipping poll")
@@ -1734,7 +1754,8 @@ class IBAsyncClient:
                 updates.append(update)
             return updates
 
-        return await self._run_with_ib_async(fetch)
+        async with self._open_orders_lock:
+            return await self._run_with_ib_async(fetch)
 
     async def request_executions(
         self, since: datetime | str | None = None
@@ -3428,13 +3449,16 @@ class IBAsyncClient:
         Runner must establish a new account generation after a connection change.
         This port deliberately does not use the legacy reconnect/retry wrapper.
         """
+        return await self._read_connected_session(func)
+
+    async def _read_connected_session(self, func: Callable[[IB], Awaitable[T]]) -> T:
         ib, connected_at = self._ib, self._connected_since
         if ib is None or not self._connected.is_set() or not ib.isConnected():
-            raise IBConnectionError("Options require the current connected IB session")
+            raise IBConnectionError("A current connected IB session is required")
         result = await func(ib)
         if (self._ib is not ib or self._connected_since != connected_at
                 or not self._connected.is_set() or not ib.isConnected()):
-            raise IBConnectionError("IB connection changed during option read")
+            raise IBConnectionError("IB connection changed during the native read")
         return result
 
     def option_event_connection(self):
