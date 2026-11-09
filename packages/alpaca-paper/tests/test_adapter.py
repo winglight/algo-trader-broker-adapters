@@ -223,6 +223,11 @@ async def connected(backend: FakeBackend | None = None):
     return adapter, backend
 
 
+def test_stock_latest_price_declares_native_snapshot_capability() -> None:
+    adapter = AlpacaPaperAdapter(SETTINGS, backend=FakeBackend())
+    assert set(adapter.capabilities().latest_price_snapshot_assets) == {"STK", "ETF"}
+
+
 @pytest.mark.asyncio
 async def test_lifecycle_account_positions_and_pnl() -> None:
     adapter, backend = await connected()
