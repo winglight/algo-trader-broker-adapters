@@ -248,6 +248,7 @@ class AlpacaPaperAdapter(AlpacaOptionReads):
             order_types=set(_ORDER_TYPES),
             time_in_force=set(_TIFS),
             market_data_streams={"historical_bars", "realtime_price", "tick_by_tick"},
+            latest_price_snapshot_assets=["STK", "ETF"],
             account_features={"summary", "positions", "pnl", "position_updates"},
             supports_fractional=False,
             supports_shorting=True,
