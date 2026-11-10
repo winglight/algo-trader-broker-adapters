@@ -2735,9 +2735,14 @@ class IBAsyncClient:
     async def qualify_contract(self, contract: Any) -> Any:
         """Populate missing identifiers by qualifying a contract with IB."""
 
+        contract = _require_contract(contract)
+
         async def qualify(ib: IB) -> Any:
             qualified = await ib.qualifyContractsAsync(contract)
-            if not qualified:
+            # ib_async 2.1 preserves input positions: unknown or ambiguous
+            # contracts return [None], not an empty list. Never pass that
+            # sentinel to reqMktData (or another native contract consumer).
+            if not qualified or qualified[0] is None:
                 raise IBMarketDataError("Contract qualification returned no results")
             return qualified[0]
 
