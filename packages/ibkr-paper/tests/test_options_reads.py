@@ -90,32 +90,35 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_sn
     monkeypatch.setattr(ib, "isConnected", lambda: True)
     monkeypatch.setattr(ib, "managedAccounts", lambda: ["DU-OPTIONS-FIXTURE"])
     request_ids, canceled, queries = count(1000), [], []
+    pending_details = peak_details = 0
     monkeypatch.setattr(ib.client, "getReqId", lambda: next(request_ids))
     monkeypatch.setattr(ib.client, "cancelMktData", canceled.append)
 
     async def contract_details(contract):
+        nonlocal pending_details, peak_details
         queries.append(contract)
         if contract.secType == "STK":
             return [ContractDetails(contract=Stock("SPY", "SMART", "USD", conId=100))]
         if contract.conId:
-            strikes = [contract.conId - 1000]
+            strike = contract.conId - 1000
         else:
             assert (contract.symbol, contract.exchange, contract.tradingClass, contract.multiplier) == ("SPY", "SMART", "SPY", "100")
-            strikes = [int(contract.strike)] if contract.strike else [600, 595, 590]
-        details = []
-        for strike in strikes:
-            native = Option("SPY", expiry_native, strike, "C", "SMART", multiplier="100", currency="USD",
-                            tradingClass="SPY", conId=1000 + strike, localSymbol=f"SPY   {expiry_occ}C{strike * 1000:08d}")
-            details.append(ContractDetails(contract=native, underConId=100, underSymbol="SPY", underSecType="STK",
-                                           validExchanges="SMART,CBOE", minTick=0.01, marketRuleIds="26,26",
-                                           timeZoneId="US/Eastern", tradingHours="20261008:0930-20261008:1615",
-                                           liquidHours="20261008:0930-20261008:1615;20261010:CLOSED"))
-        return details
+            strike = int(contract.strike)
+            pending_details += 1
+            peak_details = max(peak_details, pending_details)
+            await asyncio.sleep(0)
+            pending_details -= 1
+        native = Option("SPY", expiry_native, strike, "C", "SMART", multiplier="100", currency="USD",
+                        tradingClass="SPY", conId=1000 + strike, localSymbol=f"SPY   {expiry_occ}C{strike * 1000:08d}")
+        return [ContractDetails(contract=native, underConId=100, underSymbol="SPY", underSecType="STK",
+                                validExchanges="SMART,CBOE", minTick=0.01, marketRuleIds="26,26",
+                                timeZoneId="US/Eastern", tradingHours="20261008:0930-20261008:1615",
+                                liquidHours="20261008:0930-20261008:1615;20261010:CLOSED")]
 
     async def parameters(*args):
         assert args == ("SPY", "", "STK", 100)
         # Match ib_async's actual securityDefinitionOptionParameter decoder.
-        return [OptionChain("SMART", "100", "SPY", "100", {expiry_native}, {590.0, 592.0, 595.0, 600.0})]
+        return [OptionChain("SMART", "100", "SPY", "100", {expiry_native}, {590.0, 595.0})]
 
     def subscribe(req_id, contract, generic, snapshot, regulatory, options):
         assert generic == "100,101" and snapshot is False and regulatory is False
@@ -171,13 +174,12 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_sn
         assert not first.complete and first.next_cursor
         second = await adapter.list_option_contracts(replace(query, cursor=first.next_cursor))
         assert second.complete and second.next_cursor is None
-        native_queries = [query for query in queries if query.secType == "OPT"]
-        assert [(query.lastTradeDateOrContractMonth, query.strike, query.right) for query in native_queries] == [
-            (expiry_native, 0, "C"),
-        ]
         contracts = first.contracts + second.contracts
         assert len(contracts) == 2
         assert [c.key.strike for c in contracts] == ["590", "595"]
+        single_page = await adapter.list_option_contracts(replace(query, limit=2))
+        assert single_page.complete and single_page.contracts == contracts
+        assert peak_details == 2
         assert all(c.canonical_id == option_contract_id(c.key) for c in contracts)
         qualified = await adapter.qualify_option_contracts(QualificationRequest(**values, contracts=contracts))
         assert [r.status for r in qualified.results] == ["EXACT", "EXACT"]

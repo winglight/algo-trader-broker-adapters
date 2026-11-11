@@ -6,7 +6,7 @@ excluded. A read is not account permission, calendar or trading certification.
 """
 
 import asyncio
-from collections import OrderedDict, deque, namedtuple
+from collections import OrderedDict, deque
 from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -40,7 +40,6 @@ NATIVE_SHAPES = {
     "CALL_BUTTERFLY": (3, 2), "IRON_CONDOR": (4, 1), "IRON_BUTTERFLY": (4, 1),
     "LONG_STRADDLE": (2, 1), "LONG_STRANGLE": (2, 1),
 }
-CatalogCursor = namedtuple("CatalogCursor", "query under_id expiries strikes pending unresolved expires_at")
 
 
 def now_wire():
@@ -113,6 +112,7 @@ class IBOptionReads:
         self._option_connection = None
         self._option_catalog = OrderedDict()
         self._option_pages = OrderedDict()
+        self._option_catalog_reads = asyncio.Semaphore(8)
         self._option_flex_pages = OrderedDict()
         self._option_history_pages = OrderedDict()
         self._option_history_lock = asyncio.Lock()
@@ -177,6 +177,10 @@ class IBOptionReads:
     async def _details(self, ib, key):
         return await asyncio.wait_for(ib.reqContractDetailsAsync(native_contract(key)), self._qualification_timeout)
 
+    async def _catalog_details(self, ib, key):
+        async with self._option_catalog_reads:
+            return await self._details(ib, key)
+
     def _remember_contract(self, bound, detail, contract):
         c = detail.contract
         metadata = dict(rule=STANDARD_RULE, source_url=STANDARD_SOURCE, checked_at=STANDARD_CHECKED_AT,
@@ -206,9 +210,8 @@ class IBOptionReads:
             observed = now_wire()
             if request.cursor is not None:
                 page = self._option_pages.get(request.cursor)
-                check(page is not None and page.query == query and timestamp(observed) < page.expires_at,
-                      "Invalid or expired IB catalog cursor")
-                _, under_id, expiries, strikes, pending, unresolved, _ = page
+                check(page is not None and page[0] == query and timestamp(observed) < page[4], "Invalid or expired IB catalog cursor")
+                _, under_id, candidates, offset, _, unresolved = page
             else:
                 under_id = await self._underlying(ib, request.underlying)
                 chains = await asyncio.wait_for(ib.reqSecDefOptParamsAsync(request.underlying, "", "STK", under_id),
@@ -219,67 +222,54 @@ class IBOptionReads:
                           and chain.tradingClass == request.underlying and str(chain.multiplier) == "100"]
                 check(len(chains) == 1, "Standard SMART option parameters must be unique")
                 chain = chains[0]
-                expiries = tuple(sorted(expiry for expiry in chain.expirations if re.fullmatch(r"\d{8}", expiry)
-                                        and request.expiry_from.replace("-", "") <= expiry <= request.expiry_to.replace("-", "")))
-                lower = Decimal(request.strike_min) if request.strike_min is not None else Decimal(0)
-                upper = Decimal(request.strike_max) if request.strike_max is not None else Decimal("Infinity")
-                strikes = frozenset(strike for value in chain.strikes if (strike := Decimal(native_decimal(value))) > 0
-                                    and lower <= strike <= upper)
-                check(len(expiries) * len(strikes) * (1 if request.right else 2) <= 10000,
-                      "Narrow the IB contract query bounds")
-                pending, unresolved = (), False
-            if not pending and expiries and strikes:
-                pending, ambiguous = await self._catalog_expiry(ib, request, under_id, expiries[0], strikes)
-                expiries = expiries[1:]
-                unresolved = unresolved or ambiguous
+                expiries = sorted(expiry for expiry in chain.expirations if re.fullmatch(r"\d{8}", expiry)
+                                  and request.expiry_from.replace("-", "") <= expiry <= request.expiry_to.replace("-", ""))
+                strikes = sorted({native_decimal(strike) for strike in chain.strikes}, key=Decimal)
+                strikes = [strike for strike in strikes if Decimal(strike) > 0
+                           and (request.strike_min is None or Decimal(strike) >= Decimal(request.strike_min))
+                           and (request.strike_max is None or Decimal(strike) <= Decimal(request.strike_max))]
+                rights = (request.right,) if request.right else ("C", "P")
+                check(len(expiries) * len(strikes) * len(rights) <= 10000, "Narrow the IB contract query bounds")
+                candidates = [(expiry, strike, right) for expiry in expiries for strike in strikes for right in rights]
+                offset, unresolved = 0, False
             contracts, bindings = [], []
-            for contract, detail in pending[:request.limit]:
+            keys = [
+                OptionContractKey(request.underlying, f"{expiry[:4]}-{expiry[4:6]}-{expiry[6:]}", right,
+                                  strike, "USD", 100, "AMERICAN", "PHYSICAL", "STANDARD_100_SHARES")
+                for expiry, strike, right in candidates[offset:offset + request.limit]
+            ]
+            # Exact matches avoid IB's broad-query throttling. Bound in-flight
+            # contract requests across pages on this adapter's connection.
+            results = await asyncio.gather(*(self._catalog_details(ib, key) for key in keys), return_exceptions=True)
+            for key, details in zip(keys, results, strict=True):
+                if isinstance(details, BaseException):
+                    raise details
+                # IB's parameter cross-product includes nonexistent contracts.
+                if not details:
+                    continue
+                if len(details) != 1:
+                    unresolved = True
+                    continue
                 try:
-                    binding = self._remember_contract(bound, detail, contract)
+                    contract = contract_from_details(details[0], request.underlying, under_id)
+                    check(contract.key == key, "IB qualification changed requested economics")
+                    binding=self._remember_contract(bound, details[0], contract)
                 except BrokerContractError:
                     unresolved = True
                     continue
                 contracts.append(contract)
                 bindings.append(binding)
-            pending = pending[request.limit:]
+            offset += request.limit
             cursor = None
-            if pending or (expiries and strikes):
+            if offset < len(candidates):
                 cursor = str(uuid4())
-                self._option_pages[cursor] = CatalogCursor(query, under_id, expiries, strikes, pending,
-                                                          unresolved, timestamp(observed) + timedelta(minutes=2))
+                self._option_pages[cursor] = (query, under_id, candidates, offset,
+                                             timestamp(observed) + timedelta(minutes=2), unresolved)
                 while len(self._option_pages) > 32:
                     self._option_pages.popitem(last=False)
             return ContractPage(tuple(contracts), cursor, cursor is None and not unresolved, now_wire(), bindings=tuple(bindings))
 
         return await self._option_read(request, read)
-
-    async def _catalog_expiry(self, ib, request, under_id, expiry, strikes):
-        from ib_async import Option
-
-        # Security-definition strikes and expiries are independent sets. Ask
-        # for listed contracts for one expiry before paginating exact matches.
-        probe = Option(request.underlying, expiry, 0.0, request.right or "", "SMART",
-                       multiplier="100", currency="USD", tradingClass=request.underlying)
-        details = await asyncio.wait_for(ib.reqContractDetailsAsync(probe), self._qualification_timeout)
-        matches, duplicates = {}, set()
-        unresolved = False
-        for detail in details:
-            native = detail.contract
-            try:
-                if Decimal(native_decimal(native.strike)) not in strikes:
-                    continue
-                check(native.lastTradeDateOrContractMonth == expiry and
-                      (request.right is None or native.right == request.right), "IB returned contracts outside the query")
-                contract = contract_from_details(detail, request.underlying, under_id)
-            except BrokerContractError:
-                unresolved = True
-                continue
-            if contract.canonical_id in matches:
-                duplicates.add(contract.canonical_id)
-            matches[contract.canonical_id] = (contract, detail)
-        exact = [item for identity, item in matches.items() if identity not in duplicates]
-        exact.sort(key=lambda item: (Decimal(item[0].key.strike), item[0].key.right))
-        return tuple(exact), unresolved or bool(duplicates)
 
     async def qualify_option_contracts(self, request):
         check(type(request) is QualificationRequest, "Expected an exact option qualification request")
