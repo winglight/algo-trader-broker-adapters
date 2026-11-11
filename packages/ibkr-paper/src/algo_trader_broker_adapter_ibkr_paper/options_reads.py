@@ -120,6 +120,8 @@ class IBOptionReads:
         self._option_account_read_lock = asyncio.Lock()
         self._option_account_evidence = deque(maxlen=32)
         self._option_live_observed = None
+        self._option_bar_registry = {}
+        self._option_bar_owner_tokens = set()
 
     def bind_option_account(self, verified):
         from .settings import native_account_is_exact
@@ -132,6 +134,9 @@ class IBOptionReads:
         check(state.get("connected") and state.get("connected_since") is not None,
               "Option read requires an observed IB connection")
         if self._option_account_binding != verified or self._option_connection != state["connected_since"]:
+            for entry in self._option_bar_registry.values():
+                entry.fail(BrokerConnectionError("IB option bar binding invalidated"))
+                entry.task.cancel()
             self._option_catalog.clear()
             self._option_pages.clear()
             self._option_flex_pages.clear()
@@ -378,3 +383,17 @@ class IBOptionReads:
     async def option_calendar(self, request):
         from .options_calendar import read_calendar
         return await read_calendar(self, request)
+
+
+    async def option_bar_stream_capability(self, scope):
+        from .options_bar_stream import capability
+        return await capability(self, scope)
+
+    async def stream_option_bars(self, request):
+        from .options_bar_stream import stream
+        source = stream(self, request)
+        try:
+            async for update in source:
+                yield update
+        finally:
+            await source.aclose()

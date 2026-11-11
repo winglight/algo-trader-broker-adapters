@@ -246,3 +246,38 @@ FLEX_FEE_REVIEW, without inferring a refund from the bust. The same retained XML
 and original execution identity feed the existing fee revision chain; no new fill
 or account cash movement is created. This does not certify account-wide fee
 coverage. Field meanings: [IB Activity Flex Trades](https://www.ibkrguides.com/reportingreference/reportguide/tradesfq.htm).
+
+
+### Optional native option bar stream
+
+The optional `option_bar_stream_capability(scope)` and
+`stream_option_bars(request)` ports require the Broker SDK `options_bars`
+extension. They do not alter the required options interface or trade gates.
+Only explicit `provider_native` / `1Min` is supported: a single native
+`reqHistoricalData` request uses an empty end time and `keepUpToDate=True`, then
+receives `historicalDataUpdate` callbacks. No quote/tick aggregation, REST bar
+polling, five-second bar aggregation, feed fallback, or fabricated bar finality
+is used. Provider entitlement and current contract calendar evidence are required.
+
+Owners on the same adapter connection, connection nonce, complete verified
+scope and economically identical binding share a request. Only the qualification
+observation timestamp is excluded from the sharing key; each owner retains its
+original full binding and is validated before publication.
+The existing native one-day initialization is replayed as individual snapshot
+bars (at most the latest 2048 per binding), without another history request.
+Late owners replay the retained latest native version of each cached timestamp,
+with its original receipt time and calendar evidence. Bootstrap snapshots are
+queued before concurrent live corrections, so an older snapshot cannot follow
+and overwrite a newer callback in this stream. Replay uses a shared immutable
+view plus an owner cursor, not copied snapshot queues. Each live queue is fixed
+at 256 updates; overflow releases only that slow owner, while healthy owners
+continue. Each adapter permits at most 32 owners and each request at most 32
+bindings, with at most 32 distinct native streams per adapter. Native callback input remains separately bounded to 256. Runner
+leases own TTL/heartbeat and close their iterator on release. The last owner
+cancels the native request. Binding changes, disconnects, request errors, startup
+timeout, and bounded queue overflow fail closed without request replay. Calendar
+facts refresh only on a received bar when their date or validity changes.
+
+Verified with offline `ib_async` wrapper callbacks, not a Gateway account or
+market entitlement. This read-only extension does not certify or activate option
+trading. Reference: https://interactivebrokers.github.io/tws-api/historical_bars.html
