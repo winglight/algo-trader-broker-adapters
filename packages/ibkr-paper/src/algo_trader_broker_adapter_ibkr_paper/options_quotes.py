@@ -78,6 +78,20 @@ async def read_snapshot(ib, request, contracts, *, timeout):
                 await asyncio.wait_for(changed.wait(), remaining)
             except asyncio.TimeoutError:
                 break
+        # BBO can precede generic OI/volume callbacks. Let research hydration
+        # receive those observations within the original request deadline.
+        if request.purpose == 'RESEARCH':
+            metrics_deadline = min(deadline, asyncio.get_running_loop().time() + 1)
+            while not all('oi' in observations[id(ticker)] and 'volume' in observations[id(ticker)]
+                          for _, ticker in subscriptions):
+                remaining = metrics_deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    break
+                changed.clear()
+                try:
+                    await asyncio.wait_for(changed.wait(), remaining)
+                except asyncio.TimeoutError:
+                    break
         received, quotes, missing = now_wire(), [], []
         all_side_times = []
         for binding, (req_id, ticker) in zip(request.bindings, subscriptions):
@@ -110,6 +124,13 @@ async def read_snapshot(ib, request, contracts, *, timeout):
 def capture_observations(ticker, target, started):
     """Volume uses its tick receipt clock; last trade retains the provider clock."""
     for tick in ticker.ticks:
+        right = getattr(ticker.contract, 'right', None)
+        if tick.tickType == ({'C':27,'P':28}.get(right)) and tick.time.tzinfo is not None and tick.time >= started:
+            oi = size(tick.size)
+            if oi is not None and oi >= 0:
+                # IB reports an OI value but no business-date attribution here.
+                # Keep that date unknown instead of treating receipt as OI date.
+                target['oi'] = oi
         if tick.tickType in {8, 29, 30} and tick.time.tzinfo is not None and tick.time >= started:
             volume = size(tick.size)
             if volume is not None and volume >= 0:
@@ -135,6 +156,8 @@ def quote_from_sides(binding, ticker, sides, request, *, received=None, native_g
         quality = "STALE"
     elif ticker.marketDataType != 1:
         quality = "RESEARCH_ONLY"
+    observations = dict(observations or {})
+    oi = observations.pop('oi', None)
     return OptionQuote(binding.canonical_id, bid, ask, bs, az,
         at.isoformat().replace("+00:00", "Z"), received, "IBKR", request.feed,
-        quality, request.account, *normalized_greeks(native_greeks), None, None, native_greeks, **(observations or {}))
+        quality, request.account, *normalized_greeks(native_greeks), oi, None, native_greeks, **observations)

@@ -835,3 +835,24 @@ async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None,
         adapter.set_option_event_handler(OptionVerifiedAccount(scope, "IBKR", "DU-OPTIONS-FIXTURE"), None)
         ib.newOrderEvent -= acknowledge
         ib.client.connState = ib.client.DISCONNECTED
+
+
+@pytest.mark.parametrize('right,own,other',[('C',27,28),('P',28,27)])
+def test_native_oi_and_volume_are_forwarded_without_inventing_oi_business_date(right,own,other):
+    from types import SimpleNamespace as N
+    from algo_trader_broker_adapter_ibkr_paper.options_quotes import capture_observations,quote_from_sides
+    now=datetime.now(timezone.utc); started=now-timedelta(seconds=1)
+    ticker=N(contract=N(right=right),marketDataType=1,last=None,lastTimestamp=None,ticks=[
+        N(tickType=own,time=now,price=-1,size=123),N(tickType=other,time=now,price=-1,size=999),
+        N(tickType=8,time=now,price=-1,size=17)])
+    observations={};capture_observations(ticker,observations,started)
+    assert observations['oi']==123 and observations['volume']==17
+    from algo_trader_broker_sdk.options import OptionContractKey
+    key=OptionContractKey('SPY','2026-12-18',right,'600','USD',100,'AMERICAN','PHYSICAL','STANDARD_100_SHARES')
+    quote=quote_from_sides(N(canonical_id=option_contract_id(key)),ticker,
+        dict(bid=('1',10,now),ask=('1.1',10,now)),N(max_age_ms=5000,account='synthetic',feed='IBKR_LIVE'),observations=observations)
+    assert quote.oi==123 and quote.oi_date is None
+    assert quote.volume==17 and quote.volume_as_of==now.isoformat().replace('+00:00','Z')
+    assert observations['oi']==123,'Forwarding must not consume a retained observation'
+    ticker.ticks=[N(tickType=own,time=started-timedelta(seconds=1),price=-1,size=888)]
+    capture_observations(ticker,observations,started);assert observations['oi']==123
