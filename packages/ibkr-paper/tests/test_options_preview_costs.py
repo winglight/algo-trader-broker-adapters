@@ -157,7 +157,7 @@ async def test_reverse_close_native_rejection_is_not_turned_into_evidence(native
 @pytest.mark.asyncio
 async def test_missing_native_margin_diagnostic_preserves_currency_without_guessing(native_preview, caplog):
     adapter, request, controls, *_ = native_preview
-    controls['state'].initMarginChange = ''
+    controls['state'].initMarginChange = '1.7976931348623157e308'
     result = await adapter.preview_option_order(request)
     assert result.required_buying_power_cash is None
     assert 'IB_USD_MARGIN_UNAVAILABLE' in result.warnings
