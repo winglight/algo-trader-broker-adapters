@@ -150,8 +150,20 @@ async def test_reverse_close_native_rejection_is_not_turned_into_evidence(native
     close = replace(request, signed_limit='-1.25',
                     legs=(replace(request.legs[0], side='SELL', position_effect='CLOSE'),))
     controls['error'] = 201
-    with pytest.raises(BrokerContractError, match='one unambiguous'):
+    with pytest.raises(BrokerContractError, match='CLOSE; IB preview rejected: 201: synthetic native rejection'):
         await adapter.preview_option_order(close)
+
+
+@pytest.mark.asyncio
+async def test_missing_native_margin_diagnostic_preserves_currency_without_guessing(native_preview, caplog):
+    adapter, request, controls, *_ = native_preview
+    controls['state'].initMarginChange = ''
+    result = await adapter.preview_option_order(request)
+    assert result.required_buying_power_cash is None
+    assert 'IB_USD_MARGIN_UNAVAILABLE' in result.warnings
+    assert 'phase=OPEN initMarginChange=' in caplog.text
+    assert "('BASE', 'USD')" in caplog.text
+    assert 'DU-OPTIONS-FIXTURE' not in caplog.text
 
 
 @pytest.mark.asyncio

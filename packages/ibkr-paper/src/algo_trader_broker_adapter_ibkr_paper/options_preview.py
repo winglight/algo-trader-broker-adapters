@@ -44,7 +44,8 @@ async def preview_order(adapter, request):
                 ready.set()
             def error(req_id, code, message, *args):
                 if req_id == order.orderId:
-                    errors.append(f"IB preview rejected: {code}")
+                    detail = str(message).replace(bound.native_account_ref, '[account]')[:1000]
+                    errors.append(f"IB preview rejected: {code}: {detail}")
                     ready.set()
             await wait_transport(ib.client, request)
             connection = adapter._client.connection_state_snapshot()
@@ -63,7 +64,10 @@ async def preview_order(adapter, request):
             observed = now_wire()
             adapter._option_account_evidence.append(raw_bytes(dict(source="IB_OPTION_WHAT_IF", observed_at=observed,
                 account=values, contract=contract, order=order, observations=result, errors=errors)))
-            check(not errors and len(result) == 1, "IB preview did not return one unambiguous what-if response")
+            phase = ','.join(sorted({leg.position_effect for leg in request.legs}))
+            check(not errors and len(result) == 1,
+                  "IB preview did not return one unambiguous what-if response"
+                  + (f" ({phase}; {'; '.join(errors)})" if errors else ''))
             native_contract, native_order, state = result[0]
             check(state.get("status") not in {"Inactive", "Cancelled", "ApiCancelled", "Rejected"}
                   and not state.get("rejectReason"), "IB what-if response rejected the exact order")
@@ -102,6 +106,10 @@ async def preview_order(adapter, request):
                 margin = None
             if margin is None:
                 warnings.append("IB_USD_MARGIN_UNAVAILABLE")
+                logging.getLogger(__name__).warning(
+                    'Native option margin unavailable phase=%s initMarginChange=%s base_currency_rows=%s',
+                    phase, state.get('initMarginChange'),
+                    [(row['currency'], row['value']) for row in values['values'] if row['tag'] == 'Currency'])
             else:
                 margin = str(max(Decimal(0), Decimal(margin)))
             # Preserve actual API property names. TWS API 10.33 renamed commission
