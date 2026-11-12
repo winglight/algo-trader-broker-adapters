@@ -97,10 +97,12 @@ async def account_values(ib, account, *, timeout):
 
 
 async def base_currency_summary(ib, account, *, timeout):
-    """Read the native base-only ledger; per-currency USD cash is not proof.
+    """Read the portfolio margin's explicit native denomination.
 
-    reqAccountSummary's exact $LEDGER tag returns only base-currency rows.
-    Keep its own request/end marker and cancel the bounded subscription.
+    Account-summary InitMarginReq is the whole-portfolio initial margin, in
+    the same account basis as OrderState.initMarginChange. Per-currency USD
+    cash rows cannot establish that denomination. Keep the exact request/end
+    marker and cancel this bounded subscription.
     """
     req_id = ib.client.getReqId()
     rows, errors = [], []
@@ -108,7 +110,7 @@ async def base_currency_summary(ib, account, *, timeout):
     future = ib.wrapper.startReq(req_id)
 
     def value(received_id, received_account, tag, amount, currency):
-        if received_id != req_id or received_account != account:
+        if received_id != req_id or received_account != account or tag != 'InitMarginReq':
             return
         if len(rows) >= 1000:
             errors.append('IB base currency summary exceeded bound')
@@ -122,11 +124,11 @@ async def base_currency_summary(ib, account, *, timeout):
     ib.errorEvent += error
     try:
         with observe_callbacks(ib.wrapper, {'accountSummary': value}):
-            ib.client.reqAccountSummary(req_id, 'All', '$LEDGER')
+            ib.client.reqAccountSummary(req_id, 'All', 'InitMarginReq')
             await asyncio.wait_for(future, timeout)
             check(not errors, errors[0] if errors else 'Invalid base currency summary')
             currencies = {row['currency'] for row in rows if row['currency'] not in {'', 'BASE'}}
-            return dict(source='IB_ACCOUNT_SUMMARY_BASE_LEDGER', request_id=req_id,
+            return dict(source='IB_ACCOUNT_SUMMARY_MARGIN_CURRENCY', request_id=req_id,
                         started_at=started, completed_at=now_wire(), values=rows,
                         base_currency=next(iter(currencies)) if len(currencies) == 1 else None)
     finally:

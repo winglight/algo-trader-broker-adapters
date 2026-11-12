@@ -63,10 +63,10 @@ async def native_preview(monkeypatch):
                        minCommission=1.0, maxCommission=1.6, commissionCurrency='USD')
     controls = dict(state=state, mutate=None, error=None)
     def summary(req_id, group, tags):
-        assert group == 'All' and tags == '$LEDGER'
+        assert group == 'All' and tags == 'InitMarginReq'
         controls['summary_requested'] = True
         for currency in controls.get('summary_currencies', ['USD']):
-            ib.wrapper.accountSummary(req_id, 'DU-OPTIONS-FIXTURE', 'CashBalance', '25000', currency)
+            ib.wrapper.accountSummary(req_id, 'DU-OPTIONS-FIXTURE', 'InitMarginReq', '250', currency)
         ib.wrapper.accountSummaryEnd(req_id)
     monkeypatch.setattr(ib.client, 'reqAccountSummary', summary)
     monkeypatch.setattr(ib.client, 'cancelAccountSummary', lambda req_id: controls.update(summary_cancelled=True))
@@ -177,7 +177,7 @@ async def test_missing_native_margin_diagnostic_preserves_currency_without_guess
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('currencies,expected', [(['USD'], '250'), (['EUR'], None), ([], None), (['USD', 'EUR'], None)])
-async def test_base_marker_needs_independent_base_only_ledger_currency(native_preview, currencies, expected):
+async def test_base_marker_needs_independent_portfolio_margin_currency(native_preview, currencies, expected):
     adapter, request, controls, *_ = native_preview
     # Actual TWS shape: currency ledger rows do not identify the base currency.
     controls['currencies'] = [('USD', 'USD'), ('BASE', 'BASE')]

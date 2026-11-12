@@ -113,9 +113,10 @@ async def preview_order(adapter, request):
             if margin is None:
                 warnings.append("IB_USD_MARGIN_UNAVAILABLE")
                 logging.getLogger(__name__).warning(
-                    'Native option margin unavailable phase=%s initMarginChange=%s base_currency_rows=%s',
+                    'Native option margin unavailable phase=%s initMarginChange=%s base_currency_rows=%s summary_currencies=%s',
                     phase, state.get('initMarginChange'),
-                    [(row['currency'], row['value']) for row in values['values'] if row['tag'] == 'Currency'])
+                    [(row['currency'], row['value']) for row in values['values'] if row['tag'] == 'Currency'],
+                    None if base_summary is None else [row['currency'] for row in base_summary['values']])
             else:
                 margin = str(max(Decimal(0), Decimal(margin)))
             # Preserve actual API property names. TWS API 10.33 renamed commission
