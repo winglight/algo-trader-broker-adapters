@@ -1,6 +1,7 @@
 """Native what-if observations; never an admission or submission authority."""
 
 import asyncio
+import logging
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 
@@ -80,9 +81,16 @@ async def preview_order(adapter, request):
             if len(contracts) == 1:
                 check(native_contract["conId"] == contract.conId, "IB preview changed the qualified option")
             else:
-                check([(leg["conId"], leg["ratio"], leg["action"], leg["exchange"], leg["openClose"])
-                       for leg in native_contract["comboLegs"]] ==
-                      [(leg.conId, leg.ratio, leg.action, leg.exchange, leg.openClose) for leg in contract.comboLegs],
+                actual = [(leg["conId"], leg["ratio"], leg["action"], leg["exchange"], leg["openClose"])
+                          for leg in native_contract["comboLegs"]]
+                expected = [(leg.conId, leg.ratio, leg.action, leg.exchange, leg.openClose) for leg in contract.comboLegs]
+                # With no per-leg order prices, a BAG is an economic vector,
+                # independent of callback row order. Keep duplicates and every
+                # signed contract/route/position-effect component in the match.
+                if sorted(actual) != sorted(expected):
+                    logging.getLogger(__name__).warning('Native what-if combo mismatch actual=%s expected=%s description=%s',
+                        actual, expected, native_contract.get('comboLegsDescrip'))
+                check(sorted(actual) == sorted(expected),
                       "IB preview changed the exact combo vector")
             warnings = ["IB_INITIAL_MARGIN_CHANGE_ONLY", "INTERIM_ASSIGNMENT_FUNDING_NOT_ESTIMATED",
                         "EMERGENCY_CLOSE_FEES_NOT_INCLUDED"]

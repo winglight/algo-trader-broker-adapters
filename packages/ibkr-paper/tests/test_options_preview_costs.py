@@ -163,6 +163,46 @@ async def test_expired_request_never_issues_native_whatif(native_preview):
     assert sockets == []
 
 
+def combo_request(adapter, request):
+    detail=deepcopy(adapter._option_catalog[request.legs[0].binding.broker_contract_id][2])
+    detail.contract.strike += 5
+    detail.contract.conId += 1
+    detail.contract.localSymbol = 'SPY   '+detail.contract.lastTradeDateOrContractMonth[2:]+'C00595000'
+    contract=contract_from_details(detail,'SPY',100)
+    binding=adapter._remember_contract(adapter._option_account_binding,detail,contract)
+    return replace(request,legs=(*request.legs,OptionLegIntent('L2',binding,'SELL','OPEN',1)))
+
+
+@pytest.mark.asyncio
+async def test_combo_callback_reordering_preserves_the_exact_economic_vector(native_preview):
+    adapter,request,controls,*_=native_preview
+    request=combo_request(adapter,request)
+    controls['mutate']=lambda contract,order:contract.comboLegs.reverse()
+    preview=await adapter.preview_option_order(request)
+    preview.native_costs.require_request(request)
+    assert preview.native_costs.estimate_cash=='1.3'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mutation',['contract','ratio','side','exchange','effect','duplicate','missing'])
+async def test_combo_callback_reordering_never_hides_a_changed_economic_vector(native_preview,mutation):
+    adapter,request,controls,*_=native_preview
+    request=combo_request(adapter,request)
+    def mutate(contract,order):
+        contract.comboLegs.reverse()
+        leg=contract.comboLegs[0]
+        if mutation=='contract':leg.conId+=1
+        elif mutation=='ratio':leg.ratio+=1
+        elif mutation=='side':leg.action='BUY'
+        elif mutation=='exchange':leg.exchange='CBOE'
+        elif mutation=='effect':leg.openClose=1
+        elif mutation=='duplicate':contract.comboLegs.append(deepcopy(leg))
+        else:contract.comboLegs=[]
+    controls['mutate']=mutate
+    with pytest.raises(BrokerContractError,match='exact combo vector'):
+        await adapter.preview_option_order(request)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('both,maximum', [(False, '1.60'), (True, '1.60'), (True, '1.59')])
 async def test_native_renamed_fields_and_conflicting_aliases(native_preview, both, maximum):
