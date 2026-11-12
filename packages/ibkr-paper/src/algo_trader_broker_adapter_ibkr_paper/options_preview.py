@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from dataclasses import replace
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 
@@ -33,8 +34,8 @@ async def preview_order(adapter, request):
             contracts = []
             for leg in request.legs:
                 cached = adapter._option_catalog.get(leg.binding.broker_contract_id)
-                check(cached is not None and cached[0] == leg.binding
-                      and timedelta(0) <= datetime.now(timezone.utc) - timestamp(leg.binding.qualified_at) < timedelta(days=1),
+                check(cached is not None and replace(cached[0], qualified_at=leg.binding.qualified_at) == leg.binding
+                      and timedelta(0) <= datetime.now(timezone.utc) - timestamp(cached[0].qualified_at) < timedelta(days=1),
                       "IB preview requires current exact contract bindings")
                 contracts.append(cached[2].contract)
             contract, order = build_order(request, contracts, bound.native_account_ref,

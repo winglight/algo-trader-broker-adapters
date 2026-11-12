@@ -119,6 +119,30 @@ async def test_native_open_and_reverse_close_keep_exact_request_raw_fees(native_
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('change', ['qualification_clock', 'identity', 'expired'])
+async def test_preview_accepts_requalified_same_contract_without_rewriting_request(native_preview, change):
+    adapter, request, _, _, _, sent = native_preview
+    binding = request.legs[0].binding
+    cached = adapter._option_catalog[binding.broker_contract_id]
+    current = replace(binding, qualified_at=(datetime.now(timezone.utc)-timedelta(seconds=1)).isoformat().replace('+00:00', 'Z'))
+    if change == 'identity':
+        current = replace(current, metadata_hash='d'*64)
+    if change == 'expired':
+        current = replace(current, qualified_at=(datetime.now(timezone.utc)-timedelta(days=2)).isoformat().replace('+00:00', 'Z'))
+    adapter._option_catalog[binding.broker_contract_id] = (current, *cached[1:])
+    if change == 'qualification_clock':
+        preview = await adapter.preview_option_order(request)
+        preview.native_costs.require_request(request)
+        assert request.legs[0].binding == binding
+        assert request.legs[0].binding.qualified_at != current.qualified_at
+        assert len(sent) == 1
+    else:
+        with pytest.raises(BrokerContractError, match='current exact contract bindings'):
+            await adapter.preview_option_order(request)
+        assert not sent
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('field,value', [
     ('maxCommission', 1.7976931348623157e308), ('maxCommission', float('nan')),
     ('maxCommission', float('inf')), ('maxCommission', -1.0), ('maxCommission', 0.5),
