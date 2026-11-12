@@ -83,7 +83,9 @@ async def read_snapshot(ib, request, contracts, *, timeout):
         if request.purpose == 'RESEARCH':
             metrics_deadline = min(deadline, asyncio.get_running_loop().time() + 1)
             while not all('oi' in observations[id(ticker)] and 'volume' in observations[id(ticker)]
-                          for _, ticker in subscriptions):
+                          and all(value is not None for value in normalized_greeks(
+                              greeks.observation(req_id, binding, ticker.marketDataType))[:4])
+                          for binding, (req_id, ticker) in zip(request.bindings, subscriptions)):
                 remaining = metrics_deadline - asyncio.get_running_loop().time()
                 if remaining <= 0:
                     break

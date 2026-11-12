@@ -50,6 +50,11 @@ async def test_entry_snapshot_waits_for_later_native_greeks(monkeypatch):
     await read_flow(monkeypatch, delayed_greeks=True)
 
 
+@pytest.mark.asyncio
+async def test_research_keeps_request_until_later_greeks_after_oi_and_volume(monkeypatch):
+    await read_flow(monkeypatch, delayed_greeks=True, research_early_metrics=True)
+
+
 def flex_xml(contract, binding, *, account="DU-OPTIONS-FIXTURE", kind="Assignment", day="20261007"):
     """Synthetic locked EAE layout; not an account-certified IB statement."""
     from xml.etree.ElementTree import Element, SubElement, tostring
@@ -83,7 +88,7 @@ def flex_xml(contract, binding, *, account="DU-OPTIONS-FIXTURE", kind="Assignmen
     return tostring(root)
 
 
-async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_snapshot=None, exercise_orders=False, gate_factory=None, consume_event=None, cancel_sender=None, reconcile_reader=None, preview_reader=None, calendar_reader=None, delayed_greeks=False):
+async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_snapshot=None, exercise_orders=False, gate_factory=None, consume_event=None, cancel_sender=None, reconcile_reader=None, preview_reader=None, calendar_reader=None, delayed_greeks=False, research_early_metrics=False):
     expiry = (datetime.now(timezone.utc) + timedelta(days=30)).date()
     expiry_native, expiry_occ = expiry.strftime("%Y%m%d"), expiry.strftime("%y%m%d")
     ib = IB()
@@ -135,6 +140,9 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_sn
             ib.wrapper.marketDataType(req_id, 1)
             ib.wrapper.priceSizeTick(req_id, 1, 1.25, 5)
             ib.wrapper.priceSizeTick(req_id, 2, 1.30, 7)
+            if research_early_metrics:
+                ib.wrapper.tickSize(req_id, 27, 100)
+                ib.wrapper.tickSize(req_id, 8, 100)
             def receive_greeks():
                 ib.wrapper.tickOptionComputation(req_id, 13, 0, .25, .550000000000045, 1.275, .01, .02, .12, -.03, 590.)
                 ib.wrapper.tcpDataProcessed()
@@ -188,7 +196,7 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_sn
         # Another consumer's ticker for the same conId survives this finite read.
         native = adapter._option_catalog["1590"][2].contract
         existing = ib.wrapper.startTicker(900, native, "mktData")
-        request = SnapshotRequest(**values, bindings=bindings, feed="IBKR_LIVE", purpose="ENTRY" if delayed_greeks else "RESEARCH",
+        request = SnapshotRequest(**values, bindings=bindings, feed="IBKR_LIVE", purpose="ENTRY" if delayed_greeks and not research_early_metrics else "RESEARCH",
                                   max_age_ms=5000, max_leg_skew_ms=1000)
         cached = adapter._option_catalog['1590']
         before_midnight = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(minutes=1)
