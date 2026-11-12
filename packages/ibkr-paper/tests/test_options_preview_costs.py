@@ -126,7 +126,7 @@ async def test_preview_accepts_requalified_same_contract_without_rewriting_reque
     cached = adapter._option_catalog[binding.broker_contract_id]
     current = replace(binding, qualified_at=(datetime.now(timezone.utc)-timedelta(seconds=1)).isoformat().replace('+00:00', 'Z'))
     if change == 'identity':
-        current = replace(current, metadata_hash='d'*64)
+        current = replace(current, metadata_version='d'*64)
     if change == 'expired':
         current = replace(current, qualified_at=(datetime.now(timezone.utc)-timedelta(days=2)).isoformat().replace('+00:00', 'Z'))
     adapter._option_catalog[binding.broker_contract_id] = (current, *cached[1:])
