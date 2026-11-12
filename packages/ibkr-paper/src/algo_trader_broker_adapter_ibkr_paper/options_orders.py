@@ -2,6 +2,7 @@
 
 import asyncio
 from copy import deepcopy
+from dataclasses import replace
 from datetime import datetime, timezone
 from decimal import Decimal, localcontext
 import json
@@ -267,8 +268,8 @@ class IBOptionOrders:
             contracts = []
             for leg in request.legs:
                 cached = self._option_catalog.get(leg.binding.broker_contract_id)
-                check(cached is not None and cached[0] == leg.binding
-                      and 0 <= (datetime.now(timezone.utc) - timestamp(leg.binding.qualified_at)).total_seconds() < 30,
+                check(cached is not None and replace(cached[0], qualified_at=leg.binding.qualified_at) == leg.binding
+                      and 0 <= (datetime.now(timezone.utc) - timestamp(cached[0].qualified_at)).total_seconds() < 30,
                       "IB order requires current exact contract bindings")
                 contracts.append(cached[2].contract)
             contract, order = build_order(request, contracts, bound.native_account_ref,

@@ -290,7 +290,7 @@ class IBOptionReads:
                 key = expected.key
                 cached = next((value for value in self._option_catalog.values()
                     if value[1].canonical_id == expected.canonical_id and value[1].key == key
-                    and timedelta(0) <= now - timestamp(value[0].qualified_at) < timedelta(days=1)), None)
+                    and timedelta(0) <= now - timestamp(value[0].qualified_at) < timedelta(seconds=30)), None)
                 if cached is not None:
                     results.append(QualificationResult(expected.canonical_id, 'EXACT', cached[0], cached[1], ()))
                     continue

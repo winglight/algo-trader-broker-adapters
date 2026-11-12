@@ -193,8 +193,12 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_sn
         cached = adapter._option_catalog['1590']
         before_midnight = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(minutes=1)
         adapter._option_catalog['1590'] = (replace(cached[0], qualified_at=before_midnight.isoformat().replace('+00:00','Z')), *cached[1:])
+        previous_queries = len(queries)
         requalified = await adapter.qualify_option_contracts(QualificationRequest(**values, contracts=contracts))
-        assert requalified.results[0].binding.qualified_at == adapter._option_catalog['1590'][0].qualified_at == before_midnight.isoformat().replace('+00:00','Z')
+        assert len(queries) > previous_queries  # Actual native details, never a relabelled clock.
+        assert requalified.results[0].binding.qualified_at == adapter._option_catalog['1590'][0].qualified_at
+        assert requalified.results[0].binding.qualified_at != before_midnight.isoformat().replace('+00:00','Z')
+        assert bindings[0].qualified_at == cached[0].qualified_at  # Original request stays immutable.
         assert adapter._option_bound_contracts(request, fresh=True)[0].conId == 1590
         with pytest.raises(BrokerContractError, match='current exact native qualification'):
             adapter._option_bound_contracts(replace(request, bindings=(replace(bindings[0],metadata_version='changed'),bindings[1])))
@@ -654,7 +658,23 @@ async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None,
                     await extra_retain(payload)
                 stored.append(payload)
             gate = SubmissionGate(validate, lambda: None, retain_native=retain, option_shape=shape)
+            if not gate_factory:
+                # Account reads can acquire the same exact metadata again after a
+                # command was frozen. Current native qualification must be fresh;
+                # its original request clock must never be rewritten.
+                old_binding = replace(request.legs[0].binding, qualified_at=(datetime.now(timezone.utc)-timedelta(hours=1)).isoformat().replace('+00:00','Z'))
+                request = replace(request, legs=(replace(request.legs[0], binding=old_binding), *request.legs[1:]))
+                current_catalog = adapter._option_catalog[old_binding.broker_contract_id]
+                adapter._option_catalog[old_binding.broker_contract_id] = (replace(current_catalog[0],
+                    qualified_at=(datetime.now(timezone.utc)-timedelta(seconds=31)).isoformat().replace('+00:00','Z')), *current_catalog[1:])
+                denied = SubmissionGate(validate, lambda: None, retain_native=retain, option_shape=shape)
+                with pytest.raises(BrokerContractError, match='current exact contract bindings'):
+                    await adapter.submit_option_order_guarded(request, denied)
+                assert not denied.consumed
+                adapter._option_catalog[old_binding.broker_contract_id] = current_catalog
             result = await adapter.submit_option_order_guarded(request, gate)
+            if not gate_factory:
+                assert request.legs[0].binding.qualified_at == old_binding.qualified_at
             originals[request.client_order_id] = request
             assert gate.consumed and result.status == "ACKNOWLEDGED"
             assert result.parent_order_ref and all(leg.filled_contracts == 0 for leg in result.legs)
