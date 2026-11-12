@@ -321,7 +321,7 @@ class IBOptionReads:
             lifecycle = OptionCapability("IMPLEMENTED", ("LIFECYCLE_SOURCE_UNVERIFIED",), ())
             shapes = tuple(OptionShapeCapability(name, "NATIVE", implemented, legs, ratio, "0.01",
                 False, legs > 1, False, False) for name, (legs, ratio) in NATIVE_SHAPES.items())
-            return OptionCapabilities(bound.scope, self.adapter_id, VERSION, "ib-options-reads-9", observed,
+            return OptionCapabilities(bound.scope, self.adapter_id, VERSION, "ib-options-reads-10", observed,
                 (timestamp(observed) + timedelta(seconds=30)).isoformat().replace("+00:00", "Z"),
                 implemented, implemented, implemented, implemented, implemented, implemented, lifecycle,
                 unavailable, unavailable, implemented, implemented, (FEED, "provider_native"), shapes, default_feed=FEED,

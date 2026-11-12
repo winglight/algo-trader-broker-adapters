@@ -130,7 +130,7 @@ def capture_observations(ticker, target, started):
             if oi is not None and oi >= 0:
                 # IB reports an OI value but no business-date attribution here.
                 # Keep that date unknown instead of treating receipt as OI date.
-                target['oi'] = oi
+                target.update(oi=oi, oi_observed_at=tick.time.isoformat().replace('+00:00', 'Z'))
         if tick.tickType in {8, 29, 30} and tick.time.tzinfo is not None and tick.time >= started:
             volume = size(tick.size)
             if volume is not None and volume >= 0:
