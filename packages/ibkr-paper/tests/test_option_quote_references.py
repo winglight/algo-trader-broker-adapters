@@ -83,3 +83,23 @@ async def test_reference_replaces_missing_sides_without_refreshing_oi_clock(monk
     assert reference.bid=='1.9' and reference.ask=='2' and reference.quote_at==at.replace('+00:00','Z')
     assert reference.quality=='RESEARCH_ONLY' and reference.reference_pricing_allowed is True
     assert reference.oi==123 and reference.oi_observed_at==oi_at and quote.bid is None
+
+
+@pytest.mark.asyncio
+async def test_history_starts_alongside_full_live_observation_budget(monkeypatch):
+    import algo_trader_broker_adapter_ibkr_paper.options_quote_references as references
+    import algo_trader_broker_adapter_ibkr_paper.options_quotes as quotes
+    from tests.test_options_reads import read_flow
+    started=asyncio.Event()
+    monkeypatch.setattr(references,'closed_bindings',lambda a,r,n:{b.canonical_id for b in r.bindings})
+    async def history(*args):
+        started.set()
+        return None
+    monkeypatch.setattr(references,'last_bbo',history)
+    original=quotes.read_snapshot
+    async def live(ib,request,contracts,*,timeout):
+        await asyncio.wait_for(started.wait(),.1)
+        assert timeout > 2, 'Historical BBO must not truncate OI/Greek receive time'
+        return await original(ib,request,contracts,timeout=timeout)
+    monkeypatch.setattr(quotes,'read_snapshot',live)
+    await read_flow(monkeypatch)

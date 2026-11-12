@@ -82,21 +82,30 @@ async def last_bbo(adapter, ib, contract, deadline):
                 ib.wrapper._endReq(req_id)
 
 
-async def with_references(adapter, ib, request, contracts, snapshot, closed, deadline):
-    if request.purpose != 'RESEARCH' or not closed:
-        return snapshot
+def start_reference_reads(adapter, ib, request, contracts, closed, deadline):
     selected = [(binding, contract) for binding, contract in zip(request.bindings, contracts)
                 if binding.canonical_id in closed]
     tasks = [asyncio.create_task(last_bbo(adapter, ib, contract, deadline)) for _, contract in selected]
+    return selected, tasks
+
+
+async def cancel_reference_reads(pending):
+    for task in pending[1]:
+        if not task.done(): task.cancel()
+    await asyncio.gather(*pending[1], return_exceptions=True)
+
+
+async def with_references(adapter, ib, request, contracts, snapshot, closed, deadline, *, pending=None):
+    if request.purpose != 'RESEARCH' or not closed:
+        return snapshot
+    selected, tasks = pending or start_reference_reads(adapter, ib, request, contracts, closed, deadline)
     try:
         async with asyncio.timeout(max(0, deadline - asyncio.get_running_loop().time())):
             results = await asyncio.gather(*tasks, return_exceptions=True)
     except TimeoutError:
         results = [task.result() if task.done() and not task.cancelled() and task.exception() is None else None for task in tasks]
     finally:
-        for task in tasks:
-            if not task.done(): task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        await cancel_reference_reads((selected, tasks))
     references = {binding.canonical_id: value for (binding, _), value in zip(selected, results)
                   if value is not None and not isinstance(value, BaseException)}
     received = now_wire()

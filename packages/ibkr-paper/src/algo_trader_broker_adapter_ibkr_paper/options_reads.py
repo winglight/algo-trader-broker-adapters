@@ -346,12 +346,18 @@ class IBOptionReads:
 
         async def read(ib, bound):
             contracts = self._option_bound_contracts(request, fresh=True)
-            from .options_quote_references import closed_bindings, with_references
+            from .options_quote_references import closed_bindings, with_references, start_reference_reads, cancel_reference_reads
             closed = closed_bindings(self, request, datetime.now(timezone.utc))
             deadline = asyncio.get_running_loop().time() + self._qualification_timeout
-            live_timeout = min(2, self._qualification_timeout) if len(closed) == len(contracts) else self._qualification_timeout
-            result = await read_snapshot(ib, request, contracts, timeout=live_timeout)
-            result = await with_references(self, ib, request, contracts, result, closed, deadline)
+            # Generic OI/Greek callbacks retain their full original receive
+            # budget. Historical BBO acquisition runs alongside them rather
+            # than shortening the live read or extending the total deadline.
+            pending = start_reference_reads(self, ib, request, contracts, closed, deadline)
+            try:
+                result = await read_snapshot(ib, request, contracts, timeout=self._qualification_timeout)
+                result = await with_references(self, ib, request, contracts, result, closed, deadline, pending=pending)
+            finally:
+                await cancel_reference_reads(pending)
             if result.complete and all(quote.quality == "EXECUTABLE" for quote in result.quotes):
                 self._option_live_observed = (bound.scope, result.observed_at)
             return result
