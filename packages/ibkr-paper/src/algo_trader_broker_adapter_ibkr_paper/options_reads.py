@@ -120,6 +120,8 @@ class IBOptionReads:
         self._option_account_read_lock = asyncio.Lock()
         self._option_account_evidence = deque(maxlen=32)
         self._option_live_observed = None
+        self._option_reference_quotes = OrderedDict()
+        self._option_reference_slots = asyncio.Semaphore(8)
 
     def bind_option_account(self, verified):
         from .settings import native_account_is_exact
@@ -137,6 +139,7 @@ class IBOptionReads:
             self._option_flex_pages.clear()
             self._option_history_pages.clear()
             self._option_live_observed = None
+            self._option_reference_quotes.clear()
         self._option_account_binding = verified
         self._option_connection = state["connected_since"]
 
@@ -343,7 +346,12 @@ class IBOptionReads:
 
         async def read(ib, bound):
             contracts = self._option_bound_contracts(request, fresh=True)
-            result = await read_snapshot(ib, request, contracts, timeout=self._qualification_timeout)
+            from .options_quote_references import closed_bindings, with_references
+            closed = closed_bindings(self, request, datetime.now(timezone.utc))
+            deadline = asyncio.get_running_loop().time() + self._qualification_timeout
+            live_timeout = min(2, self._qualification_timeout) if len(closed) == len(contracts) else self._qualification_timeout
+            result = await read_snapshot(ib, request, contracts, timeout=live_timeout)
+            result = await with_references(self, ib, request, contracts, result, closed, deadline)
             if result.complete and all(quote.quality == "EXECUTABLE" for quote in result.quotes):
                 self._option_live_observed = (bound.scope, result.observed_at)
             return result
