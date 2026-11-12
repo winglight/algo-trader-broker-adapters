@@ -122,6 +122,8 @@ class IBOptionReads:
         self._option_live_observed = None
         self._option_bar_registry = {}
         self._option_bar_owner_tokens = set()
+        self._option_reference_quotes = OrderedDict()
+        self._option_reference_slots = asyncio.Semaphore(8)
 
     def bind_option_account(self, verified):
         from .settings import native_account_is_exact
@@ -142,6 +144,7 @@ class IBOptionReads:
             self._option_flex_pages.clear()
             self._option_history_pages.clear()
             self._option_live_observed = None
+            self._option_reference_quotes.clear()
         self._option_account_binding = verified
         self._option_connection = state["connected_since"]
 
@@ -326,7 +329,7 @@ class IBOptionReads:
             lifecycle = OptionCapability("IMPLEMENTED", ("LIFECYCLE_SOURCE_UNVERIFIED",), ())
             shapes = tuple(OptionShapeCapability(name, "NATIVE", implemented, legs, ratio, "0.01",
                 False, legs > 1, False, False) for name, (legs, ratio) in NATIVE_SHAPES.items())
-            return OptionCapabilities(bound.scope, self.adapter_id, VERSION, "ib-options-reads-9", observed,
+            return OptionCapabilities(bound.scope, self.adapter_id, VERSION, "ib-options-reads-10", observed,
                 (timestamp(observed) + timedelta(seconds=30)).isoformat().replace("+00:00", "Z"),
                 implemented, implemented, implemented, implemented, implemented, implemented, lifecycle,
                 unavailable, unavailable, implemented, implemented, (FEED, "provider_native"), shapes, default_feed=FEED,
@@ -348,7 +351,18 @@ class IBOptionReads:
 
         async def read(ib, bound):
             contracts = self._option_bound_contracts(request, fresh=True)
-            result = await read_snapshot(ib, request, contracts, timeout=self._qualification_timeout)
+            from .options_quote_references import closed_bindings, with_references, start_reference_reads, cancel_reference_reads
+            closed = closed_bindings(self, request, datetime.now(timezone.utc))
+            deadline = asyncio.get_running_loop().time() + self._qualification_timeout
+            # Generic OI/Greek callbacks retain their full original receive
+            # budget. Historical BBO acquisition runs alongside them rather
+            # than shortening the live read or extending the total deadline.
+            pending = start_reference_reads(self, ib, request, contracts, closed, deadline)
+            try:
+                result = await read_snapshot(ib, request, contracts, timeout=self._qualification_timeout)
+                result = await with_references(self, ib, request, contracts, result, closed, deadline, pending=pending)
+            finally:
+                await cancel_reference_reads(pending)
             if result.complete and all(quote.quality == "EXECUTABLE" for quote in result.quotes):
                 self._option_live_observed = (bound.scope, result.observed_at)
             return result

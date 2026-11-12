@@ -176,7 +176,15 @@ async def open_orders(ib, account, *, timeout):
 
 
 async def completed_orders(ib, account, *, timeout):
-    check("completedOrders" not in ib.wrapper._futures, "IB completed-order download already in progress")
+    # Drain the ordinary order collector's unnumbered download before our
+    # full-window capture. Joining mid-flight would omit earlier callbacks.
+    pending=ib.wrapper._futures.get('completedOrders')
+    if pending is not None:
+        before=asyncio.get_running_loop().time()
+        await asyncio.wait_for(asyncio.shield(pending),timeout)
+        timeout-=asyncio.get_running_loop().time()-before
+    check(timeout>0 and 'completedOrders' not in ib.wrapper._futures,
+          'IB completed-order download remains in progress')
     rows, errors = [], []
     started = now_wire()
     def order(contract, native_order, state):

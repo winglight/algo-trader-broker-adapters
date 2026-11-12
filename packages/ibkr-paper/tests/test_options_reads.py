@@ -852,6 +852,7 @@ def test_native_oi_and_volume_are_forwarded_without_inventing_oi_business_date(r
     quote=quote_from_sides(N(canonical_id=option_contract_id(key)),ticker,
         dict(bid=('1',10,now),ask=('1.1',10,now)),N(max_age_ms=5000,account='synthetic',feed='IBKR_LIVE'),observations=observations)
     assert quote.oi==123 and quote.oi_date is None
+    assert quote.oi_observed_at==now.isoformat().replace('+00:00','Z')
     assert quote.volume==17 and quote.volume_as_of==now.isoformat().replace('+00:00','Z')
     assert observations['oi']==123,'Forwarding must not consume a retained observation'
     ticker.ticks=[N(tickType=own,time=started-timedelta(seconds=1),price=-1,size=888)]
