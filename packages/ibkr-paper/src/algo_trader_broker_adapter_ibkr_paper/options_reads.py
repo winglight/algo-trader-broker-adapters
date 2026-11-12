@@ -19,7 +19,7 @@ from algo_trader_broker_sdk import BrokerConnectionError, BrokerContractError
 from algo_trader_broker_sdk.options import (
     BrokerOptionBinding, ContractPage, OptionContract, OptionContractKey, OptionContractQuery,
     OptionScope, OptionVerifiedAccount, QualificationBatch,
-    QualificationRequest, QualificationResult, SnapshotRequest, check, decimal_wire,
+    QualificationRequest, QualificationResult, SnapshotRequest, OptionExecutionRequest, check, decimal_wire,
     option_contract_id, timestamp,
 )
 from algo_trader_broker_sdk.options_capabilities import OptionCapabilities, OptionCapability, OptionShapeCapability
@@ -109,6 +109,7 @@ class IBOptionReads:
 
     def _init_option_reads(self):
         self._option_account_binding = None
+        self._option_recovery_bindings = {}
         self._option_connection = None
         self._option_catalog = OrderedDict()
         self._option_pages = OrderedDict()
@@ -135,7 +136,11 @@ class IBOptionReads:
         state = self._client.connection_state_snapshot()
         check(state.get("connected") and state.get("connected_since") is not None,
               "Option read requires an observed IB connection")
+        if (self._option_recovery_bindings.get(verified) == self._option_account_binding
+                and self._option_connection == state['connected_since']):
+            return
         if self._option_account_binding != verified or self._option_connection != state["connected_since"]:
+            self._option_recovery_bindings.clear()
             for entry in self._option_bar_registry.values():
                 entry.fail(BrokerConnectionError("IB option bar binding invalidated"))
                 entry.task.cancel()
@@ -148,10 +153,27 @@ class IBOptionReads:
         self._option_account_binding = verified
         self._option_connection = state["connected_since"]
 
-    async def _option_read(self, request, operation):
+    def register_option_recovery(self, original, current):
+        check(type(original) is OptionVerifiedAccount and type(current) is OptionVerifiedAccount
+              and original.broker == current.broker == 'IBKR'
+              and original.scope.environment == current.scope.environment == 'paper'
+              and original.native_account_ref == current.native_account_ref
+              and (original.scope.account, original.scope.profile_id, original.scope.execution_target) ==
+                  (current.scope.account, current.scope.profile_id, current.scope.execution_target)
+              and original.scope.expected_generation < current.scope.expected_generation,
+              'Recovery requires the same native IB PAPER account and a newer connection')
+        self.bind_option_account(current)
+        self._option_recovery_bindings[original] = current
+
+    async def _option_read(self, request, operation, *, physical=False):
         scope = OptionScope(**{name: getattr(request, name) for name in OptionScope.__dataclass_fields__})
         bound, connected = self._option_account_binding, self._option_connection
-        check(bound is not None and bound.scope == scope, "Option read differs from verified account scope")
+        logical = bound if bound is not None and bound.scope == scope else next(
+            (old for old, current in self._option_recovery_bindings.items()
+             if old.scope == scope and current == bound), None)
+        check(bound is not None and logical is not None, "Option read differs from verified account scope")
+        if physical and logical != bound and isinstance(request, OptionExecutionRequest):
+            check(all(leg.position_effect == 'CLOSE' for leg in request.legs), 'Recovered IB scope is reduce-only')
 
         def current(ib):
             state = self._client.connection_state_snapshot()
@@ -162,7 +184,7 @@ class IBOptionReads:
 
         async def read(ib):
             current(ib)
-            result = await operation(ib, bound)
+            result = await operation(ib, bound if physical else logical)
             current(ib)
             return result
 

@@ -566,9 +566,12 @@ async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None,
         native.permId = 20000 + native.orderId
         if trade.contract.secType in {"OPT", "BAG"}:
             native.openClose = ""  # Actual retail option callback omits this institutional field.
-        native_orders[native.orderId] = [deepcopy(trade.contract), native, OrderState(status="Submitted")]
+        returned_contract = deepcopy(trade.contract)
+        if returned_contract.secType == 'BAG':
+            returned_contract.comboLegs.reverse()  # Native callback row order is not economic leg identity.
+        native_orders[native.orderId] = [returned_contract, native, OrderState(status="Submitted")]
         asyncio.get_running_loop().call_soon(ib.wrapper.openOrder, native.orderId,
-            deepcopy(trade.contract), native, OrderState(status="Submitted"))
+            returned_contract, native, OrderState(status="Submitted"))
 
     native_place = ib.client.placeOrder
     def place(order_id, contract, order):

@@ -2,6 +2,7 @@
 
 import asyncio
 from copy import deepcopy
+from collections import Counter
 from dataclasses import replace
 from datetime import datetime, timezone
 from decimal import Decimal, localcontext
@@ -191,7 +192,7 @@ class IBOptionOrders:
             # Only subsequent broker callbacks may establish cancellation.
             ib.client.cancelOrder(order_id, "")
             return OptionCancelAcknowledgement(request.command_id, request.parent_order_ref, "REQUESTED", now_wire())
-        return await self._option_read(request, cancel)
+        return await self._option_read(request, cancel, physical=True)
 
     def set_option_event_handler(self, context, handler):
         check(type(context) is OptionVerifiedAccount, "IB option events need a verified scope")
@@ -228,7 +229,10 @@ class IBOptionOrders:
             prepared = json.loads(raw["preparation"])
             request = option_from_payload(OptionExecutionRequest, prepared["request"])
             scope = OptionScope(**{name: getattr(request, name) for name in OptionScope.__dataclass_fields__})
-            check(scope == event.scope and prepared["request_fingerprint"] == order_fingerprint(request),
+            recovered = any(old.scope == scope and current.scope == event.scope
+                and self._option_account_binding == current
+                for old, current in self._option_recovery_bindings.items())
+            check((scope == event.scope or recovered) and prepared["request_fingerprint"] == order_fingerprint(request),
                   "IB retained submission changed its observed scope or command")
             state = acknowledgement(request, SimpleNamespace(**prepared["order"]), raw["observations"])
             check(state.parent_order_ref is not None and state.status != "SUBMISSION_UNKNOWN", "IB native acknowledgement is unresolved")
@@ -326,7 +330,7 @@ class IBOptionOrders:
                         preparation=prepared.decode(), observations=records, observed_at=now_wire())), request.client_order_id))
             return acknowledgement(request, order, records)
 
-        return await self._option_read(request, send)
+        return await self._option_read(request, send, physical=True)
 
 
 def matches_open_close(returned, prepared):
@@ -356,8 +360,8 @@ def acknowledgement(request, prepared_order, records):
             check(contract["secType"] == "OPT" and str(contract["conId"]) == request.legs[0].binding.broker_contract_id,
                   "IB acknowledgement changed its option contract")
         else:
-            check(contract["secType"] == "BAG" and [(str(leg["conId"]), leg["ratio"], leg["action"], leg["openClose"])
-                for leg in contract["comboLegs"]] == [(leg.binding.broker_contract_id, leg.ratio, leg.side, 0) for leg in request.legs],
+            check(contract["secType"] == "BAG" and Counter((str(leg["conId"]), leg["ratio"], leg["action"], leg['exchange'], leg["openClose"])
+                for leg in contract["comboLegs"]) == Counter((leg.binding.broker_contract_id, leg.ratio, leg.side, leg.binding.exchange, 0) for leg in request.legs),
                 "IB acknowledgement changed its combo vector")
         if type(order["permId"]) is int and order["permId"] > 0:
             parent = str(order["permId"])
