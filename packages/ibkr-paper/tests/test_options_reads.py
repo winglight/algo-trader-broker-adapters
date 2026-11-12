@@ -55,6 +55,11 @@ async def test_research_keeps_request_until_later_greeks_after_oi_and_volume(mon
     await read_flow(monkeypatch, delayed_greeks=True, research_early_metrics=True)
 
 
+@pytest.mark.asyncio
+async def test_account_joins_independent_position_and_funds_callbacks_after_history(monkeypatch):
+    await read_flow(monkeypatch, parallel_account_sources=True)
+
+
 def flex_xml(contract, binding, *, account="DU-OPTIONS-FIXTURE", kind="Assignment", day="20261007"):
     """Synthetic locked EAE layout; not an account-certified IB statement."""
     from xml.etree.ElementTree import Element, SubElement, tostring
@@ -88,7 +93,7 @@ def flex_xml(contract, binding, *, account="DU-OPTIONS-FIXTURE", kind="Assignmen
     return tostring(root)
 
 
-async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_snapshot=None, exercise_orders=False, gate_factory=None, consume_event=None, cancel_sender=None, reconcile_reader=None, preview_reader=None, calendar_reader=None, delayed_greeks=False, research_early_metrics=False):
+async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_snapshot=None, exercise_orders=False, gate_factory=None, consume_event=None, cancel_sender=None, reconcile_reader=None, preview_reader=None, calendar_reader=None, delayed_greeks=False, research_early_metrics=False, parallel_account_sources=False):
     expiry = (datetime.now(timezone.utc) + timedelta(days=30)).date()
     expiry_native, expiry_occ = expiry.strftime("%Y%m%d"), expiry.strftime("%y%m%d")
     ib = IB()
@@ -346,7 +351,25 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_sn
         # remote Flex data, even when the caller supplies an old report store.
         store.page = AsyncMock(side_effect=AssertionError("Current account must not read Flex"))
         store.source_statement = AsyncMock(side_effect=AssertionError("Current account must not read Flex"))
+        if parallel_account_sources:
+            from algo_trader_broker_adapter_ibkr_paper import options_account as account_module
+            native_positions, native_values = account_module.positions, account_module.account_values
+            position_started, funds_started = asyncio.Event(), asyncio.Event()
+            async def joined_positions(*args, **kwargs):
+                position_started.set()
+                await asyncio.wait_for(funds_started.wait(),1)
+                return await native_positions(*args,**kwargs)
+            async def joined_values(*args, **kwargs):
+                funds_started.set()
+                await asyncio.wait_for(position_started.wait(),1)
+                return await native_values(*args,**kwargs)
+            monkeypatch.setattr(account_module,'positions',joined_positions)
+            monkeypatch.setattr(account_module,'account_values',joined_values)
         state = await adapter.option_account_state(scope, retain_lifecycle=retain, flex_state=store)
+        if parallel_account_sources:
+            assert position_started.is_set() and funds_started.is_set()
+            monkeypatch.setattr(account_module,'positions',native_positions)
+            monkeypatch.setattr(account_module,'account_values',native_values)
         store.page.assert_not_awaited()
         store.source_statement.assert_not_awaited()
         store.page = read_statement_page

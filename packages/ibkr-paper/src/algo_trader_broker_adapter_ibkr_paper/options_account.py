@@ -157,15 +157,23 @@ async def account_state(adapter, request, *, retain_evidence=None, resolve_contr
         async with adapter._option_account_read_lock:
             # Funds/positions have separate IDs; open orders has a shared end
             # marker and is read only when no other download is in progress.
-            inventory = await positions(ib, bound.native_account_ref, timeout=adapter._qualification_timeout)
             working = await open_orders(ib, bound.native_account_ref, timeout=adapter._qualification_timeout)
             completed = await completed_orders(ib, bound.native_account_ref, timeout=adapter._qualification_timeout)
             fills = await executions(ib, bound.native_account_ref, timeout=adapter._qualification_timeout)
             from .options_account_orders import option_working_orders
             option_orders, order_reasons, order_asset_refs = await option_working_orders(
                 adapter, ib, bound, working, retain=retain)
-            # Funds follow the execution observation used to prove cash booking.
-            values = await account_values(ib, bound.native_account_ref, timeout=adapter._qualification_timeout)
+            # Both volatile sources follow execution/contract collection.
+            # Their request IDs and callback methods are independent. Join
+            # both even on failure; retain each actual callback's source time.
+            sources = await asyncio.gather(
+                positions(ib, bound.native_account_ref, timeout=adapter._qualification_timeout),
+                account_values(ib, bound.native_account_ref, timeout=adapter._qualification_timeout),
+                return_exceptions=True)
+            for source in sources:
+                if isinstance(source, BaseException):
+                    raise source
+            inventory, values = sources
         read_money, raw_bp, not_ready = money_values(values)
         base_usd = {(row["tag"], row["currency"]): row["value"] for row in values["values"]}.get(("Currency", "BASE")) == "USD"
         portfolio = {item.contract.conId: item for item in ib.portfolio(bound.native_account_ref)}
