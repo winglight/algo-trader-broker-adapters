@@ -25,9 +25,9 @@ async def test_recovery_preserves_logical_reads_physical_connection_and_reduce_o
     assert await adapter._option_read(old,scope,physical=True)==current
     key=OptionContractKey('SPY','2026-12-18','C','600','USD',100,'AMERICAN','PHYSICAL','STANDARD_100_SHARES')
     canonical=option_contract_id(key)
-    binding=BrokerOptionBinding('ibkr_paper','fixture','paper','account',canonical,'123','SPY CALL','SMART',stamp.isoformat(),'fixture')
+    binding=BrokerOptionBinding('ibkr_paper','fixture','paper','account',canonical,'123','SPY CALL','SMART',stamp.isoformat().replace('+00:00','Z'),'fixture')
     command=OptionExecutionRequest(**asdict(old),command_id='synthetic',client_order_id='synthetic',plan_hash='b'*64,
-        authorization_ref='fixture',quote_snapshot_ref='c'*64,valid_until=(stamp+timedelta(seconds=30)).isoformat(),
+        authorization_ref='fixture',quote_snapshot_ref='c'*64,valid_until=(stamp+timedelta(seconds=30)).isoformat().replace('+00:00','Z'),
         capability_revision='fixture',groups=1,order_type='LMT',signed_limit='1',tif='DAY',max_slippage='0',
         legs=(OptionLegIntent('L1',binding,'BUY','OPEN',1),))
     with pytest.raises(BrokerContractError,match='reduce-only'):

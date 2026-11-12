@@ -697,6 +697,13 @@ async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None,
                 acknowledgement(request, expected_order, [dict(kind="openOrder", order=changed,
                     contract=payload["contract"], state=dict(status="Submitted"))])
             if combo:
+                for field, value in [('ratio',2),('exchange','CBOE'),('action','SELL')]:
+                    changed_contract=deepcopy(payload['contract'])
+                    # Mutate the BUY leg so the side mutation is a real change.
+                    changed_contract['comboLegs'][1][field]=value
+                    with pytest.raises(BrokerContractError,match='combo vector'):
+                        acknowledgement(request,expected_order,[dict(kind='openOrder',order=payload['order'],
+                            contract=changed_contract,state=dict(status='Submitted'))])
                 assert [(leg["conId"], leg["ratio"], leg["action"], leg["openClose"])
                     for leg in payload["contract"]["comboLegs"]] == [(1590, 1, "SELL", 0), (1595, 1, "BUY", 0)]
             assert int.from_bytes(sockets[-1][:4], "big") == len(sockets[-1]) - 4
@@ -853,6 +860,18 @@ async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None,
             with pytest.raises(BrokerContractError, match="exceeds the native position in its reducing direction"):
                 await adapter.place_stock_order_guarded(close, denied)
             assert not denied.consumed
+        if gate_factory is None:
+            original_submission=next(event for event in evidence if event.source=='IB_OPTION_SUBMISSION')
+            next_scope=replace(scope,expected_generation=scope.expected_generation+1)
+            current_verified=OptionVerifiedAccount(next_scope,'IBKR','DU-OPTIONS-FIXTURE')
+            retained_contracts=tuple(value[1] for value in adapter._option_catalog.values())
+            adapter.register_option_recovery(OptionVerifiedAccount(scope,'IBKR','DU-OPTIONS-FIXTURE'),current_verified)
+            await adapter.qualify_option_contracts(QualificationRequest(**asdict(next_scope),contracts=retained_contracts))
+            recovered_submission=replace(original_submission,scope=next_scope)
+            decoded=await adapter.decode_option_event(recovered_submission,resolve)
+            assert decoded.scope==next_scope and not decoded.executions
+            with pytest.raises(BrokerContractError):
+                await adapter.decode_option_event(replace(original_submission,scope=replace(next_scope,expected_generation=next_scope.expected_generation+1)),resolve)
     finally:
         await adapter._option_events.flush()
         adapter.set_option_event_handler(OptionVerifiedAccount(scope, "IBKR", "DU-OPTIONS-FIXTURE"), None)
