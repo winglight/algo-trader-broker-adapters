@@ -12,7 +12,7 @@ from algo_trader_broker_sdk.options import (
 )
 
 from .options_account import signed_decimal
-from .options_account_native import account_values, observe_callbacks, raw_bytes, raw_value
+from .options_account_native import account_values, base_currency_summary, observe_callbacks, raw_bytes, raw_value
 from .options_orders import build_order, matches_open_close, wait_transport
 from .options_reads import now_wire
 
@@ -25,6 +25,11 @@ async def preview_order(adapter, request):
             values = await account_values(ib, bound.native_account_ref, timeout=adapter._qualification_timeout)
             usd = any(row["tag"] == "Currency" and row["currency"] == "BASE" and row["value"] == "USD"
                       for row in values["values"])
+            base_summary = None
+            if not usd:
+                base_summary = await base_currency_summary(ib, bound.native_account_ref,
+                    timeout=adapter._qualification_timeout)
+                usd = base_summary['base_currency'] == 'USD'
             contracts = []
             for leg in request.legs:
                 cached = adapter._option_catalog.get(leg.binding.broker_contract_id)
@@ -63,7 +68,8 @@ async def preview_order(adapter, request):
                 ib.errorEvent -= error
             observed = now_wire()
             adapter._option_account_evidence.append(raw_bytes(dict(source="IB_OPTION_WHAT_IF", observed_at=observed,
-                account=values, contract=contract, order=order, observations=result, errors=errors)))
+                account=values, base_currency_summary=base_summary,
+                contract=contract, order=order, observations=result, errors=errors)))
             phase = ','.join(sorted({leg.position_effect for leg in request.legs}))
             check(not errors and len(result) == 1,
                   "IB preview did not return one unambiguous what-if response"

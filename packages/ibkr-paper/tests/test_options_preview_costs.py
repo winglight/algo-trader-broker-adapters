@@ -53,7 +53,8 @@ async def native_preview(monkeypatch):
     monkeypatch.setattr(ib.client.conn, 'sendMsg', sockets.append)
     # Reuse the production account callback observer, with native decoded fixture fields.
     def account(req_id, account, model, ledger):
-        ib.wrapper.accountUpdateMulti(req_id, account, '', 'Currency', 'USD', 'BASE')
+        for currency, value in controls.get('currencies', [('BASE', 'USD')]):
+            ib.wrapper.accountUpdateMulti(req_id, account, '', 'Currency', value, currency)
         ib.wrapper.accountUpdateMultiEnd(req_id)
     monkeypatch.setattr(ib.client, 'reqAccountUpdatesMulti', account)
     monkeypatch.setattr(ib.client, 'cancelAccountUpdatesMulti', lambda *_: None)
@@ -61,6 +62,14 @@ async def native_preview(monkeypatch):
     state = OrderState(status='PreSubmitted', initMarginChange='250', commission=1.3,
                        minCommission=1.0, maxCommission=1.6, commissionCurrency='USD')
     controls = dict(state=state, mutate=None, error=None)
+    def summary(req_id, group, tags):
+        assert group == 'All' and tags == '$LEDGER'
+        controls['summary_requested'] = True
+        for currency in controls.get('summary_currencies', ['USD']):
+            ib.wrapper.accountSummary(req_id, 'DU-OPTIONS-FIXTURE', 'CashBalance', '25000', currency)
+        ib.wrapper.accountSummaryEnd(req_id)
+    monkeypatch.setattr(ib.client, 'reqAccountSummary', summary)
+    monkeypatch.setattr(ib.client, 'cancelAccountSummary', lambda req_id: controls.update(summary_cancelled=True))
     def place(order_id, native_contract, order):
         assert order.whatIf is True
         sent.append(deepcopy(order))
@@ -164,6 +173,22 @@ async def test_missing_native_margin_diagnostic_preserves_currency_without_guess
     assert 'phase=OPEN initMarginChange=' in caplog.text
     assert "('BASE', 'USD')" in caplog.text
     assert 'DU-OPTIONS-FIXTURE' not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('currencies,expected', [(['USD'], '250'), (['EUR'], None), ([], None), (['USD', 'EUR'], None)])
+async def test_base_marker_needs_independent_base_only_ledger_currency(native_preview, currencies, expected):
+    adapter, request, controls, *_ = native_preview
+    # Actual TWS shape: currency ledger rows do not identify the base currency.
+    controls['currencies'] = [('USD', 'USD'), ('BASE', 'BASE')]
+    controls['summary_currencies'] = currencies
+    result = await adapter.preview_option_order(request)
+    assert result.required_buying_power_cash == expected
+    assert controls['summary_requested'] and controls['summary_cancelled']
+    if expected is None:
+        assert 'IB_USD_MARGIN_UNAVAILABLE' in result.warnings
+    else:
+        assert 'IB_USD_MARGIN_UNAVAILABLE' not in result.warnings
 
 
 @pytest.mark.asyncio

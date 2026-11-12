@@ -96,6 +96,47 @@ async def account_values(ib, account, *, timeout):
             ib.wrapper._endReq(req_id)
 
 
+async def base_currency_summary(ib, account, *, timeout):
+    """Read the native base-only ledger; per-currency USD cash is not proof.
+
+    reqAccountSummary's exact $LEDGER tag returns only base-currency rows.
+    Keep its own request/end marker and cancel the bounded subscription.
+    """
+    req_id = ib.client.getReqId()
+    rows, errors = [], []
+    started = now_wire()
+    future = ib.wrapper.startReq(req_id)
+
+    def value(received_id, received_account, tag, amount, currency):
+        if received_id != req_id or received_account != account:
+            return
+        if len(rows) >= 1000:
+            errors.append('IB base currency summary exceeded bound')
+            return
+        rows.append(dict(tag=tag, value=amount, currency=currency, received_at=now_wire()))
+
+    def error(received_id, code, message, *args):
+        if received_id == req_id:
+            errors.append(f'IB base currency summary failed: {code}')
+
+    ib.errorEvent += error
+    try:
+        with observe_callbacks(ib.wrapper, {'accountSummary': value}):
+            ib.client.reqAccountSummary(req_id, 'All', '$LEDGER')
+            await asyncio.wait_for(future, timeout)
+            check(not errors, errors[0] if errors else 'Invalid base currency summary')
+            currencies = {row['currency'] for row in rows if row['currency'] not in {'', 'BASE'}}
+            return dict(source='IB_ACCOUNT_SUMMARY_BASE_LEDGER', request_id=req_id,
+                        started_at=started, completed_at=now_wire(), values=rows,
+                        base_currency=next(iter(currencies)) if len(currencies) == 1 else None)
+    finally:
+        ib.errorEvent -= error
+        try:
+            ib.client.cancelAccountSummary(req_id)
+        finally:
+            ib.wrapper._endReq(req_id)
+
+
 async def positions(ib, account, *, timeout):
     req_id = ib.client.getReqId()
     rows, errors = {}, []
