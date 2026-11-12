@@ -249,7 +249,7 @@ class IBOptionOrders:
                 # identifies a leg within its permanent parent; it is not a fill.
                 leg_ref = state.parent_order_ref if len(request.legs) == 1 else state.parent_order_ref + ":" + binding.broker_contract_id
                 legs.append(OptionNativeLeg(leg_ref, binding.canonical_id, intent.side, resolved.contract.key.multiplier))
-            return OptionNativeInterpretation(scope, state.parent_order_ref, request.client_order_id, "IBKR_PERM_ID",
+            return OptionNativeInterpretation(event.scope, state.parent_order_ref, request.client_order_id, "IBKR_PERM_ID",
                 state.status, raw["observations"][-1]["observed_at"], tuple(legs), ())
         except (ValueError, TypeError, AttributeError, KeyError) as exc:
             raise BrokerContractError("IB submission evidence remains unresolved") from exc
