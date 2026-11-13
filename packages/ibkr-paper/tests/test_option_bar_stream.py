@@ -9,8 +9,11 @@ from zoneinfo import ZoneInfo
 import pytest
 from algo_trader_broker_adapter_ibkr_paper import IBKRPaperAdapter
 from algo_trader_broker_adapter_ibkr_paper.client import IBAsyncClient
+from algo_trader_broker_adapter_ibkr_paper.exceptions import IBMarketDataError
+from algo_trader_broker_adapter_ibkr_paper.options_bar_stream import native_bar_error
 from algo_trader_broker_adapter_ibkr_paper.settings import IBGatewaySettings
 from algo_trader_broker_sdk import BrokerConnectionError, BrokerContractError
+from algo_trader_broker_sdk.errors import is_transport_failure
 from algo_trader_broker_sdk.options import BrokerOptionBinding, OptionScope, OptionVerifiedAccount
 from algo_trader_broker_sdk.options_bars import OptionBarSubscription
 from ib_async import IB, BarData, ContractDetails, Option
@@ -87,7 +90,7 @@ async def test_failure_is_terminal_not_resubscribed(native):
     a = native.adapter.stream_option_bars(native.request)
     await anext(a)
     native.ib.errorEvent.emit(native.sent[0][0], 354, 'synthetic denied', None)
-    with pytest.raises(BrokerConnectionError):
+    with pytest.raises(IBMarketDataError):
         await anext(a)
     assert len(native.sent) == len(native.canceled) == 1
 
@@ -218,7 +221,7 @@ async def test_empty_bootstrap_fails_closed(native, monkeypatch):
         native.sent.append(args)
         native.ib.wrapper.historicalDataEnd(args[0], '', '')
     monkeypatch.setattr(native.ib.client, 'reqHistoricalData', empty)
-    with pytest.raises(BrokerConnectionError, match='no bars'):
+    with pytest.raises(IBMarketDataError, match='no bars'):
         await anext(native.adapter.stream_option_bars(native.request))
     assert len(native.canceled) == 1
 
@@ -414,3 +417,63 @@ async def test_global_native_stream_limit_releases_reservation(native, monkeypat
     with pytest.raises(BrokerContractError, match='stream limit'):
         await anext(native.adapter.stream_option_bars(native.request))
     assert not native.sent and not native.adapter._option_bar_owner_tokens
+
+
+@pytest.mark.parametrize('code,message,reason,reconnect', [
+    (162, 'HMDS query returned no data: private-contract', 'NO_DATA', False),
+    (162, 'Historical Market Data Service error:No market data permissions for private',
+     'MARKET_DATA_PERMISSION', False),
+    (162, 'Historical data request pacing violation private', 'PACING_VIOLATION', False),
+    (162, 'unexpected private-account response', 'BROKER_REJECTION', False),
+    (354, 'private subscription', 'MARKET_DATA_PERMISSION', False),
+    (200, 'private contract', 'CONTRACT_UNAVAILABLE', False),
+    (10197, 'private session', 'COMPETING_SESSION', False),
+    (366, 'private reset', 'TRANSPORT_RESET', True),
+    (10182, 'private reset', 'TRANSPORT_RESET', True),
+])
+def test_native_bar_failure_is_safe_and_not_a_fake_connection_error(code, message, reason, reconnect):
+    error = native_bar_error(123, code, message)
+    assert error.code == f'OPTION_BAR_{reason}'
+    assert error.details == {'nativeCode': code, 'requestId': 123, 'reason': reason,
+                             'recovery': 'RECONNECT_STREAM' if reconnect else 'WAIT_SOURCE'}
+    assert is_transport_failure(error) is reconnect
+    assert 'private' not in str(error.to_payload())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('raise_request_errors', [False, True])
+@pytest.mark.parametrize('bootstrap', [False, True])
+async def test_162_cleans_native_request_and_fans_out_terminal_error(native, monkeypatch,
+                                                                   bootstrap, raise_request_errors):
+    native.ib.RaiseRequestErrors = raise_request_errors
+    if bootstrap:
+        def denied(*args):
+            native.sent.append(args)
+            native.ib.wrapper.error(args[0], 162, 'HMDS query returned no data: private-contract', '')
+        monkeypatch.setattr(native.ib.client, 'reqHistoricalData', denied)
+    a = native.adapter.stream_option_bars(native.request)
+    b = native.adapter.stream_option_bars(replace(native.request, owner_id='chart:test'))
+    if not bootstrap:
+        await asyncio.gather(anext(a), anext(b))
+        native.ib.wrapper.error(native.sent[0][0], 162, 'HMDS query returned no data: private-contract', '')
+    errors = await asyncio.gather(anext(a), anext(b), return_exceptions=True)
+    for error in errors:
+        assert isinstance(error, IBMarketDataError)
+        assert error.code == 'OPTION_BAR_NO_DATA'
+        assert not is_transport_failure(error)
+        assert 'private' not in str(error.to_payload())
+    assert len(native.sent) == len(native.canceled) == 1
+    assert not native.adapter._option_bar_registry
+    assert not native.adapter._option_bar_owner_tokens
+    assert not native.ib.wrapper.reqId2Subscriber
+    assert not native.ib.wrapper._futures
+
+
+@pytest.mark.asyncio
+async def test_other_requests_errors_do_not_kill_native_bars(native):
+    stream = native.adapter.stream_option_bars(native.request)
+    await anext(stream)
+    native.ib.errorEvent.emit(native.sent[0][0] + 500, 162, 'HMDS query returned no data: other')
+    native.ib.wrapper.historicalDataUpdate(native.sent[0][0], native.row(2.5))
+    assert (await anext(stream)).bar.close == '2.5'
+    await stream.aclose()

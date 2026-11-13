@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased — BUG-745 native option bar failures
+
+- Project request-scoped option bar rejections as market-data errors rather
+  than connection failures. Preserve native code, request ID and a bounded
+  reason without copying broker response text into the public error payload.
+- Distinguish explicit HMDS no-data, permissions, pacing and competing-session
+  rejections from native transport resets. Empty bootstrap remains unavailable;
+  no prices, bars, fallback feed, account permission or orders are manufactured.
+- This fixes failure classification, not the upstream cause of a rejected
+  request. VX/XAUUSD qualification and IB order error 201 require separate
+  source/configuration evidence; this change does not resolve them.
+
 ## 0.2.0
 
 - Declare the unified `supports_screener` capability and IB native Screener metadata.
