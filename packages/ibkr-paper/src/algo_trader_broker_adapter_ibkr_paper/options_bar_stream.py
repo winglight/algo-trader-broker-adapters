@@ -15,6 +15,7 @@ from algo_trader_broker_sdk.options_bars import (
 )
 from algo_trader_broker_sdk.options_calendar import OptionCalendarQuery
 
+from .exceptions import IBMarketDataError
 from .options_history import normalize
 from .options_reads import now_wire
 
@@ -22,6 +23,36 @@ SNAPSHOT_LIMIT = 2048
 MAX_BINDINGS = 32
 MAX_OWNERS = 32
 MAX_NATIVE_STREAMS = 32
+
+
+def native_bar_error(req_id, code, message):
+    """Project vendor failures without leaking broker/account response text.
+
+    In particular 162 is an HMDS rejection, not proof of a lost connection.
+    Keep the numeric evidence and a bounded reason; only the existing adapter
+    transport-reset policy may request reconnection. No feed/price fallback.
+    """
+    reason = 'BROKER_REJECTION'
+    text = str(message).lower()
+    if code == 162 and 'hmds query returned no data:' in text:
+        reason = 'NO_DATA'
+    elif code in {354, 10089, 10090, 10167, 10186} or (
+        code == 162 and 'no market data permissions' in text
+    ):
+        reason = 'MARKET_DATA_PERMISSION'
+    elif code == 162 and 'pacing violation' in text:
+        reason = 'PACING_VIOLATION'
+    elif code == 10197:
+        reason = 'COMPETING_SESSION'
+    elif code == 200:
+        reason = 'CONTRACT_UNAVAILABLE'
+    elif code in {317, 366, 1100, 1101, 1102, 10182}:
+        reason = 'TRANSPORT_RESET'
+    return IBMarketDataError(
+        f'IB native option bar error {code}: {reason}',
+        code=f'OPTION_BAR_{reason}',
+        details={'nativeCode': code, 'requestId': req_id, 'reason': reason},
+    )
 
 
 async def capability(adapter, scope):
@@ -129,7 +160,7 @@ class NativeBars:
                 self.ready.set()
         def error(req_id, code, message, *args):
             if req_id == self.req_id:
-                self.fail(BrokerConnectionError(f'IB native option bar request failed: {code}'))
+                self.fail(native_bar_error(req_id, code, message))
         def disconnected(*args):
             self.fail(BrokerConnectionError('IB native option bar connection closed'))
         self.pending = []
@@ -152,7 +183,11 @@ class NativeBars:
             # Reuse this native subscription's history for reconnect catch-up.
             # Copy before yielding so concurrent native revisions stay ordered.
             if not self.rows:
-                raise BrokerConnectionError("IB native option bar bootstrap returned no bars")
+                raise IBMarketDataError(
+                    "IB native option bar bootstrap returned no bars",
+                    code='OPTION_BAR_NO_DATA',
+                    details={'requestId': self.req_id, 'reason': 'NO_DATA'},
+                )
             initial = tuple(replace(row) for row in self.rows[-SNAPSHOT_LIMIT:])
             self.bootstrap_captured = True
             del self.rows[:-2]
