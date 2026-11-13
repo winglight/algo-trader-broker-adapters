@@ -198,17 +198,18 @@ async def interpret(event, resolve):
             check((order["clientId"], order["orderId"]) == (execution["clientId"], execution["orderId"]),
                   "IB execution changed the observed API order identity")
     if contract["secType"] == "BAG":
-        check(kind == "execDetails" and native_parent is not None
-              and native_parent["contract"]["secType"] == "BAG", "IB BAG fee/allocation requires reconciliation")
+        check(kind == "execDetails" and (native_parent is None
+              or native_parent["contract"]["secType"] == "BAG"), "IB BAG fee/allocation requires reconciliation")
         filled = Decimal(native_decimal(execution["cumQty"]))
-        total = Decimal(str(native_parent["order"]["totalQuantity"]))
+        total = Decimal(str(native_parent["order"]["totalQuantity"])) if native_parent is not None else None
         check(filled == filled.to_integral_value() and 0 < filled <= 2**53 - 1,
               "IB BAG parent quantity is unresolved")
-        # Completed-order downloads can omit totalQuantity (native default 0).
+        # Execution downloads can arrive before the parent cache is populated;
+        # completed-order downloads can omit totalQuantity (native default 0).
         # This aggregate execution only identifies the BAG parent: financial
         # quantities come from its exact OPT executions. Keep the parent link
         # without inventing FILLED/PARTIAL when its total is unavailable.
-        if total == 0:
+        if total is None or total == 0:
             return OptionNativeInterpretation(event.scope, parent, execution["orderRef"] or None,
                 "IBKR_PERM_ID", None, execution["time"], (), ())
         check(filled <= total, "IB BAG parent quantity is unresolved")
