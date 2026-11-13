@@ -4,18 +4,41 @@ import asyncio
 import logging
 from dataclasses import replace
 from datetime import datetime, timezone, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation, ROUND_CEILING, localcontext
 
 from algo_trader_broker_sdk import BrokerContractError
 from algo_trader_broker_sdk.options import (
     NativeOptionCostObservation, OptionExecutionRequest, OrderPreview, check,
-    option_request_hash, timestamp,
+    decimal_wire, option_request_hash, timestamp,
 )
 
-from .options_account import signed_decimal
 from .options_account_native import account_values, base_currency_summary, observe_callbacks, raw_bytes, raw_value
 from .options_orders import build_order, matches_open_close, wait_transport
 from .options_reads import now_wire
+
+
+def conservative_margin_cash(value):
+    """Project a finite native margin change upward onto the cash wire.
+
+    IB sends binary64 calculation tails beyond twelve decimal places. Margin
+    is a funding bound, not a contract price or tick: rounding upward cannot
+    understate a positive native change. Keep the original callback in the raw
+    evidence, reject unset/invalid/out-of-range values before clamping, and use
+    zero only for a valid nonpositive incremental change.
+    """
+    check(type(value) in (float, int, str, Decimal), "Invalid native IB margin amount")
+    try:
+        amount = Decimal(str(value))
+        check(amount.is_finite() and amount.copy_abs() < Decimal('1e53'),
+              "Native IB margin amount is unset or outside cash wire range")
+        with localcontext() as context:
+            context.prec = 80
+            bound = max(Decimal(0), amount).quantize(Decimal('0.000000000001'), rounding=ROUND_CEILING)
+        wire = format(bound, 'f').rstrip('0').rstrip('.') if bound else '0'
+        decimal_wire(wire, nonnegative=True)
+        return wire
+    except (InvalidOperation, ValueError) as exc:
+        raise BrokerContractError("Invalid native IB margin amount") from exc
 
 
 async def preview_order(adapter, request):
@@ -108,7 +131,7 @@ async def preview_order(adapter, request):
             if not native_order["openClose"]:
                 warnings.append("IB_OPEN_CLOSE_NOT_REPORTED")
             try:
-                margin = signed_decimal(state["initMarginChange"]) if usd else None
+                margin = conservative_margin_cash(state["initMarginChange"]) if usd else None
             except BrokerContractError:
                 margin = None
             if margin is None:
@@ -118,8 +141,6 @@ async def preview_order(adapter, request):
                     phase, state.get('initMarginChange'),
                     [(row['currency'], row['value']) for row in values['values'] if row['tag'] == 'Currency'],
                     None if base_summary is None else [row['currency'] for row in base_summary['values']])
-            else:
-                margin = str(max(Decimal(0), Decimal(margin)))
             # Preserve actual API property names. TWS API 10.33 renamed commission
             # fields to commissionAndFees; this does not prove a future all-in cap.
             from ib_async import __version__

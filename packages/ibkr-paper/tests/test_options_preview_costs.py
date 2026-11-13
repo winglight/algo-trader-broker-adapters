@@ -2,6 +2,7 @@
 from copy import deepcopy
 from dataclasses import asdict, make_dataclass, replace
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from itertools import count
 import json
 
@@ -197,6 +198,59 @@ async def test_missing_native_margin_diagnostic_preserves_currency_without_guess
     assert 'phase=OPEN initMarginChange=' in caplog.text
     assert "('BASE', 'USD')" in caplog.text
     assert 'DU-OPTIONS-FIXTURE' not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('native,expected', [
+    ('98.36999999999898', '98.369999999999'),
+    (98.36999999999898, '98.369999999999'),
+    ('1.0000000000000000001', '1.000000000001'),
+    ('0.0000000000001', '0.000000000001'),
+    ('999.9999999999991', '1000'),
+    ('250', '250'), ('0', '0'), ('-0.0', '0'),
+    ('-1.6300000000010186', '0'), (-1.6300000000010186, '0'),
+    ('-0.0000000000001', '0'),
+])
+async def test_valid_native_margin_tails_are_bounded_upward_without_changing_raw_or_order_prices(native_preview, native, expected):
+    adapter, request, controls, _, _, sent = native_preview
+    controls['currencies'] = [('USD', 'USD'), ('BASE', 'BASE')]
+    controls['summary_currencies'] = ['USD', 'USD']
+    controls['state'].initMarginChange = native
+    result = await adapter.preview_option_order(request)
+    assert result.required_buying_power_cash == expected
+    assert Decimal(result.required_buying_power_cash) >= max(Decimal(0), Decimal(str(native)))
+    assert 'IB_USD_MARGIN_UNAVAILABLE' not in result.warnings
+    assert sent[0].lmtPrice == 1.25
+    assert controls['state'].initMarginChange == native
+    evidence = json.loads(adapter._option_account_evidence[-1])
+    assert evidence['observations'][0][2]['initMarginChange'] == str(native)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('native', [True,
+    '1.7976931348623157e308', '-1.7976931348623157e308', '1e308', '-1e308',
+    'NaN', 'Infinity', '-Infinity', '1e53', '-1e53', '9'*53+'.9999999999991'])
+async def test_invalid_or_unset_native_margin_never_becomes_zero_or_a_funding_bound(native_preview, native):
+    adapter, request, controls, *_ = native_preview
+    controls['state'].initMarginChange = native
+    result = await adapter.preview_option_order(request)
+    assert result.required_buying_power_cash is None
+    assert 'IB_USD_MARGIN_UNAVAILABLE' in result.warnings
+
+
+@pytest.mark.parametrize('native', [None, '', 'UNSET_DOUBLE', True,
+    '1.7976931348623157e308', '-1.7976931348623157e308', '1e308', '-1e308',
+    'NaN', 'Infinity', '-Infinity', '1e53', '-1e53', '9'*53+'.9999999999991'])
+def test_margin_projection_rejects_invalid_inputs_before_zero_clamping(native):
+    from algo_trader_broker_adapter_ibkr_paper.options_preview import conservative_margin_cash
+    with pytest.raises(BrokerContractError):
+        conservative_margin_cash(native)
+
+
+def test_margin_projection_does_not_relax_exact_native_price_parser():
+    from algo_trader_broker_adapter_ibkr_paper.options_reads import native_decimal
+    with pytest.raises(BrokerContractError):
+        native_decimal('98.36999999999898')
 
 
 @pytest.mark.asyncio
