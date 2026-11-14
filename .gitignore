@@ -6,3 +6,7 @@ __pycache__/
 build/
 dist/
 *.egg-info/
+
+# Local dependencies (including symlinks) and generated task output.
+node_modules
+/output
