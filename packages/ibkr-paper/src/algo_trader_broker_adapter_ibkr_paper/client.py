@@ -2062,7 +2062,16 @@ class IBAsyncClient:
                 ignoreSize=ignore_size,
                 timeout=timeout,
             )
-            ticks = await asyncio.wait_for(request, timeout=timeout)
+            try:
+                ticks = await asyncio.wait_for(request, timeout=timeout)
+            finally:
+                # ib_async leaves a canceled historical Future in its wrapper.
+                # End only this finite read; late callbacks are then ignored.
+                wrapper = getattr(ib, 'wrapper', None)
+                if isinstance(request, asyncio.Future) and wrapper is not None:
+                    for request_id, future in list(wrapper._futures.items()):
+                        if future is request:
+                            wrapper._endReq(request_id)
             result: list[HistoricalTickBidAsk | HistoricalTickLast] = []
             for tick in ticks:
                 payload = _build_historical_tick(tick)
@@ -5094,7 +5103,22 @@ def _build_tick_by_tick(
 def _build_historical_tick(
     tick: Any,
 ) -> HistoricalTickBidAsk | HistoricalTickLast | None:
-    timestamp = _parse_ib_datetime(getattr(tick, "time", datetime.now(timezone.utc)))
+    # Historical quote provenance must come from the provider. The generic
+    # legacy date parser defaults invalid input to now and is unsuitable here.
+    value = getattr(tick, "time", None)
+    try:
+        if isinstance(value, datetime):
+            timestamp = value
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+            timestamp = datetime.fromtimestamp(value, tz=timezone.utc)
+        elif isinstance(value, str):
+            timestamp = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        else:
+            return None
+        if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+            return None
+    except (ValueError, TypeError, OverflowError, OSError):
+        return None
     if hasattr(tick, "priceBid") and hasattr(tick, "priceAsk"):
         attrib = getattr(tick, "tickAttribBidAsk", None)
         return HistoricalTickBidAsk(
