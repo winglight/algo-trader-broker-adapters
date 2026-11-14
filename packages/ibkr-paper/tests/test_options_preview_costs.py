@@ -184,8 +184,21 @@ async def test_reverse_close_native_rejection_is_not_turned_into_evidence(native
     close = replace(request, signed_limit='-1.25',
                     legs=(replace(request.legs[0], side='SELL', position_effect='CLOSE'),))
     controls['error'] = 201
-    with pytest.raises(BrokerContractError, match='CLOSE; IB preview rejected: 201: synthetic native rejection'):
+    with pytest.raises(BrokerContractError, match='CLOSE; IB preview rejected: 201: synthetic native rejection') as caught:
         await adapter.preview_option_order(close)
+    assert caught.value.details == dict(provider_id='IBKR', operation='OPTION_WHAT_IF',
+        position_effect='CLOSE', broker_error_codes=[201])
+    assert adapter._option_account_evidence  # Original native rejection remains retained.
+
+
+@pytest.mark.asyncio
+async def test_open_rejection_preserves_its_true_phase(native_preview):
+    adapter, request, controls, *_ = native_preview
+    controls['error'] = 201
+    with pytest.raises(BrokerContractError) as caught:
+        await adapter.preview_option_order(request)
+    assert caught.value.details['position_effect'] == 'OPEN'
+    assert caught.value.details['broker_error_codes'] == [201]
 
 
 @pytest.mark.asyncio

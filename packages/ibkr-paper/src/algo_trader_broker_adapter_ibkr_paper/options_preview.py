@@ -65,7 +65,7 @@ async def preview_order(adapter, request):
                 ib.client.clientId, ib.client.getReqId(), None, preview=True)
             # A preview gets its own native request ID and can never turn into
             # a live submission, including after a timeout or reconnect.
-            result, ready, errors = [], asyncio.Event(), []
+            result, ready, errors, error_codes = [], asyncio.Event(), [], []
             def opened(order_id, native_contract, native_order, state):
                 if order_id != order.orderId:
                     return
@@ -73,6 +73,7 @@ async def preview_order(adapter, request):
                 ready.set()
             def error(req_id, code, message, *args):
                 if req_id == order.orderId:
+                    error_codes.append(code if type(code) is int else None)
                     detail = str(message).replace(bound.native_account_ref, '[account]')[:1000]
                     errors.append(f"IB preview rejected: {code}: {detail}")
                     ready.set()
@@ -95,6 +96,13 @@ async def preview_order(adapter, request):
                 account=values, base_currency_summary=base_summary,
                 contract=contract, order=order, observations=result, errors=errors)))
             phase = ','.join(sorted({leg.position_effect for leg in request.legs}))
+            if errors:
+                # Typed provenance is separate from the retained native text.
+                # Consumers must never infer a financial phase from text.
+                raise BrokerContractError(
+                    f"IB preview did not return one unambiguous what-if response ({phase}; {'; '.join(errors)})",
+                    details=dict(provider_id='IBKR', operation='OPTION_WHAT_IF', position_effect=phase,
+                                 broker_error_codes=error_codes))
             check(not errors and len(result) == 1,
                   "IB preview did not return one unambiguous what-if response"
                   + (f" ({phase}; {'; '.join(errors)})" if errors else ''))
