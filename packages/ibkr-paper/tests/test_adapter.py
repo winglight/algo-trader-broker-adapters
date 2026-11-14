@@ -371,6 +371,7 @@ async def test_ibkr_paper_adapter_reconnects_once_for_transient_stream_disconnec
             return _FakeStream()
 
     client = FlakyStreamClient()
+    client.connection_state_snapshot = lambda: {"connected": False}
     adapter = IBKRPaperAdapter({}, client=client, supervisor=FakeSupervisor())
 
     stream = await adapter.stream_historical_bars(
@@ -394,6 +395,7 @@ async def test_ibkr_paper_adapter_raises_connection_error_after_reconnect_retry_
             raise ConnectionError("not connected")
 
     client = DownClient()
+    client.connection_state_snapshot = lambda: {"connected": False}
     adapter = IBKRPaperAdapter({}, client=client, supervisor=FakeSupervisor())
 
     with pytest.raises(BrokerConnectionError) as exc_info:
@@ -429,7 +431,7 @@ async def test_ibkr_paper_adapter_times_out_stalled_contract_qualification() -> 
         )
     assert exc_info.value.code == "broker_connection_error"
     assert exc_info.value.details["operation"] == "qualify_contract"
-    assert ("reconnect", "contract_qualification_timeout") in client.calls
+    assert not any(call[0] == "reconnect" for call in client.calls)
 
 
 @pytest.mark.asyncio
@@ -445,6 +447,7 @@ async def test_ibkr_paper_adapter_preserves_connection_error_when_reconnect_is_c
             raise asyncio.CancelledError()
 
     client = CancelledReconnectClient()
+    client.connection_state_snapshot = lambda: {"connected": False}
     adapter = IBKRPaperAdapter(
         {"ib_qualification_timeout": 0.01},
         client=client,

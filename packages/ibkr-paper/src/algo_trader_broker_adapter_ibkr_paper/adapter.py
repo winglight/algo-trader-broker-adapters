@@ -261,6 +261,13 @@ class IBKRPaperAdapter(IBOptionReads, IBOptionOrders):
     async def ensure_connected(self) -> None:
         await self._client.ensure_connected()
 
+    def _connection_is_healthy(self) -> bool:
+        # A market/qualification timeout is not proof that the shared socket died.
+        try:
+            return self._client.connection_state_snapshot().get("connected") is True
+        except Exception:
+            return False
+
     async def _call_with_transient_reconnect(
         self,
         operation: str,
@@ -275,7 +282,7 @@ class IBKRPaperAdapter(IBOptionReads, IBOptionOrders):
                 return await call_factory()
             except Exception as exc:
                 last_exc = exc
-                if not _is_transient_ib_disconnect(exc):
+                if not _is_transient_ib_disconnect(exc) or self._connection_is_healthy():
                     raise
                 reason = f"{operation}_ib_disconnect"
                 if attempt >= attempts - 1:
@@ -566,10 +573,11 @@ class IBKRPaperAdapter(IBOptionReads, IBOptionOrders):
     async def _raise_qualification_timeout(
         self, *, reason: str, operation: str
     ) -> None:
-        try:
-            await asyncio.wait_for(self.reconnect(reason=reason), timeout=5.0)
-        except (Exception, asyncio.CancelledError):
-            pass
+        if not self._connection_is_healthy():
+            try:
+                await asyncio.wait_for(self.reconnect(reason=reason), timeout=5.0)
+            except (Exception, asyncio.CancelledError):
+                pass
         raise BrokerConnectionError(
             f"IB contract qualification timed out during {operation}",
             details={

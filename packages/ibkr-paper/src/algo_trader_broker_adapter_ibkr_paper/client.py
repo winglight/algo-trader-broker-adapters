@@ -354,8 +354,11 @@ class IBAsyncClient:
     def connection_state_snapshot(self) -> Mapping[str, Any]:
         """Return the latest known connection telemetry."""
 
+        connected = False
+        with suppress(Exception):
+            connected = bool(self._connected.is_set() and self._ib is not None and self._ib.isConnected())
         return {
-            "connected": self._connected.is_set(),
+            "connected": connected,
             "connected_since": self._connected_since,
             "reconnect_reason": self._pending_reconnect_reason,
             "host": self._connected_host or self._settings.host,
@@ -3533,13 +3536,15 @@ class IBAsyncClient:
                     return await self._call_runner(func, ib)
                 return await self._run_in_sync_executor(func, ib)
             except ConnectionError as exc:
+                if self._ib is not ib or self.connection_state_snapshot()["connected"]:
+                    raise
                 last_exc = exc
                 LOGGER.warning(
                     "IB call failed due to connection error; scheduling reconnect (attempt %s)",
                     attempt + 1,
                 )
                 reason = f"sync_call_failure:{getattr(func, '__name__', 'sync_call')}"
-                await self._schedule_reconnect(reason=reason)
+                await self._schedule_reconnect(reason=reason, expected_ib=ib)
         assert last_exc is not None
         raise IBConnectionError("Lost connection to IB gateway") from last_exc
 
@@ -3555,6 +3560,8 @@ class IBAsyncClient:
                 # For async functions, we can call them directly since we're already in an async context
                 return await func(ib)
             except ConnectionError as exc:
+                if self._ib is not ib or self.connection_state_snapshot()["connected"]:
+                    raise
                 last_exc = exc
                 LOGGER.warning(
                     "IB async call failed; scheduling reconnect (attempt %s, error=%s)",
@@ -3562,8 +3569,10 @@ class IBAsyncClient:
                     type(exc).__name__,
                 )
                 reason = f"async_call_failure:{getattr(func, '__name__', 'async_call')}"
-                await self._schedule_reconnect(reason=reason)
+                await self._schedule_reconnect(reason=reason, expected_ib=ib)
             except asyncio.TimeoutError as exc:
+                if self._ib is not ib:
+                    raise
                 last_exc = exc
                 connected = False
                 with suppress(Exception):
@@ -3581,7 +3590,7 @@ class IBAsyncClient:
                     getattr(func, "__name__", "async_call"),
                 )
                 reason = f"async_call_timeout:{getattr(func, '__name__', 'async_call')}"
-                await self._schedule_reconnect(reason=reason)
+                await self._schedule_reconnect(reason=reason, expected_ib=ib)
         assert last_exc is not None
         raise IBConnectionError("Lost connection to IB gateway") from last_exc
 
@@ -3610,12 +3619,12 @@ class IBAsyncClient:
             if code in {1100, 1101}:
                 LOGGER.warning("IB disconnected or data lost (code %s): %s", code, msg)
                 asyncio.create_task(
-                    self._schedule_reconnect(reason=f"ib_error_{code}")
+                    self._schedule_reconnect(reason=f"ib_error_{code}", expected_ib=ib)
                 )
             elif code == _DISCONNECTED_LIVE_UPDATES_ERROR_CODE:
                 LOGGER.warning("IB live update request disconnected (code %s): %s", code, msg)
                 asyncio.create_task(
-                    self._schedule_reconnect(reason=f"ib_error_{code}")
+                    self._schedule_reconnect(reason=f"ib_error_{code}", expected_ib=ib)
                 )
             elif self._is_competing_live_session_error(code, msg):
                 LOGGER.error(
@@ -3629,7 +3638,7 @@ class IBAsyncClient:
                     connected = bool(self._connected.is_set() and ib.isConnected())
                 if not connected:
                     LOGGER.warning("IB restored notice while client remains disconnected: %s", msg)
-                    asyncio.create_task(self._schedule_reconnect(reason="ib_error_1102_disconnected"))
+                    asyncio.create_task(self._schedule_reconnect(reason="ib_error_1102_disconnected", expected_ib=ib))
                     return
                 LOGGER.info("IB connectivity restored with data maintained (code 1102): %s", msg)
                 self._notify_connection_state(
@@ -3699,9 +3708,11 @@ class IBAsyncClient:
                                 LOGGER.debug("No suitable keepalive method available on IB client")
             except Exception as exc:  # pragma: no cover - network failure
                 LOGGER.warning("IB keepalive ping failed: %r; scheduling reconnect", exc)
-                await self._schedule_reconnect(reason="keepalive_ping_failed")
+                await self._schedule_reconnect(reason="keepalive_ping_failed", expected_ib=ib)
 
-    async def _schedule_reconnect(self, *, reason: str | None = None) -> None:
+    async def _schedule_reconnect(self, *, reason: str | None = None, expected_ib: IB | None = None) -> None:
+        if expected_ib is not None and self._ib is not expected_ib:
+            return
         reconnect_reason = reason or "scheduled_reconnect"
 
         task = self._reconnect_task
@@ -3710,7 +3721,7 @@ class IBAsyncClient:
                 task = self._reconnect_task
                 if task is None or task.done():
                     task = asyncio.create_task(
-                        self._run_reconnect(reconnect_reason),
+                        self._run_reconnect(reconnect_reason, expected_ib=expected_ib),
                         name="ib_reconnect",
                     )
                     self._reconnect_task = task
@@ -3729,7 +3740,11 @@ class IBAsyncClient:
             # failures across every caller that coalesced into this task.
             LOGGER.debug("Reconnect task ended with error", exc_info=True)
 
-    async def _run_reconnect(self, reconnect_reason: str) -> None:
+    async def _run_reconnect(self, reconnect_reason: str, *, expected_ib: IB | None = None) -> None:
+        if expected_ib is not None and self._ib is not expected_ib:
+            if self._reconnect_task is asyncio.current_task():
+                self._reconnect_task = None
+            return
         self._pending_reconnect_reason = reconnect_reason
         self._notify_connection_state("reconnecting", reconnect_reason=reconnect_reason)
         LOGGER.debug(
@@ -3747,6 +3762,8 @@ class IBAsyncClient:
             if delay > 0:
                 await asyncio.sleep(delay)
 
+            if expected_ib is not None and self._ib is not expected_ib:
+                return
             if self._connected.is_set():
                 self._connected.clear()
             ib = self._ib
