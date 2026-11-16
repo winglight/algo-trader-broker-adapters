@@ -29,7 +29,7 @@ def test_vix_discovery_uses_cfe(symbol, exchange):
     assert result.contract.primaryExchange == ("SMART" if exchange == "SMART" else "")
 
 
-@pytest.mark.parametrize("exchange", ["CFE", "GLOBEX", "CME", "CBOE"])
+@pytest.mark.parametrize("exchange", ["CFE", "CBOE"])
 def test_qualified_native_identity_is_preserved(exchange):
     result = builder.IBContractFactory().build(builder.ContractParams(
         symbol="VIX", sec_type="FUT", con_id=12345, exchange=exchange,
@@ -39,6 +39,20 @@ def test_qualified_native_identity_is_preserved(exchange):
     assert result.contract.conId == 12345
     assert result.contract.exchange == exchange
     assert result.contract.localSymbol == "VXX6"
+
+
+@pytest.mark.parametrize("exchange", ["CME", "GLOBEX"])
+def test_vix_native_id_does_not_make_a_generic_futures_venue_valid(exchange):
+    result = builder.IBContractFactory().build(builder.ContractParams(
+        symbol="VIX", sec_type="FUT", con_id=857096518, exchange=exchange,
+        currency="USD", local_symbol="VXX6", trading_class="VX",
+        multiplier="1000", last_trade_date_or_contract_month="20261118",
+    ))
+    assert result.contract.exchange == "CFE"
+    assert result.contract.conId == 857096518
+    assert result.contract.localSymbol == "VXX6"
+    assert result.contract.lastTradeDateOrContractMonth == "20261118"
+    assert result.contract.multiplier == "1000"
 
 
 @pytest.mark.parametrize("symbol", ["MNQ", "ES", "CL"])

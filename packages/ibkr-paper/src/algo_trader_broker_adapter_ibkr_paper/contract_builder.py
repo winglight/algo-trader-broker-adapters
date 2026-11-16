@@ -295,12 +295,12 @@ class IBContractFactory:
                 # when the incoming exchange is blank/SMART or equals the default
                 # future exchange, and keep primaryExchange as SMART only when
                 # the user requested SMART routing.
-                fallback_candidates = {"", "SMART"}
+                fallback_candidates = {"", "SMART", "CME", "GLOBEX"}
                 # Generic futures defaults can arrive as explicit coordinates
                 # from upstream discovery. VIX is listed on CFE, not CME/GLOBEX.
-                # Keep already qualified native identities unchanged.
-                if con_id_value is None:
-                    fallback_candidates.update({"CME", "GLOBEX"})
+                # A saved conId can coexist with a stale generic venue from
+                # subscription status. It does not make CME/GLOBEX a valid VIX
+                # venue. Preserve its economics and let IB qualify it on CFE.
                 if default_future_exchange:
                     fallback_candidates.add(default_future_exchange)
                 if builder_exchange in fallback_candidates:
