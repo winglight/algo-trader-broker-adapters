@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased — BUG-867 real-time market-data rejection
+
+- Surface native IB error 354 as `broker_market_data_not_subscribed` with
+  `nativeCode=354` and `recovery=WAIT_SOURCE`, retaining the original ERROR log.
+- Give each price iterator its own native request and ticker. Rejection, close,
+  and caller cancellation release only that request, including before first read.
+- Attach error capture before sending; preserve rejection/cancellation when
+  native cancellation transport fails. Keep feeds and account permissions intact.
+- Missing market-data entitlement remains a broker/source configuration issue;
+  this fix does not subscribe to data or automatically enable delayed data.
+
 ## Unreleased — BUG-745 native option bar failures
 
 - Project request-scoped option bar rejections as market-data errors rather

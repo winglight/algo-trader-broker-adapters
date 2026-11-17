@@ -2538,148 +2538,24 @@ class IBAsyncClient:
             raise IBMarketDataError("Failed to qualify contract for real-time prices") from exc
         contract_info = _contract_to_dict(contract)
 
-        queue: asyncio.Queue[RealTimePrice] = asyncio.Queue(self._settings.market_data_queue_size)
-        ib = await self.ensure_connected()
-        loop = self._loop or asyncio.get_running_loop()
+        from .price_stream import PriceStream
 
-        LOGGER.debug(
-            "Requesting real-time price stream from IB",
-            extra={
-                "contract": contract_info,
-                "snapshot": snapshot,
-            },
-        )
-        ticker: Any | None = None
+        async def subscribe(ib: IB) -> AsyncIterator[RealTimePrice]:
+            return PriceStream(
+                ib, contract, snapshot=snapshot,
+                queue_size=self._settings.market_data_queue_size,
+                serialize=_build_realtime_price,
+                competing_error=self._is_competing_live_session_error,
+            )
+
         try:
-            ticker = await self._run_with_ib(
-                lambda client: client.reqMktData(contract, "", snapshot, False)
-            )
-        except Exception as exc:  # pragma: no cover - network failure
-            LOGGER.exception(
-                "Failed to request real-time price stream from IB",
-                extra={
-                    "contract": contract_info,
-                    "snapshot": snapshot,
-                },
-            )
+            return await self._run_with_ib_async(subscribe)
+        except IBMarketDataError:
+            raise
+        except Exception as exc:
+            LOGGER.exception("Failed to subscribe to real-time prices",
+                             extra={"contract": contract_info, "snapshot": snapshot})
             raise IBMarketDataError("Failed to subscribe to real-time prices") from exc
-
-        reference_ticker = _resolve_reference_ticker(ib, contract, ticker)
-        pending_event = getattr(ib, "pendingTickersEvent", None)
-        def handle_pending(pending: Any) -> None:
-            for candidate in _iter_tickers(pending):
-                if _tickers_match(candidate, reference_ticker):
-                    loop.call_soon_threadsafe(
-                        _queue_offer,
-                        queue,
-                        _build_realtime_price(candidate),
-                    )
-                    break
-
-        def handle_update(_ticker: Any) -> None:
-            loop.call_soon_threadsafe(
-                _queue_offer,
-                queue,
-                _build_realtime_price(_ticker),
-            )
-
-        use_pending = pending_event is not None
-        if use_pending:
-            pending_event += handle_pending  # type: ignore[attr-defined]
-        else:  # pragma: no cover - fallback when pending event unavailable
-            LOGGER.debug("pendingTickersEvent unavailable; falling back to per-ticker updates")
-            ticker.updateEvent += handle_update  # type: ignore[attr-defined]
-
-        error_event = getattr(ib, "errorEvent", None)
-        error_handler: Callable[..., None] | None = None
-        failure_future: asyncio.Future[tuple[int | None, str]] | None = None
-        target_req_id = getattr(ticker, "reqId", None)
-
-        if error_event is not None:
-            future: asyncio.Future[tuple[int | None, str]] = loop.create_future()
-
-            def _handle_error(req_id: Any, code: Any, message: Any, misc: Any) -> None:
-                if future.done():
-                    return
-                try:
-                    code_int = int(code) if code is not None else None
-                except Exception:
-                    code_int = None
-                if not self._is_competing_live_session_error(code_int, message):
-                    return
-                req_match = target_req_id is None
-                if target_req_id is not None:
-                    try:
-                        req_match = int(req_id) == target_req_id
-                    except Exception:
-                        req_match = False
-                if not req_match:
-                    return
-                future.set_result((code_int, str(message)))
-
-            try:
-                error_event += _handle_error  # type: ignore[attr-defined]
-            except Exception:
-                error_handler = None
-            else:
-                error_handler = _handle_error
-                failure_future = future
-
-        async def iterator() -> AsyncIterator[RealTimePrice]:
-            try:
-                while True:
-                    queue_task = asyncio.create_task(queue.get())
-                    pending: set[asyncio.Task[Any] | asyncio.Future[Any]] = {
-                        queue_task
-                    }
-                    if failure_future is not None:
-                        pending.add(failure_future)
-                    try:
-                        done, unfinished = await asyncio.wait(
-                            pending,
-                            return_when=asyncio.FIRST_COMPLETED,
-                        )
-                    except asyncio.CancelledError:
-                        queue_task.cancel()
-                        with suppress(asyncio.CancelledError):
-                            await queue_task
-                        raise
-                    # The error notification future belongs to the whole lease.
-                    # Only an unfinished per-tick queue read can be cancelled.
-                    if queue_task in unfinished:
-                        queue_task.cancel()
-                        with suppress(asyncio.CancelledError):
-                            await queue_task
-                    if failure_future is not None and failure_future in done:
-                        code, message = failure_future.result()
-                        raise IBMarketDataError(
-                            f"Real-time market data request rejected by IB (code {code}): {message}",
-                            code="screener_market_data_competing_session",
-                            details={"nativeCode": code, "operation": "realtime_price"},
-                        )
-                    result = next(iter(done))
-                    yield result.result()
-            finally:
-                if failure_future is not None and not failure_future.done():
-                    failure_future.cancel()
-                # Avoid augmented assignment on a free variable which causes UnboundLocalError
-                if use_pending:
-                    event = pending_event
-                    if event is not None:
-                        event -= handle_pending  # type: ignore[attr-defined]
-                else:  # pragma: no cover - fallback when pending event unavailable
-                    ticker.updateEvent -= handle_update  # type: ignore[attr-defined]
-                if error_handler is not None and error_event is not None:
-                    event = error_event
-                    with suppress(Exception):
-                        event -= error_handler  # type: ignore[attr-defined]
-                if failure_future is not None and not failure_future.done():
-                    failure_future.cancel()
-                await self._run_with_ib(
-                    lambda client: _cancel_market_data(client, ticker, contract)
-                )
-
-        return _AsyncIteratorWithReqId(iterator(), getattr(ticker, "reqId", None))
 
     async def stream_tick_by_tick_data(
         self,
