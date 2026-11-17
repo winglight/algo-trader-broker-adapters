@@ -168,8 +168,21 @@ def cached_position_contract(adapter, bound, native):
         return None
 
 
+async def fresh_account_capture(capture, ib, bound):
+    """Give downstream checks an actual current capture after cold metadata work.
+
+    Both captures keep their original archives and clocks. A second stale
+    result is returned unchanged for the caller's strict freshness rejection.
+    This never retries an order or changes the account connection.
+    """
+    result = await capture(ib, bound)
+    if datetime.now(timezone.utc)-timestamp(result.observed_at) > timedelta(seconds=1):
+        result = await capture(ib, bound)
+    return result
+
+
 async def account_state(adapter, request, *, retain_evidence=None, resolve_contract=None, flex_state=None):
-    async def read(ib, bound):
+    async def capture(ib, bound):
         # Current trading uses TWS positions/orders/executions and the durable
         # callback ledger. Do not read or download Flex here, even if retained.
         # Historical import remains a separate explicit reporting operation.
@@ -309,4 +322,6 @@ async def account_state(adapter, request, *, retain_evidence=None, resolve_contr
             tuple(sorted(set(reasons))), fees, False, fee_reasons, cash, stock_inventory,
             advisory_quality_reasons=tuple(history_reasons +
                 (["IB_POSITION_COST_UNIT_UNVERIFIED"] if any(item.raw_cost_unit == "UNKNOWN" for item in exact) else [])) or None)
+    async def read(ib,bound):
+        return await fresh_account_capture(capture,ib,bound)
     return await adapter._option_read(request, read)
