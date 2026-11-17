@@ -134,7 +134,8 @@ async def test_qualified_nonoption_bag_is_outside_option_ownership_and_metadata_
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("with_option_bag", [False, True])
-async def test_account_snapshot_keeps_all_raw_orders_and_collects_funds_after_bag_classification(monkeypatch, with_option_bag):
+@pytest.mark.parametrize("history_failure", [None, "cancelled", "timeout"])
+async def test_account_snapshot_keeps_all_raw_orders_and_collects_funds_after_bag_classification(monkeypatch, with_option_bag, history_failure):
     future_stop = order("FUT", perm_id=19200, status="PreSubmitted")
     future_stop["contract"].update(symbol="MNQ", localSymbol="MNQZ6", lastTradeDateOrContractMonth="20261218")
     future_stop["order"].update(orderId=900, parentId=899, action="BUY", totalQuantity=1,
@@ -166,6 +167,10 @@ async def test_account_snapshot_keeps_all_raw_orders_and_collects_funds_after_ba
         positions=[], started_at=now(), completed_at=now())))
     monkeypatch.setattr(options_account,"open_orders",AsyncMock(return_value=working))
     monkeypatch.setattr(options_account,"completed_orders",AsyncMock(return_value=dict(orders=[])))
+    if history_failure:
+        from algo_trader_broker_adapter_ibkr_paper.options_account_native import CompletedOrderHistoryUnavailable
+        failure = CompletedOrderHistoryUnavailable('Startup download cancelled') if history_failure == 'cancelled' else asyncio.TimeoutError()
+        monkeypatch.setattr(options_account, "completed_orders", AsyncMock(side_effect=failure))
     monkeypatch.setattr(options_account,"executions",AsyncMock(return_value=dict(executions=[])))
     monkeypatch.setattr(options_account,"account_values",values)
     async def retain_raw(raw):
@@ -182,6 +187,14 @@ async def test_account_snapshot_keeps_all_raw_orders_and_collects_funds_after_ba
     assert raw["orders"]["orders"][1] == future_stop, "A futures protective stop must remain intact, never canceled or relabeled"
     assert len(raw["open_order_asset_evidence_refs"]) == (2 if with_option_bag else 0)
     assert state.orders_complete
+    assert not state.executions_complete and not state.lifecycle_complete and not state.fees_complete
+    if history_failure:
+        assert raw['completed_orders'] is None
+        assert 'IB_COMPLETED_ORDER_HISTORY_UNAVAILABLE' in state.advisory_quality_reasons
+        assert any(value.get('source') == 'IB_COMPLETED_ORDER_HISTORY_UNAVAILABLE' for value in archived.values())
+        assert state.cash_executions == ()
+    else:
+        assert raw['completed_orders'] == {'orders': []}
 
     # The typed Account boundary must still reject the real unowned option BAG.
     from ati_shared_sdk.common.options.account_evidence import OrdersOwnershipEvidence, reconcile_account

@@ -8,9 +8,26 @@ from datetime import datetime, timezone
 import json
 from hashlib import sha256
 
+from algo_trader_broker_sdk import BrokerConnectionError
 from algo_trader_broker_sdk.options import check
 
 from .options_reads import now_wire
+
+
+class CompletedOrderHistoryUnavailable(BrokerConnectionError):
+    """A shared historical download was cancelled, not the calling task."""
+
+
+async def wait_completed_orders(future, *, timeout):
+    try:
+        return await asyncio.wait_for(asyncio.shield(future), timeout)
+    except asyncio.CancelledError as exc:
+        # connectAsync can time out its startup download and leave a cancelled
+        # Future registered until the native end marker. Do not cancel this
+        # HTTP request, erase the pending stream, or invent a completed page.
+        if asyncio.current_task().cancelling():
+            raise
+        raise CompletedOrderHistoryUnavailable("IB completed-order history download was cancelled") from exc
 
 
 def raw_value(value):
@@ -224,7 +241,7 @@ async def completed_orders(ib, account, *, timeout):
     pending=ib.wrapper._futures.get('completedOrders')
     if pending is not None:
         before=asyncio.get_running_loop().time()
-        await asyncio.wait_for(asyncio.shield(pending),timeout)
+        await wait_completed_orders(pending,timeout=timeout)
         timeout-=asyncio.get_running_loop().time()-before
     check(timeout>0 and 'completedOrders' not in ib.wrapper._futures,
           'IB completed-order download remains in progress')
@@ -242,7 +259,7 @@ async def completed_orders(ib, account, *, timeout):
         # Include manual orders in the broker's available completed-order window.
         future = ib.reqCompletedOrdersAsync(False)
         try:
-            await asyncio.wait_for(future, timeout)
+            await wait_completed_orders(future, timeout=timeout)
             check(not errors, errors[0] if errors else "Invalid completed orders")
             return dict(source="IB_COMPLETED_ORDERS", account=account, started_at=started,
                         completed_at=now_wire(), orders=rows)

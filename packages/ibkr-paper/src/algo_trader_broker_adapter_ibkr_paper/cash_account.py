@@ -13,6 +13,10 @@ from .options_reads import native_decimal
 async def collect(account, working, completed, executions, *, retain):
     orders, families = {}, {}
     for page in (working, completed):
+        if page is None:
+            # No completed-history download means no historical order proof.
+            # Exact current-order matches may still prove individual fills.
+            continue
         await retain(page)
         for row in page["orders"]:
             if row["contract"]["secType"] == "STK":

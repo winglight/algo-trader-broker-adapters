@@ -90,6 +90,13 @@ Executions retain their bounded history coverage. Current account reads never
 read or download Flex, including retained statements. Real-time order, execution
 and commission callbacks feed the durable Orders ledger. Historical lifecycle
 and fee finality remain separate facts, not ordinary order prerequisites.
+If the startup completed-order download times out and leaves a cancelled shared
+Future, account reads retain `IB_COMPLETED_ORDER_HISTORY_UNAVAILABLE` and a null
+completed-history page. They still collect current funds, positions, working
+orders and the available execution window. Missing historical orders cannot
+prove a cash execution or release a reservation. The outstanding download is
+not replaced before its native end marker, and caller cancellation still
+propagates. Historical readers that require that page retain a source failure.
 These reads do not grant option approval or enable trading.
 
 ## Guarded option submission

@@ -1881,11 +1881,12 @@ class IBAsyncClient:
                 return []
 
             try:
+                from .options_account_native import wait_completed_orders
                 pending=getattr(ib.wrapper,'_futures',{}).get('completedOrders')
                 # IB gives this stream no request ID. Reuse the existing full
                 # download instead of replacing a native account reader's
                 # Future and leaving it permanently unresolved.
-                trades = (await asyncio.wait_for(asyncio.shield(pending),timeout=4)
+                trades = (await wait_completed_orders(pending,timeout=4)
                           if pending is not None else await method(apiOnly=False))
             except TypeError:
                 try:

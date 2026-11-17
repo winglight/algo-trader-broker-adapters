@@ -15,7 +15,8 @@ from algo_trader_broker_sdk.options_account import (
     OptionAccountState, UnresolvedOptionPosition,
 )
 
-from .options_account_native import account_values, open_orders, completed_orders, executions, positions, raw_bytes, raw_value
+from .options_account_native import (CompletedOrderHistoryUnavailable, account_values, open_orders,
+    completed_orders, executions, positions, raw_bytes, raw_value)
 from .options_reads import contract_from_details, native_decimal, now_wire
 
 
@@ -146,6 +147,7 @@ async def account_state(adapter, request, *, retain_evidence=None, resolve_contr
         # callback ledger. Do not read or download Flex here, even if retained.
         # Historical import remains a separate explicit reporting operation.
         fees, fee_reasons = (), ("IB_COMMISSION_RECONCILIATION_REQUIRED",)
+        history_reasons = []
         async def retain(value):
             raw = raw_bytes(value)
             digest = sha256(raw).hexdigest()
@@ -158,7 +160,15 @@ async def account_state(adapter, request, *, retain_evidence=None, resolve_contr
             # Funds/positions have separate IDs; open orders has a shared end
             # marker and is read only when no other download is in progress.
             working = await open_orders(ib, bound.native_account_ref, timeout=adapter._qualification_timeout)
-            completed = await completed_orders(ib, bound.native_account_ref, timeout=adapter._qualification_timeout)
+            try:
+                completed = await completed_orders(ib, bound.native_account_ref, timeout=adapter._qualification_timeout)
+            except (CompletedOrderHistoryUnavailable, asyncio.TimeoutError):
+                # Completed orders only enrich historical cash proofs. Current
+                # option positions, working orders and funds have independent
+                # native reads below. Missing history is never an empty page.
+                completed = None
+                history_reasons.append("IB_COMPLETED_ORDER_HISTORY_UNAVAILABLE")
+                await retain(dict(source="IB_COMPLETED_ORDER_HISTORY_UNAVAILABLE", observed_at=now_wire()))
             fills = await executions(ib, bound.native_account_ref, timeout=adapter._qualification_timeout)
             from .options_account_orders import option_working_orders
             option_orders, order_reasons, order_asset_refs = await option_working_orders(
@@ -263,5 +273,6 @@ async def account_state(adapter, request, *, retain_evidence=None, resolve_contr
             # current Orders-owned fills and positions reconcile.
             checkpoint, tuple(exact), tuple(unresolved), tuple(refs), (), True, True, False, False,
             tuple(sorted(set(reasons))), fees, False, fee_reasons, cash, stock_inventory,
-            advisory_quality_reasons=("IB_POSITION_COST_UNIT_UNVERIFIED",) if any(item.raw_cost_unit == "UNKNOWN" for item in exact) else None)
+            advisory_quality_reasons=tuple(history_reasons +
+                (["IB_POSITION_COST_UNIT_UNVERIFIED"] if any(item.raw_cost_unit == "UNKNOWN" for item in exact) else [])) or None)
     return await adapter._option_read(request, read)

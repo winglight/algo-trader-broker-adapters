@@ -2,7 +2,9 @@ import asyncio
 
 import pytest
 from ib_async import IB
-from algo_trader_broker_adapter_ibkr_paper.options_account_native import completed_orders, open_orders
+from algo_trader_broker_adapter_ibkr_paper.options_account_native import (
+    CompletedOrderHistoryUnavailable, completed_orders, open_orders,
+)
 from algo_trader_broker_adapter_ibkr_paper.client import IBAsyncClient
 
 
@@ -61,3 +63,47 @@ async def test_ordinary_collector_does_not_replace_account_reader_request(monkey
     asyncio.get_running_loop().call_soon(ib.wrapper._endReq,'completedOrders')
     assert await client.request_completed_orders()==[]
     assert pending.done()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_startup_history_is_not_request_cancellation_or_a_complete_page(monkeypatch):
+    ib = IB()
+    pending = ib.wrapper.startReq('completedOrders')
+    pending.cancel()  # connectAsync startup timeout leaves this native identity.
+    calls = []
+    monkeypatch.setattr(ib.client, 'reqCompletedOrders', lambda *_: calls.append('new'))
+    with pytest.raises(CompletedOrderHistoryUnavailable):
+        await completed_orders(ib, 'DU_SYNTHETIC', timeout=1)
+    assert not calls
+    assert ib.wrapper._futures['completedOrders'] is pending
+    # Only the real late native end marker retires the outstanding download.
+    ib.wrapper.completedOrdersEnd()
+    monkeypatch.setattr(ib.client, 'reqCompletedOrders', lambda *_: ib.wrapper.completedOrdersEnd())
+    assert (await completed_orders(ib, 'DU_SYNTHETIC', timeout=1))['orders'] == []
+
+
+@pytest.mark.asyncio
+async def test_http_caller_cancellation_still_propagates_without_cancelling_shared_history():
+    ib = IB()
+    pending = ib.wrapper.startReq('completedOrders')
+    task = asyncio.create_task(completed_orders(ib, 'DU_SYNTHETIC', timeout=1))
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not pending.done() and ib.wrapper._futures['completedOrders'] is pending
+    ib.wrapper.completedOrdersEnd()
+
+
+@pytest.mark.asyncio
+async def test_ordinary_collector_keeps_running_after_cancelled_startup_history(monkeypatch):
+    ib = IB()
+    pending = ib.wrapper.startReq('completedOrders')
+    pending.cancel()
+    client = object.__new__(IBAsyncClient)
+    async def run(operation):
+        return await operation(ib)
+    monkeypatch.setattr(client, '_run_with_ib_async', run)
+    assert await client.request_completed_orders() == []
+    assert ib.wrapper._futures['completedOrders'] is pending
+    ib.wrapper.completedOrdersEnd()
