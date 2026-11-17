@@ -20,7 +20,7 @@ from zoneinfo import ZoneInfo
 from typing import Any, AsyncIterator, Awaitable, Callable, Iterable, Mapping, TypeVar, Generic
 
 from concurrent.futures import ThreadPoolExecutor
-from ib_async import IB
+from ib_async import IB, StartupFetch
 from ib_async.objects import ExecutionFilter
 from .logging_policy import install_native_logging, mark_expected_scanner_cancellation
 
@@ -529,12 +529,20 @@ class IBAsyncClient:
                             error_handler = None
 
                     try:
+                        startup = {}
+                        if 'fetchFields' in inspect.signature(ib.connectAsync).parameters:
+                            # Historical completed-order collection owns its
+                            # shared native channel and end marker. Startup's
+                            # short wait_for must not cancel that channel before
+                            # the durable recovery collector can observe it.
+                            startup['fetchFields'] = ~StartupFetch.ORDERS_COMPLETE
                         await ib.connectAsync(
                             host,
                             self._settings.port,
                             clientId=client_id,
                             timeout=self._settings.connect_timeout,
                             readonly=self._settings.read_only,
+                            **startup,
                         )
                     except Exception as exc:  # pragma: no cover - network failure
                         last_exc = exc

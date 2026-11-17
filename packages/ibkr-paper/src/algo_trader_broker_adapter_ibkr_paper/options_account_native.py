@@ -258,14 +258,13 @@ async def completed_orders(ib, account, *, timeout):
     with observe_callbacks(ib.wrapper, {"completedOrder": order}):
         # Include manual orders in the broker's available completed-order window.
         future = ib.reqCompletedOrdersAsync(False)
-        try:
-            await wait_completed_orders(future, timeout=timeout)
-            check(not errors, errors[0] if errors else "Invalid completed orders")
-            return dict(source="IB_COMPLETED_ORDERS", account=account, started_at=started,
-                        completed_at=now_wire(), orders=rows)
-        finally:
-            if ib.wrapper._futures.get("completedOrders") is future:
-                ib.wrapper._endReq("completedOrders")
+        # This unnumbered request has no cancel operation. Its actual native
+        # end callback owns cleanup, including after a waiter times out. An
+        # early local _endReq would let the next capture mix two downloads.
+        await wait_completed_orders(future, timeout=timeout)
+        check(not errors, errors[0] if errors else "Invalid completed orders")
+        return dict(source="IB_COMPLETED_ORDERS", account=account, started_at=started,
+                    completed_at=now_wire(), orders=rows)
 
 
 async def executions(ib, account, *, timeout):

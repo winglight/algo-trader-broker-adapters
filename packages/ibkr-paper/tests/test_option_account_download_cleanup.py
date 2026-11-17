@@ -9,8 +9,24 @@ from algo_trader_broker_adapter_ibkr_paper.client import IBAsyncClient
 
 
 @pytest.mark.asyncio
+async def test_connection_startup_preserves_other_native_reads_but_completed_channel_has_one_owner():
+    from ib_async import StartupFetch
+    from algo_trader_broker_adapter_ibkr_paper.settings import IBGatewaySettings
+    observed = []
+    class Native:
+        async def connectAsync(self, host, port, *, clientId, timeout, readonly, fetchFields):
+            observed.append(fetchFields)
+    client = IBAsyncClient(IBGatewaySettings(client_id=40))
+    native = Native()
+    client._ib_factory = lambda: native
+    await client.connect()
+    assert observed == [~StartupFetch.ORDERS_COMPLETE]
+    assert not observed[0] & StartupFetch.ORDERS_COMPLETE
+    assert all(observed[0] & flag for flag in StartupFetch if flag != StartupFetch.ORDERS_COMPLETE)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('reader,key,method',[
-    (completed_orders,'completedOrders','reqCompletedOrders'),
     (open_orders,'openOrders','reqAllOpenOrders'),
 ])
 async def test_timed_out_download_releases_its_actual_native_future_and_allows_recovery(monkeypatch,reader,key,method):
@@ -22,6 +38,22 @@ async def test_timed_out_download_releases_its_actual_native_future_and_allows_r
     monkeypatch.setattr(ib.client,method,lambda *args:ib.wrapper._endReq(key))
     result=await reader(ib,'DU_SYNTHETIC',timeout=1)
     assert result['orders']==[] and key not in ib.wrapper._futures
+
+
+@pytest.mark.asyncio
+async def test_completed_timeout_keeps_native_channel_until_real_end_before_next_capture(monkeypatch):
+    ib = IB(); calls = []
+    monkeypatch.setattr(ib.client, 'reqCompletedOrders', lambda *_: calls.append('request'))
+    with pytest.raises(asyncio.TimeoutError):
+        await completed_orders(ib, 'DU_SYNTHETIC', timeout=.001)
+    pending = ib.wrapper._futures['completedOrders']
+    assert not pending.done()
+    with pytest.raises(asyncio.TimeoutError):
+        await completed_orders(ib, 'DU_SYNTHETIC', timeout=.001)
+    assert calls == ['request'], 'No second unnumbered download can mix with the timed-out source.'
+    ib.wrapper.completedOrdersEnd()
+    monkeypatch.setattr(ib.client, 'reqCompletedOrders', lambda *_: ib.wrapper.completedOrdersEnd())
+    assert (await completed_orders(ib, 'DU_SYNTHETIC', timeout=1))['orders'] == []
 
 
 @pytest.mark.asyncio

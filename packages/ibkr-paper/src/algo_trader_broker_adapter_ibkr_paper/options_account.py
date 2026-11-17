@@ -292,6 +292,9 @@ async def account_state(adapter, request, *, retain_evidence=None, resolve_contr
         stock_inventory = make_stock_inventory('IB_POSITION_MULTI',tuple(stocks),not stock_reasons,
             tuple(sorted(set(stock_reasons))),inventory['completed_at'],inventory['completed_at'],stock_ref)
         checkpoint = await retain(dict(source="IB_ACCOUNT_SNAPSHOT", values=values, positions=inventory, orders=working,
+                                      native_scope=raw_value(bound.scope),
+                                      native_client_id=getattr(getattr(ib, 'client', None), 'clientId', None),
+                                      native_connected_at=raw_value(getattr(adapter, '_option_connection', None)),
                                       open_order_asset_evidence_refs=order_asset_refs,
                                       cost_evidence_refs=cost_refs, completed_orders=completed, executions=fills,
                                       lifecycle_refs=[], lifecycle_unresolved=[],
