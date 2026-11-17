@@ -1,7 +1,8 @@
 """Scoped native callbacks retained before ib_async mutates or deduplicates them."""
 
 import asyncio
-from collections import deque
+from collections import deque, OrderedDict
+from hashlib import sha256
 from decimal import Decimal, InvalidOperation
 import json
 import logging
@@ -31,11 +32,28 @@ def execution_revision(exec_id):
     return revision
 
 
+def callback_identity(kind, payload):
+    if kind in {'execDetails', 'commissionReport'}:
+        native = payload.get('execution' if kind == 'execDetails' else 'report')
+        identity = native.get('execId') if isinstance(native, dict) else None
+        return (kind, identity) if isinstance(identity, str) and identity else None
+    if kind in {'openOrder', 'completedOrder', 'orderStatus'}:
+        native = payload.get('state' if kind == 'orderStatus' else 'order')
+        if isinstance(native, dict):
+            if type(native.get('permId')) is int and native['permId'] > 0:
+                return kind, native['permId']
+            client, order = native.get('clientId'), native.get('orderId')
+            if type(client) is int and client >= 0 and type(order) is int and order > 0:
+                return kind, client, order
+    return None
+
+
 class IBOptionEventStream:
     def __init__(self, ib, bound, handler):
         self.ib, self.bound, self.handler = ib, bound, handler
         self.pending, self.task, self.failure = deque(), None, None
         self.executions = {}
+        self._last_callbacks = OrderedDict()
         self.closed = False
         def observe(callback):
             def captured(*args):
@@ -54,9 +72,30 @@ class IBOptionEventStream:
         if self.closed:
             return
         try:
+            native = raw_value(payload)
+            identity = callback_identity(kind, native)
+            if identity is not None:
+                # Account downloads replay completed orders/executions. Their
+                # transport request ID and our receive clock are not new
+                # financial facts. Keep the original full first frame; only
+                # consecutive identical payloads for this native identity are
+                # coalesced. Corrections, reversals and richer parents remain
+                # new observations, and a new connection starts an empty cache.
+                comparable = dict(native)
+                if kind == 'execDetails':
+                    comparable.pop('request_id', None)
+                fingerprint = sha256(raw_bytes(comparable)).digest()
+                previous = self._last_callbacks.get(identity)
+                if previous == fingerprint:
+                    self._last_callbacks.move_to_end(identity)
+                    return
+                self._last_callbacks[identity] = fingerprint
+                self._last_callbacks.move_to_end(identity)
+                if len(self._last_callbacks) > 2048:
+                    self._last_callbacks.popitem(last=False)
             # Serialize before the original wrapper may mutate the same objects.
             raw = raw_bytes(dict(kind=kind, native_account_ref=self.bound.native_account_ref,
-                                 observed_at=now_wire(), **payload))
+                                 observed_at=now_wire(), **native))
             native_id = payload.get("execution", {}).get("execId") if isinstance(payload.get("execution"), dict) else None
             self.pending.append(OptionRawEvent(self.bound.scope, SOURCE, raw, native_id, delivery='PUSH'))
             if self.failure is None and (self.task is None or self.task.done()):

@@ -840,9 +840,10 @@ async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None,
             assert fact.session_key == "IBKR_PERM_ID"
             fills.extend(fact.executions)
             fees.extend(fact.fees)
-        # Both reconciliation and the independent Account download replay the
-        # same native versions; the unique financial identities remain four.
-        assert len(fills) == len(fees) == 12
+        # Identical download callbacks are coalesced; observations that enrich
+        # the parent after cache recovery still remain. No financial version
+        # is removed: the same four native identities and quantities survive.
+        assert len(fills) == len(fees) == 8
         unique = {fill.execution_id: fill for fill in fills}
         assert len(unique) == 4 and [fill.price for fill in unique.values()] == ["1.25", "1.25", "2.25", "1.24"]
         assert [fill.contracts for fill in unique.values()] == [2, 1, 1, 2]
