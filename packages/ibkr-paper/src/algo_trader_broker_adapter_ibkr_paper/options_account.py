@@ -2,7 +2,7 @@
 
 import asyncio
 from collections.abc import Mapping
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, localcontext
 from hashlib import sha256
 from uuid import uuid4
@@ -141,6 +141,31 @@ async def permissions(adapter, request):
     return await adapter._option_read(request, read)
 
 
+def cached_position_contract(adapter, bound, native):
+    """Reuse only fresh static metadata; never positions, funds or clocks."""
+    cached = adapter._option_catalog.get(str(native['conId']))
+    if cached is None:
+        return None
+    binding, contract, detail = cached
+    try:
+        check(getattr(adapter, '_option_account_binding', None) == bound
+              and binding.adapter_id == adapter.adapter_id
+              and binding.account_scope == bound.scope.account
+              and binding.environment == bound.scope.environment
+              and binding.broker_contract_id == str(native['conId'])
+              and timedelta(0) <= datetime.now(timezone.utc)-timestamp(binding.qualified_at) < timedelta(seconds=30),
+              'Position metadata is outside the current native binding')
+        c = detail.contract
+        check(all(str(native[name]) == str(getattr(c, name)) for name in (
+            'conId', 'secType', 'symbol', 'localSymbol', 'currency', 'right', 'lastTradeDateOrContractMonth'))
+              and native_decimal(native['strike']) == native_decimal(c.strike)
+              and native_decimal(native['multiplier']) == native_decimal(c.multiplier),
+              'Current position differs from cached contract economics')
+        return cached
+    except (BrokerContractError, KeyError, ValueError, TypeError):
+        return None
+
+
 async def account_state(adapter, request, *, retain_evidence=None, resolve_contract=None, flex_state=None):
     async def read(ib, bound):
         # Current trading uses TWS positions/orders/executions and the durable
@@ -221,13 +246,18 @@ async def account_state(adapter, request, *, retain_evidence=None, resolve_contr
                 from ib_async import Contract
                 check(asset == "OPT" and type(con_id) is int and con_id > 0, "Unsupported option position")
                 symbol = native["symbol"]
-                if symbol not in underlyings:
-                    underlyings[symbol] = await adapter._underlying(ib, symbol)
-                details = await asyncio.wait_for(ib.reqContractDetailsAsync(Contract(conId=con_id, exchange="SMART")),
-                                                 adapter._qualification_timeout)
-                check(len(details) == 1 and details[0].contract.conId == con_id, "Position contract did not qualify uniquely")
-                detail = details[0]
-                contract = contract_from_details(detail, symbol, underlyings[symbol])
+                cached = cached_position_contract(adapter, bound, native)
+                if cached is not None:
+                    binding, contract, detail = cached
+                else:
+                    if symbol not in underlyings:
+                        underlyings[symbol] = await adapter._underlying(ib, symbol)
+                    details = await asyncio.wait_for(ib.reqContractDetailsAsync(Contract(conId=con_id, exchange="SMART")),
+                                                     adapter._qualification_timeout)
+                    check(len(details) == 1 and details[0].contract.conId == con_id, "Position contract did not qualify uniquely")
+                    detail = details[0]
+                    contract = contract_from_details(detail, symbol, underlyings[symbol])
+                    binding = adapter._remember_contract(bound, detail, contract)
                 check(native["localSymbol"] == detail.contract.localSymbol
                       and native["currency"] == contract.key.currency
                       and native_decimal(native["multiplier"]) == "100"
@@ -237,7 +267,6 @@ async def account_state(adapter, request, *, retain_evidence=None, resolve_contr
                       "Position callback differs from qualified economics")
                 number = decimal_wire(quantity)
                 check(number == number.to_integral_value(), "Option inventory must be whole contracts")
-                binding = adapter._remember_contract(bound, detail, contract)
                 cost, unit, proof = position_cost(row, portfolio.get(con_id), bound.native_account_ref, base_usd=base_usd)
                 if proof is not None:
                     raw_ref = await retain(proof)

@@ -60,6 +60,12 @@ async def test_account_joins_independent_position_and_funds_callbacks_after_hist
     await read_flow(monkeypatch, parallel_account_sources=True)
 
 
+@pytest.mark.asyncio
+async def test_account_uses_existing_static_qualification_without_renewing_its_clock(monkeypatch):
+    async with asyncio.timeout(5):
+        await read_flow(monkeypatch, cached_position_metadata=True)
+
+
 def flex_xml(contract, binding, *, account="DU-OPTIONS-FIXTURE", kind="Assignment", day="20261007"):
     """Synthetic locked EAE layout; not an account-certified IB statement."""
     from xml.etree.ElementTree import Element, SubElement, tostring
@@ -93,7 +99,7 @@ def flex_xml(contract, binding, *, account="DU-OPTIONS-FIXTURE", kind="Assignmen
     return tostring(root)
 
 
-async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_snapshot=None, exercise_orders=False, gate_factory=None, consume_event=None, cancel_sender=None, reconcile_reader=None, preview_reader=None, calendar_reader=None, delayed_greeks=False, research_early_metrics=False, parallel_account_sources=False):
+async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_snapshot=None, exercise_orders=False, gate_factory=None, consume_event=None, cancel_sender=None, reconcile_reader=None, preview_reader=None, calendar_reader=None, delayed_greeks=False, research_early_metrics=False, parallel_account_sources=False, cached_position_metadata=False):
     expiry = (datetime.now(timezone.utc) + timedelta(days=30)).date()
     expiry_native, expiry_occ = expiry.strftime("%Y%m%d"), expiry.strftime("%y%m%d")
     ib = IB()
@@ -365,7 +371,15 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_sn
                 return await native_values(*args,**kwargs)
             monkeypatch.setattr(account_module,'positions',joined_positions)
             monkeypatch.setattr(account_module,'account_values',joined_values)
+        before_bindings = {key: value[0] for key, value in adapter._option_catalog.items()}
+        if cached_position_metadata:
+            async def unexpected_qualification(*args, **kwargs):
+                raise AssertionError('Fresh metadata must not delay new positions/funds with another qualification')
+            monkeypatch.setattr(ib, 'reqContractDetailsAsync', unexpected_qualification)
         state = await adapter.option_account_state(scope, retain_lifecycle=retain, flex_state=store)
+        if cached_position_metadata:
+            assert all(position.binding == before_bindings[position.binding.broker_contract_id] for position in state.positions)
+            monkeypatch.setattr(ib, 'reqContractDetailsAsync', contract_details)
         if parallel_account_sources:
             assert position_started.is_set() and funds_started.is_set()
             monkeypatch.setattr(account_module,'positions',native_positions)
