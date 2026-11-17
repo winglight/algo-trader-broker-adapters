@@ -365,7 +365,11 @@ def acknowledgement(request, prepared_order, records):
                 "IB acknowledgement changed its combo vector")
         if type(order["permId"]) is int and order["permId"] > 0:
             parent = str(order["permId"])
-            status = {"Submitted": "ACKNOWLEDGED", "PreSubmitted": "ACKNOWLEDGED", "PendingCancel": "CANCEL_PENDING",
+            # A Filled parent proves acceptance, but never supplies financial
+            # leg quantities. Those still come only from exact OPT executions.
+            # Fast fills can arrive inside the initial openOrder callback;
+            # leaving that accepted submission UNKNOWN strands its raw receipt.
+            status = {"Submitted": "ACKNOWLEDGED", "PreSubmitted": "ACKNOWLEDGED", "Filled": "ACKNOWLEDGED", "PendingCancel": "CANCEL_PENDING",
                       "Cancelled": "CANCELED", "ApiCancelled": "CANCELED"}.get(record["state"]["status"], "SUBMISSION_UNKNOWN")
     # Parent/BAG summaries never fabricate per-leg fills. Actual OPT execution
     # callbacks are reconciled by the separate event source.
