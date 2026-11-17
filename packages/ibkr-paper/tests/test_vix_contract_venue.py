@@ -26,7 +26,7 @@ def test_vix_discovery_uses_cfe(symbol, exchange):
     assert result.contract.tradingClass == "VX"
     assert result.contract.exchange == "CFE"
     assert result.contract.lastTradeDateOrContractMonth == "20261118"
-    assert result.contract.primaryExchange == ("SMART" if exchange == "SMART" else "")
+    assert result.contract.primaryExchange == ""
 
 
 @pytest.mark.parametrize("exchange", ["CFE", "CBOE"])
@@ -39,6 +39,21 @@ def test_qualified_native_identity_is_preserved(exchange):
     assert result.contract.conId == 12345
     assert result.contract.exchange == exchange
     assert result.contract.localSymbol == "VXX6"
+
+
+@pytest.mark.parametrize("symbol", ["VX", "VIX"])
+@pytest.mark.parametrize("primary", [None, "SMART", "CFE"])
+def test_smart_vix_discovery_never_uses_router_as_primary_listing(symbol, primary):
+    # BUG-745 req206256: CFE + primaryExchange=SMART was rejected by IB.
+    result = builder.IBContractFactory().build(builder.ContractParams(
+        symbol=symbol, sec_type="FUT", exchange="SMART", primary_exchange=primary,
+        currency="USD", last_trade_date_or_contract_month="20261118",
+    ))
+    assert result.contract.exchange == "CFE"
+    assert result.contract.primaryExchange == (primary if primary == "CFE" else "")
+    assert result.contract.symbol == "VIX"
+    assert result.contract.tradingClass == "VX"
+    assert result.contract.lastTradeDateOrContractMonth == "20261118"
 
 
 @pytest.mark.parametrize("exchange", ["CME", "GLOBEX"])

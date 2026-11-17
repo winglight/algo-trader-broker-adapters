@@ -293,8 +293,8 @@ class IBContractFactory:
                     trading_class = "VX"
                 # For VIX futures, the correct exchange is CFE. Default to CFE
                 # when the incoming exchange is blank/SMART or equals the default
-                # future exchange, and keep primaryExchange as SMART only when
-                # the user requested SMART routing.
+                # future exchange. SMART is a router, not a primary listing;
+                # never reintroduce it after clearing it above.
                 fallback_candidates = {"", "SMART", "CME", "GLOBEX"}
                 # Generic futures defaults can arrive as explicit coordinates
                 # from upstream discovery. VIX is listed on CFE, not CME/GLOBEX.
@@ -305,8 +305,6 @@ class IBContractFactory:
                     fallback_candidates.add(default_future_exchange)
                 if builder_exchange in fallback_candidates:
                     builder_exchange = "CFE"
-                    if requested_exchange == "SMART" and not primary_exchange:
-                        primary_exchange = "SMART"
 
             # MET 使用 CME 作为交易所；当用户未明确设置或使用 SMART 时进行默认修正
             if future_root in CRYPTO_FUTURE_ROOTS:
