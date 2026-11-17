@@ -30,6 +30,15 @@ def test_static_metadata_keeps_its_original_clock_and_current_position_fields_ar
     assert cached[0].qualified_at == at
 
 
+def test_explicit_same_account_recovery_can_use_current_connection_metadata():
+    adapter, current, native, cached = fixture()
+    class Bound(N):
+        __hash__ = object.__hash__
+    original = Bound(scope=N(account='account', environment='paper', expected_generation=0))
+    adapter._option_recovery_bindings = {original: current}
+    assert cached_position_contract(adapter, original, native) is cached
+
+
 @pytest.mark.parametrize('case', ['stale', 'future', 'account', 'environment', 'generation', 'symbol',
     'expiry', 'right', 'strike', 'multiplier', 'local_symbol', 'currency'])
 def test_changed_scope_or_economics_requires_native_qualification(case):

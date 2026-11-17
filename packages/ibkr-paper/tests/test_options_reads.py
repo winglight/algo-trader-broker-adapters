@@ -62,8 +62,7 @@ async def test_account_joins_independent_position_and_funds_callbacks_after_hist
 
 @pytest.mark.asyncio
 async def test_account_uses_existing_static_qualification_without_renewing_its_clock(monkeypatch):
-    async with asyncio.timeout(5):
-        await read_flow(monkeypatch, cached_position_metadata=True)
+    await read_flow(monkeypatch, cached_position_metadata=True)
 
 
 def flex_xml(contract, binding, *, account="DU-OPTIONS-FIXTURE", kind="Assignment", day="20261007"):

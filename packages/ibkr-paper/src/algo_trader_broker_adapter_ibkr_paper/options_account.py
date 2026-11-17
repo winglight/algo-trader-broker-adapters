@@ -148,7 +148,9 @@ def cached_position_contract(adapter, bound, native):
         return None
     binding, contract, detail = cached
     try:
-        check(getattr(adapter, '_option_account_binding', None) == bound
+        current = getattr(adapter, '_option_account_binding', None)
+        registered = current == bound or getattr(adapter, '_option_recovery_bindings', {}).get(bound) == current
+        check(current is not None and registered
               and binding.adapter_id == adapter.adapter_id
               and binding.account_scope == bound.scope.account
               and binding.environment == bound.scope.environment
