@@ -165,6 +165,8 @@ class FutureOrderRequest:
         result = _CONTRACT_FACTORY.build(params)
         contract = result.contract
         limit_price = _normalize_future_order_price(symbol, self.limit_price)
+        if self.order_id and self.order_type == "LMT" and self.open_close == "O" and limit_price != self.limit_price:
+            raise ValueError("Entry limit price must align with the futures tick size")
         stop_price = _normalize_future_order_price(symbol, self.stop_price)
         order = _build_order(
             side=self.side,

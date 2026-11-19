@@ -2663,6 +2663,8 @@ class IBAsyncClient:
         ib = await self.ensure_connected()
         if order.orderId and order.orderType in {"STP", "STP LMT"}:
             order = await self._copy_working_stop(ib, contract, order)
+        if order.orderId and order.orderType == "LMT" and order.openClose == "O":
+            contract, order = await self._copy_working_entry_limit(ib, contract, order)
         if self._trade_update_handler is not None:
             self._install_order_listeners(ib)
         if self._account_update_handler is not None:
@@ -2681,6 +2683,27 @@ class IBAsyncClient:
         except Exception as exc:  # pragma: no cover - runtime failure
             raise IBOrderError("IB order outcome is unknown; reconcile before retrying",
                                code="broker_order_outcome_unknown") from exc
+
+    async def _copy_working_entry_limit(self, ib: IB, contract: Any, requested: Any) -> tuple[Any, Any]:
+        async with self._open_orders_lock:
+            trades = await asyncio.wait_for(ib.reqOpenOrdersAsync(), timeout=3)
+        for trade in trades or ():
+            existing = trade.order
+            if existing.orderId != requested.orderId:
+                continue
+            native = trade.contract
+            if (native.secType != contract.secType or native.symbol != contract.symbol
+                    or native.currency != contract.currency or (contract.conId and native.conId != contract.conId)
+                    or existing.orderType != "LMT" or existing.openClose != "O"
+                    or existing.action != requested.action or existing.account != requested.account
+                    or not requested.orderRef or existing.orderRef != requested.orderRef
+                    or existing.totalQuantity != requested.totalQuantity
+                    or trade.orderStatus.status not in {"Submitted", "PreSubmitted"}):
+                break
+            modified = copy.copy(existing)
+            modified.lmtPrice = requested.lmtPrice
+            return native, modified
+        raise IBOrderError("Working entry limit could not be verified before modification")
 
     async def _copy_working_stop(self, ib: IB, contract: Any, requested: Any) -> Any:
         # The broker's current order carries its original TIF, OCA/parent,

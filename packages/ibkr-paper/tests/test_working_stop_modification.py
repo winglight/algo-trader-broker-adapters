@@ -30,3 +30,29 @@ def test_stop_modification_copies_native_fields_and_preserves_identity():
             await adapter._copy_working_stop(ib, contract, request)
 
     asyncio.run(scenario())
+
+
+@pytest.mark.asyncio
+async def test_entry_limit_amends_only_price_on_the_exact_working_order():
+    from ib_async import LimitOrder
+
+    adapter = object.__new__(IBAsyncClient)
+    adapter._open_orders_lock = asyncio.Lock()
+    contract = Contract(conId=11, secType="FUT", symbol="MNQ", currency="USD")
+    existing = LimitOrder("BUY", 2, 100, orderId=89, account="DU1", tif="GTC", permId=42,
+                          orderRef="copilot-entry", openClose="O", outsideRth=True)
+    trade = SimpleNamespace(order=existing, contract=contract, orderStatus=SimpleNamespace(status="Submitted"))
+    ib = SimpleNamespace(reqOpenOrdersAsync=AsyncMock(return_value=[trade]))
+    request = LimitOrder("BUY", 2, 99.75, orderId=89, account="DU1", orderRef="copilot-entry", openClose="O")
+    native, amended = await adapter._copy_working_entry_limit(ib, contract, request)
+    assert native is contract and amended.lmtPrice == 99.75 and existing.lmtPrice == 100
+    assert (amended.orderId, amended.permId, amended.tif, amended.totalQuantity, amended.outsideRth) == (
+        89, 42, "GTC", 2, True,
+    )
+    request.orderRef = "other-order"
+    with pytest.raises(IBOrderError):
+        await adapter._copy_working_entry_limit(ib, contract, request)
+    request.orderRef = existing.orderRef
+    trade.orderStatus.status = "Filled"
+    with pytest.raises(IBOrderError):
+        await adapter._copy_working_entry_limit(ib, contract, request)
