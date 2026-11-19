@@ -20,7 +20,7 @@ from algo_trader_broker_sdk.options_events import OptionNativeInterpretation, Op
 from algo_trader_broker_sdk.submission_gate import order_fingerprint
 
 from .options_account_native import observe_callbacks, raw_bytes, raw_value
-from .options_reads import now_wire
+from .options_reads import contract_from_details, now_wire
 
 
 def build_order(request, contracts, account, client_id, order_id, shape, *, preview=False):
@@ -269,13 +269,28 @@ class IBOptionOrders:
             read_only = settings.get("ib_read_only") if isinstance(settings, Mapping) else settings.read_only
             check(str(read_only).lower() not in {"true", "1", "yes", "on"}, "IB connection is read-only")
             sink = self._option_evidence_handler
-            contracts = []
-            for leg in request.legs:
-                cached = self._option_catalog.get(leg.binding.broker_contract_id)
-                check(cached is not None and replace(cached[0], qualified_at=leg.binding.qualified_at) == leg.binding
-                      and 0 <= (datetime.now(timezone.utc) - timestamp(cached[0].qualified_at)).total_seconds() < 30,
-                      "IB order requires current exact contract bindings")
-                contracts.append(cached[2].contract)
+            async def current_contract(binding):
+                cached = self._option_catalog.get(binding.broker_contract_id)
+                if (cached is not None and replace(cached[0], qualified_at=binding.qualified_at) == binding
+                        and 0 <= (datetime.now(timezone.utc) - timestamp(cached[0].qualified_at)).total_seconds() < 30):
+                    return cached[2].contract
+                from ib_async import Contract
+                # Orders can retain exact qualifications longer than the live
+                # adapter cache. Refresh by the original native ID, never by
+                # selecting a substitute strike, expiry or exchange.
+                details = await asyncio.wait_for(ib.reqContractDetailsAsync(
+                    Contract(conId=int(binding.broker_contract_id), secType="OPT", currency="USD", exchange="SMART")),
+                    self._qualification_timeout)
+                check(len(details) == 1, "IB could not refresh the exact original option contract")
+                detail = details[0]
+                underlying = detail.contract.symbol
+                actual = contract_from_details(detail, underlying, await self._underlying(ib, underlying))
+                live = self._remember_contract(bound, detail, actual)
+                check(replace(live, qualified_at=binding.qualified_at) == binding,
+                      "IB refreshed contract differs from the original option binding")
+                return detail.contract
+
+            contracts = await asyncio.gather(*(current_contract(leg.binding) for leg in request.legs))
             contract, order = build_order(request, contracts, bound.native_account_ref,
                 ib.client.clientId, ib.client.getReqId(), gate.option_shape)
             prepared = raw_bytes(preparation(request, contract, order))

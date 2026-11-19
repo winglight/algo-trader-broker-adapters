@@ -715,10 +715,12 @@ async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None,
                 adapter._option_catalog[old_binding.broker_contract_id] = (replace(current_catalog[0],
                     qualified_at=(datetime.now(timezone.utc)-timedelta(seconds=31)).isoformat().replace('+00:00','Z')), *current_catalog[1:])
                 denied = SubmissionGate(validate, lambda: None, retain_native=retain, option_shape=shape)
-                with pytest.raises(BrokerContractError, match='current exact contract bindings'):
-                    await adapter.submit_option_order_guarded(request, denied)
+                wrong = replace(old_binding, metadata_version='wrong-version')
+                changed = replace(request, legs=(replace(request.legs[0], binding=wrong), *request.legs[1:]))
+                with pytest.raises(BrokerContractError, match='differs from the original option binding'):
+                    await adapter.submit_option_order_guarded(changed, denied)
                 assert not denied.consumed
-                adapter._option_catalog[old_binding.broker_contract_id] = current_catalog
+                adapter._option_catalog.pop(old_binding.broker_contract_id)
             result = await adapter.submit_option_order_guarded(request, gate)
             if not gate_factory:
                 assert request.legs[0].binding.qualified_at == old_binding.qualified_at
