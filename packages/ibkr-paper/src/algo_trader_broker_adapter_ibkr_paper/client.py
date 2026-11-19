@@ -2661,6 +2661,8 @@ class IBAsyncClient:
         # Connection establishment may retry reads. Once native submission is
         # attempted, a reconnect must never repeat the order side effect.
         ib = await self.ensure_connected()
+        if order.orderId and order.orderType in {"STP", "STP LMT"}:
+            order = await self._copy_working_stop(ib, contract, order)
         if self._trade_update_handler is not None:
             self._install_order_listeners(ib)
         if self._account_update_handler is not None:
@@ -2679,6 +2681,28 @@ class IBAsyncClient:
         except Exception as exc:  # pragma: no cover - runtime failure
             raise IBOrderError("IB order outcome is unknown; reconcile before retrying",
                                code="broker_order_outcome_unknown") from exc
+
+    async def _copy_working_stop(self, ib: IB, contract: Any, requested: Any) -> Any:
+        # The broker's current order carries its original TIF, OCA/parent,
+        # trigger method and native client identity. Only price and size change.
+        async with self._open_orders_lock:
+            trades = await asyncio.wait_for(ib.reqOpenOrdersAsync(), timeout=3)
+        for trade in trades or ():
+            existing = trade.order
+            if getattr(existing, "orderId", None) != requested.orderId:
+                continue
+            if (trade.contract.conId != contract.conId or existing.orderType != requested.orderType
+                    or existing.action != requested.action
+                    or (requested.account and existing.account != requested.account)
+                    or trade.orderStatus.status not in {"Submitted", "PreSubmitted"}):
+                break
+            modified = copy.copy(existing)
+            modified.auxPrice = requested.auxPrice
+            modified.totalQuantity = requested.totalQuantity
+            if requested.orderType == "STP LMT":
+                modified.lmtPrice = requested.lmtPrice
+            return modified
+        raise IBOrderError("Working stop could not be verified before modification")
 
     async def _place_order_async(self, ib: IB, contract: Any, order: Any) -> OrderResult:
         place_order_async = getattr(ib, "placeOrderAsync", None)
