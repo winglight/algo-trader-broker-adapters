@@ -1540,9 +1540,7 @@ class IBAsyncClient:
             raise IBOrderError(
                 f"Failed to qualify futures contract before submit: {_contract_to_dict(contract)}"
             ) from exc
-        return await self._submit_order(
-            contract, order, submission_gate=submission_gate, outside_rth=request.outside_rth,
-        )
+        return await self._submit_order(contract, order, submission_gate=submission_gate)
 
     async def place_option_order(self, request: OptionOrderRequest) -> OrderResult:
         """Submit an order for an option contract."""
@@ -2690,13 +2688,12 @@ class IBAsyncClient:
         except Exception as exc:  # pragma: no cover - network failure
             raise IBMarketDataError("Failed to qualify contract") from exc
 
-    async def _submit_order(self, contract: Any, order: Any, *, submission_gate=None,
-                            outside_rth: bool | None = None) -> OrderResult:
+    async def _submit_order(self, contract: Any, order: Any, *, submission_gate=None) -> OrderResult:
         # Connection establishment may retry reads. Once native submission is
         # attempted, a reconnect must never repeat the order side effect.
         ib = await self.ensure_connected()
         if order.orderId and order.orderType in {"STP", "STP LMT"}:
-            order = await self._copy_working_stop(ib, contract, order, outside_rth=outside_rth)
+            order = await self._copy_working_stop(ib, contract, order)
         if order.orderId and order.orderType == "LMT" and order.openClose == "O":
             contract, order = await self._copy_working_entry_limit(ib, contract, order)
         if self._trade_update_handler is not None:
@@ -2739,11 +2736,9 @@ class IBAsyncClient:
             return native, modified
         raise IBOrderError("Working entry limit could not be verified before modification")
 
-    async def _copy_working_stop(self, ib: IB, contract: Any, requested: Any, *,
-                                 outside_rth: bool | None = None) -> Any:
+    async def _copy_working_stop(self, ib: IB, contract: Any, requested: Any) -> Any:
         # The broker's current order carries its original TIF, OCA/parent,
-        # trigger method and native client identity. Preserve its session unless
-        # the caller explicitly requests an extended-hours update.
+        # trigger method, session and native client identity. Only price and size change.
         async with self._open_orders_lock:
             trades = await asyncio.wait_for(ib.reqOpenOrdersAsync(), timeout=3)
         for trade in trades or ():
@@ -2758,8 +2753,6 @@ class IBAsyncClient:
             modified = copy.copy(existing)
             modified.auxPrice = requested.auxPrice
             modified.totalQuantity = requested.totalQuantity
-            if outside_rth is not None:
-                modified.outsideRth = outside_rth
             if requested.orderType == "STP LMT":
                 modified.lmtPrice = requested.lmtPrice
             return modified
