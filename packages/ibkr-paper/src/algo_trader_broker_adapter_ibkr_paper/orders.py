@@ -127,6 +127,7 @@ class FutureOrderRequest:
     client_order_id: str | None = None
     open_close: str | None = None
     order_id: int | None = None
+    outside_rth: bool | None = None
 
     def build(self) -> Tuple[Future, Order]:
         """Create the :class:`Future` contract and :class:`Order`."""
@@ -177,6 +178,7 @@ class FutureOrderRequest:
             tif=self.tif,
             account=self.account,
             client_order_id=self.client_order_id,
+            outside_rth=self.outside_rth,
             open_close=self.open_close,
             order_id=self.order_id,
         )

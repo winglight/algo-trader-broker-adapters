@@ -474,6 +474,7 @@ class IBKRPaperAdapter(IBOptionReads, IBOptionOrders):
 
         payload = asdict(request)
         adapter_parameters = payload.pop("adapter_parameters", {})
+        outside_rth = adapter_parameters.pop("outsideRth", None)
         if adapter_parameters:
             raise BrokerOrderError(
                 "IBKR Paper does not accept unrecognized adapter_parameters",
@@ -481,7 +482,10 @@ class IBKRPaperAdapter(IBOptionReads, IBOptionOrders):
                 details={"keys": sorted(adapter_parameters)},
             )
         effect = payload.pop("position_effect", None)
+        if outside_rth is not None and (outside_rth is not True or effect != "CLOSE" or request.order_type != "STP"):
+            raise BrokerOrderError("outsideRth requires a futures closing stop", code="invalid_adapter_parameters")
         native_order_id = payload.pop("adapter_order_id", None)
+        payload["outside_rth"] = outside_rth
         payload["open_close"] = "O" if effect == "OPEN" else "C" if effect == "CLOSE" else None
         if native_order_id is not None:
             try:

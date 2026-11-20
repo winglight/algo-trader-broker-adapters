@@ -3,9 +3,13 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from ib_async import Contract, StopOrder
+from ib_async import Contract, OrderState, StopOrder
 
-from algo_trader_broker_adapter_ibkr_paper.client import IBAsyncClient, IBOrderError
+from algo_trader_broker_adapter_ibkr_paper.adapter import IBKRPaperAdapter
+from algo_trader_broker_adapter_ibkr_paper.client import (
+    IBAsyncClient, IBOrderError, _ib_with_stop_session_readback, _order_to_dict,
+)
+from algo_trader_broker_sdk import FutureOrderRequest
 
 
 def test_stop_modification_copies_native_fields_and_preserves_identity():
@@ -30,6 +34,47 @@ def test_stop_modification_copies_native_fields_and_preserves_identity():
             await adapter._copy_working_stop(ib, contract, request)
 
     asyncio.run(scenario())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("native_id", [None, "89"])
+async def test_futures_closing_stop_passes_eth_to_native_order(native_id):
+    adapter = object.__new__(IBKRPaperAdapter)
+    client = object.__new__(IBAsyncClient)
+    adapter._client = client
+    contract = Contract(conId=11, secType="FUT", symbol="MNQ")
+    existing = StopOrder("BUY", 2, 105, orderId=89, account="DU1", tif="GTC", permId=42)
+    trade = SimpleNamespace(order=existing, contract=contract, orderStatus=SimpleNamespace(status="PreSubmitted"))
+    client._open_orders_lock = asyncio.Lock()
+    client.ensure_connected = AsyncMock(return_value=SimpleNamespace(reqOpenOrdersAsync=AsyncMock(return_value=[trade])))
+    client.qualify_contract = AsyncMock(return_value=contract)
+    client._trade_update_handler = client._account_update_handler = None
+    client._place_order_async = AsyncMock(return_value=SimpleNamespace(
+        order_id=89, perm_id="42", status="PreSubmitted", filled=0, remaining=2,
+        avg_fill_price=None, contract={"conId": 11},
+    ))
+
+    await adapter.place_future_order(FutureOrderRequest(
+        symbol="MNQ", side="BUY", quantity=2, order_type="STP", stop_price=105,
+        contract_id=11, last_trade_date="20261218", account="DU1", position_effect="CLOSE",
+        tif="GTC", adapter_order_id=native_id, adapter_parameters={"outsideRth": True},
+    ))
+    placed = client._place_order_async.await_args.args[2]
+    assert _order_to_dict(placed)["outsideRth"] is True
+    assert placed.tif == "GTC"
+    if native_id:
+        assert placed.permId == 42 and placed.orderId == 89
+        assert existing.outsideRth is False
+
+
+def test_native_open_order_refreshes_cached_futures_stop_session():
+    ib = _ib_with_stop_session_readback()
+    contract = Contract(conId=11, secType="FUT", symbol="MNQ")
+    state = OrderState(status="PreSubmitted")
+    for outside_rth in (False, True, False):
+        order = StopOrder("BUY", 2, 105, orderId=89, clientId=40, permId=42, outsideRth=outside_rth)
+        ib.wrapper.openOrder(89, contract, order, state)
+        assert _order_to_dict(ib.wrapper.permId2Trade[42].order)["outsideRth"] is outside_rth
 
 
 @pytest.mark.asyncio
