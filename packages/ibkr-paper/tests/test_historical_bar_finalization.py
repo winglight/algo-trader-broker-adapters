@@ -33,18 +33,8 @@ class Bars(list):
         self.reqId = 123
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize('minutes', [1, 5])
-async def test_closed_stream_waits_for_boundary_and_forwards_final_trade_corrections(monkeypatch, minutes):
-    start = datetime(2026, 10, 15, 14, tzinfo=timezone.utc)
-    close = start + timedelta(minutes=minutes)
-
-    class Clock:
-        current = close - timedelta(milliseconds=500)
-
-    is_closed = module._historical_bar_is_closed
-    monkeypatch.setattr(module, '_historical_bar_is_closed',
-                        lambda bar, size, **kwargs: is_closed(bar, size, now=Clock.current))
+@pytest.fixture
+def ib_stream_client(monkeypatch):
     bars = Bars()
     ib = SimpleNamespace(reqHistoricalDataAsync=AsyncMock(return_value=bars))
     client = module.IBAsyncClient(IBGatewaySettings(client_id=20))
@@ -58,6 +48,24 @@ async def test_closed_stream_waits_for_boundary_and_forwards_final_trade_correct
 
     monkeypatch.setattr(client, '_run_with_ib_async', run)
     monkeypatch.setattr(client, '_call_async_with_timeout', timeout)
+    return client, bars
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('minutes', [1, 5])
+async def test_closed_stream_waits_for_boundary_and_forwards_final_trade_corrections(
+    monkeypatch, minutes, ib_stream_client
+):
+    start = datetime(2026, 10, 15, 14, tzinfo=timezone.utc)
+    close = start + timedelta(minutes=minutes)
+
+    class Clock:
+        current = close - timedelta(milliseconds=500)
+
+    is_closed = module._historical_bar_is_closed
+    monkeypatch.setattr(module, '_historical_bar_is_closed',
+                        lambda bar, size, **kwargs: is_closed(bar, size, now=Clock.current))
+    client, bars = ib_stream_client
     stream = await client.stream_historical_bars(
         object(), bar_size=f'{minutes} min' if minutes == 1 else f'{minutes} mins',
         keep_up_to_date=True, emit_history=False,
@@ -91,3 +99,32 @@ async def test_closed_stream_waits_for_boundary_and_forwards_final_trade_correct
             await asyncio.gather(pending, return_exceptions=True)
         await stream.aclose()
     assert bars.updateEvent.handlers == []
+
+
+@pytest.mark.asyncio
+async def test_daily_preview_emits_updates_and_replays_previous_session_at_rollover(ib_stream_client):
+    client, bars = ib_stream_client
+    stamp = datetime(2026, 11, 19, 5, tzinfo=timezone.utc)
+    bars.extend(
+        SimpleNamespace(date=stamp + timedelta(days=offset), open=10, high=11, low=9,
+                        close=10, volume=40, wap=None, barCount=10)
+        for offset in range(3)
+    )
+    active = bars.pop()
+    stream = await client.stream_historical_bars(object(), bar_size='1 day', include_open=True)
+
+    async def read():
+        return await asyncio.wait_for(anext(stream), 1)
+
+    try:
+        assert (await read()).time == bars[-2].date
+        assert (await read()).time == bars[-1].date
+        bars[-1].close = 9.5
+        bars.updateEvent.emit(bars, False)
+        assert (await read()).close == 9.5
+        bars.append(active)
+        bars.updateEvent.emit(bars, True)
+        assert (await read()).close == 9.5
+        assert (await read()).time == active.date
+    finally:
+        await stream.aclose()

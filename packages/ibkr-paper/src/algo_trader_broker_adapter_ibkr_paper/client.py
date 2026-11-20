@@ -2107,6 +2107,7 @@ class IBAsyncClient:
         use_rth: bool = True,
         keep_up_to_date: bool = True,
         emit_history: bool = False,
+        include_open: bool = False,
     ) -> AsyncIterator[HistoricalBar]:
         """Yield historical bars followed by incremental updates."""
 
@@ -2190,6 +2191,11 @@ class IBAsyncClient:
                 last_emitted_bar_time = _normalise_utc_datetime(built_bar.time)
                 last_emitted_bar = built_bar
                 loop.call_soon_threadsafe(_queue_offer, queue, built_bar)
+        elif keep_up_to_date and include_open:
+            # Seed the chart with the previous session and the active session.
+            # The caller owns session-aware classification and routing.
+            for bar in initial_bars[-2:]:
+                loop.call_soon_threadsafe(_queue_offer, queue, _build_historical_bar(bar))
         elif keep_up_to_date and initial_bars:
             # IB returns the latest in-progress/completed bar together with the
             # keepUpToDate subscription. Prefer the newest closed bar so downstream
@@ -2209,9 +2215,15 @@ class IBAsyncClient:
 
         def handle(updated_bars: Any, has_new_bar: bool | None = None) -> None:
             nonlocal last_stream_bar, last_emitted_bar_time, last_emitted_bar
+            if not updated_bars:
+                return
+            if keep_up_to_date and include_open:
+                # Replay the prior session at rollover even if its OHLCV did
+                # not change, so the caller can finalize it before the new bar.
+                for bar in updated_bars[-2:] if has_new_bar else updated_bars[-1:]:
+                    loop.call_soon_threadsafe(_queue_offer, queue, _build_historical_bar(bar))
+                return
             try:
-                if not updated_bars:
-                    return
                 if has_new_bar is True:
                     latest = _latest_closed_historical_bar(updated_bars, bar_size)
                     if latest is None:
