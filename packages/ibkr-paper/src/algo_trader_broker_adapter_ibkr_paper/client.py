@@ -1542,6 +1542,26 @@ class IBAsyncClient:
             ) from exc
         return await self._submit_order(contract, order, submission_gate=submission_gate)
 
+    async def place_conditional_future_ioc(self, request: FutureOrderRequest, *, gate) -> OrderResult:
+        """Dedicated caller-bound Paper IOC path. No asynchronous placeOrder fallback."""
+        if gate is None or request.tif != "IOC" or request.order_type != "LMT" or request.open_close != "O" \
+                or request.order_id is not None or not request.account or not request.client_order_id \
+                or type(request.contract_id) is not int or request.contract_id <= 0 or not request.local_symbol:
+            raise IBOrderError("Conditional orders require an exact, guarded futures IOC entry")
+        try:
+            contract, order = request.build()
+            contract = await self.qualify_contract(contract)
+        except Exception as exc:
+            raise IBOrderError("Cannot qualify the exact conditional futures contract") from exc
+        if (contract.secType != "FUT" or contract.conId != request.contract_id
+                or contract.localSymbol != request.local_symbol or order.tif != "IOC"
+                or order.orderType != "LMT" or order.lmtPrice != request.limit_price
+                or order.action != request.side or order.totalQuantity != request.quantity
+                or order.account != request.account or order.orderRef != request.client_order_id
+                or order.openClose != "O" or order.orderId or order.parentId or order.ocaGroup):
+            raise IBOrderError("Conditional native futures order changed during preparation")
+        return await self._submit_order(contract, order, submission_gate=gate, conditional_ioc=True)
+
     async def place_option_order(self, request: OptionOrderRequest) -> OrderResult:
         """Submit an order for an option contract."""
 
@@ -2694,7 +2714,8 @@ class IBAsyncClient:
         except Exception as exc:  # pragma: no cover - network failure
             raise IBMarketDataError("Failed to qualify contract") from exc
 
-    async def _submit_order(self, contract: Any, order: Any, *, submission_gate=None) -> OrderResult:
+    async def _submit_order(self, contract: Any, order: Any, *, submission_gate=None,
+                            conditional_ioc=False) -> OrderResult:
         # Connection establishment may retry reads. Once native submission is
         # attempted, a reconnect must never repeat the order side effect.
         ib = await self.ensure_connected()
@@ -2709,13 +2730,24 @@ class IBAsyncClient:
         if contract.secType == "STK" and order.openClose == "C":
             from .cash_control import validate_close
             await validate_close(ib, contract, order)
+        # This extension deliberately never uses an overridable async writer:
+        # it could yield after the native deadline/account check.
+        writer = getattr(ib, "placeOrder", None) if conditional_ioc else None
+        if conditional_ioc and (submission_gate is None or type(ib) is not IB
+                                or getattr(writer, "__func__", None) is not IB.placeOrder
+                                or inspect.iscoroutinefunction(writer)):
+            raise IBOrderError("Guarded synchronous conditional writer is unavailable")
+
         if submission_gate is not None:
             await submission_gate.prepare()
-            if not ib.isConnected():
+            if not ib.isConnected() or (conditional_ioc and (self._ib is not ib or writer != ib.placeOrder)):
                 submission_gate.cancel()
                 raise IBConnectionError("IB disconnected before guarded submission")
             submission_gate.consume()
         try:
+            if conditional_ioc:
+                trade = writer(contract, order)  # No await or alternate writer after gate.consume().
+                return await self._await_placed_order(ib, contract, order, trade)
             return await self._place_order_async(ib, contract, order)
         except Exception as exc:  # pragma: no cover - runtime failure
             raise IBOrderError("IB order outcome is unknown; reconcile before retrying",
@@ -2770,7 +2802,9 @@ class IBAsyncClient:
             trade = await place_order_async(contract, order)
         else:
             trade = ib.placeOrder(contract, order)
+        return await self._await_placed_order(ib, contract, order, trade)
 
+    async def _await_placed_order(self, ib: IB, contract: Any, order: Any, trade: Any) -> OrderResult:
         order_status_event = None
         trade_listener: Callable[..., None] | None = None
         if self._trade_update_handler is not None and trade is not None:
