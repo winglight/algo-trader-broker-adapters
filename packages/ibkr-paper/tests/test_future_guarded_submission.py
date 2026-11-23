@@ -5,7 +5,9 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from ib_async import Future, LimitOrder, MarketOrder, StopOrder
 
+from algo_trader_broker_sdk import BrokerOrderError, FutureOrderRequest
 from algo_trader_broker_sdk.submission_gate import SubmissionGate
+from algo_trader_broker_adapter_ibkr_paper import IBKRPaperAdapter
 from algo_trader_broker_adapter_ibkr_paper.client import IBAsyncClient, IBOrderError
 
 
@@ -46,6 +48,45 @@ def test_rejected_gate_never_sends_a_futures_order():
             await client._submit_order(Future(symbol='MNQ'), MarketOrder('BUY', 1), submission_gate=gate)
         ib.placeOrder.assert_not_called()
         assert not gate.consumed
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('environment,enabled,symbol,allowed', [
+    ('paper', False, 'MNQ', True),
+    ('live', True, 'MNQ', True),
+    ('live', False, 'MNQ', False),
+    ('live', True, 'MES', False),
+])
+def test_guarded_adapter_futures_require_live_mnq_opt_in(environment, enabled, symbol, allowed):
+    async def scenario():
+        native_contract = Future(symbol=symbol, exchange='CME', conId=123)
+        def send(contract, order):
+            assert gate.consumed and contract is native_contract and order.account == 'TEST-ACCOUNT'
+            order.orderId = 101
+            return SimpleNamespace(order=order, contract=contract, orderStatus=SimpleNamespace(
+                status='Submitted', filled=0, remaining=1, avgFillPrice=0))
+
+        ib = SimpleNamespace(isConnected=lambda: True, placeOrder=Mock(side_effect=send))
+        client = object.__new__(IBAsyncClient)
+        client.ensure_connected = AsyncMock(return_value=ib)
+        client.qualify_contract = AsyncMock(return_value=native_contract)
+        client._trade_update_handler = client._account_update_handler = None
+        adapter = IBKRPaperAdapter({'ib_environment': environment, 'ib_live_mnq_enabled': enabled}, client=client)
+        gate = SubmissionGate(AsyncMock(), lambda: None)
+        request = FutureOrderRequest(symbol=symbol, side='SELL', quantity=1, order_type='LMT',
+            limit_price=25000, last_trade_date='20261218', account='TEST-ACCOUNT', position_effect='OPEN')
+
+        if allowed:
+            result = await adapter.place_future_order_guarded(request, gate)
+            assert result.adapter_order_id == '101' and result.status == 'Submitted'
+            ib.placeOrder.assert_called_once()
+        else:
+            with pytest.raises(BrokerOrderError) as error:
+                await adapter.place_future_order_guarded(request, gate)
+            assert error.value.code == 'ib_live_futures_limit_required'
+            ib.placeOrder.assert_not_called()
+            assert not gate.consumed
+
     asyncio.run(scenario())
 
 

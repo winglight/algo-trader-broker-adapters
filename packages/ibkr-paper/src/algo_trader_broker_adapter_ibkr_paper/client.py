@@ -1702,21 +1702,27 @@ class IBAsyncClient:
 
         await self._run_with_ib_async(cancel)
 
-    async def count_open_orders_for_deployment(self) -> int:
-        """Count a completed native download, including orders from other clients."""
-        async def read(ib: IB) -> int:
+    async def _read_all_open_orders(self) -> list[Any]:
+        """Require a completed download, including orders from other clients."""
+        async def read(ib: IB) -> list[Any]:
             if "openOrders" in ib.wrapper._futures:
                 raise IBConnectionError("Native open-order download already in progress")
             request = ib.reqAllOpenOrdersAsync()
             try:
                 trades = await asyncio.wait_for(request, timeout=4)
-                return sum(not trade.order.whatIf for trade in trades)
+                return [trade for trade in trades if not trade.order.whatIf]
             finally:
                 if ib.wrapper._futures.get("openOrders") is request:
                     ib.wrapper._endReq("openOrders")
 
         async with self._open_orders_lock:
             return await self._read_connected_session(read)
+
+    async def count_open_orders_for_deployment(self) -> int:
+        return len(await self._read_all_open_orders())
+
+    async def request_open_orders_for_quantity_limit(self) -> list[TradeUpdate]:
+        return [_trade_to_update(trade, "quantity_limit.open_orders") for trade in await self._read_all_open_orders()]
 
     async def request_open_orders(self) -> list[TradeUpdate]:
         """Retrieve open orders from IB and convert them into trade updates."""

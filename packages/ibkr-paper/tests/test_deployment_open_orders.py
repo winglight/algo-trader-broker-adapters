@@ -8,7 +8,8 @@ from algo_trader_broker_adapter_ibkr_paper.client import IBAsyncClient, IBConnec
 
 
 @pytest.mark.parametrize("outcome", ["complete", "disconnect", "fail"])
-def test_deployment_counts_only_a_completed_current_native_download(outcome):
+@pytest.mark.parametrize("operation", ["deployment", "quantity-limit"])
+def test_open_orders_require_a_completed_current_native_download(outcome, operation):
     async def scenario():
         client = object.__new__(IBAsyncClient)
         client._open_orders_lock = asyncio.Lock()
@@ -25,18 +26,27 @@ def test_deployment_counts_only_a_completed_current_native_download(outcome):
             if outcome == "fail":
                 future.set_exception(TimeoutError("incomplete native response"))
             else:
-                future.set_result([SimpleNamespace(order=SimpleNamespace(whatIf=what_if))
+                future.set_result([SimpleNamespace(order=SimpleNamespace(whatIf=what_if, clientId=1, orderId=42),
+                                                   contract=SimpleNamespace(symbol="MNQ", secType="FUT"))
                                    for what_if in (False, True)])
                 if outcome == "disconnect":
                     client._connected.clear()
             return future
 
         ib.reqAllOpenOrdersAsync = Mock(side_effect=download)
+        read = (client.count_open_orders_for_deployment if operation == "deployment"
+                else client.request_open_orders_for_quantity_limit)
         if outcome == "complete":
-            assert await client.count_open_orders_for_deployment() == 1
+            result = await read()
+            if operation == "deployment":
+                assert result == 1
+            else:
+                assert len(result) == 1
+                assert result[0].message["order"]["clientId"] == 1
+                assert result[0].message["contract"]["symbol"] == "MNQ"
         else:
             with pytest.raises(TimeoutError if outcome == "fail" else IBConnectionError):
-                await client.count_open_orders_for_deployment()
+                await read()
         ib.reqAllOpenOrdersAsync.assert_called_once()
         ib.wrapper._endReq.assert_called_once_with("openOrders")
 

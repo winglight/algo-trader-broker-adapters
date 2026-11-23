@@ -194,6 +194,7 @@ class IBKRPaperAdapter(IBOptionReads, IBOptionOrders):
     ) -> None:
         from .settings import native_account_is_exact
         self._option_environment = str(settings.get("ib_environment", "paper")).strip().lower()
+        self._live_mnq_enabled = settings.get("ib_live_mnq_enabled") is True
         self._configured_account = _optional_str(settings.get("ib_account"))
         if self._option_environment not in {"paper", "live"}:
             raise BrokerContractError("ib_environment must be paper or live")
@@ -465,8 +466,9 @@ class IBKRPaperAdapter(IBOptionReads, IBOptionOrders):
         return await self._place_future_order(request)
 
     async def place_future_order_guarded(self, request: FutureOrderRequest, gate) -> OrderResult:
-        if self.manifest().environment != 'PAPER':
-            raise BrokerOrderError('Guarded futures admission is enabled for PAPER only')
+        if self._option_environment == "live" and (request.symbol != "MNQ" or not self._live_mnq_enabled):
+            raise BrokerOrderError("Guarded LIVE futures require the configured MNQ limit",
+                                   code="ib_live_futures_limit_required")
         return await self._place_future_order(request, gate=gate)
 
     async def _place_future_order(self, request: FutureOrderRequest, *, gate=None) -> OrderResult:
@@ -516,6 +518,9 @@ class IBKRPaperAdapter(IBOptionReads, IBOptionOrders):
 
     async def request_open_orders(self) -> list[TradeUpdate]:
         return await self._client.request_open_orders()
+
+    async def request_open_orders_for_quantity_limit(self) -> list[TradeUpdate]:
+        return await self._client.request_open_orders_for_quantity_limit()
 
     async def count_open_orders_for_deployment(self) -> int:
         return await self._client.count_open_orders_for_deployment()
