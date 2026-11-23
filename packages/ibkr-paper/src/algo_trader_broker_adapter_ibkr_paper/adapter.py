@@ -471,6 +471,27 @@ class IBKRPaperAdapter(IBOptionReads, IBOptionOrders):
                                    code="ib_live_futures_limit_required")
         return await self._place_future_order(request, gate=gate)
 
+    # Implementation is not capability attestation. Keep false until the
+    # exact Paper/Gateway/contract's IOC semantics are explicitly verified.
+    conditional_future_ioc_version = 0
+
+    async def place_conditional_future_order_guarded(self, request: FutureOrderRequest, gate) -> OrderResult:
+        if (type(self.conditional_future_ioc_version) is not int
+                or self.conditional_future_ioc_version != 1 or self._option_environment != "paper"
+                or gate is None or request.tif != "IOC" or request.order_type != "LMT"
+                or request.position_effect != "OPEN" or request.adapter_order_id is not None
+                or not request.account or request.adapter_parameters):
+            raise BrokerOrderError("Guarded Paper futures IOC capability is unavailable",
+                                   code="conditional_future_ioc_unavailable")
+        from .orders import FutureOrderRequest as IBFutureOrderRequest
+        payload = asdict(request)
+        for field in ("adapter_parameters", "position_effect", "adapter_order_id"):
+            payload.pop(field)
+        result = await self._client.place_conditional_future_ioc(
+            IBFutureOrderRequest(**payload, open_close="O"), gate=gate,
+        )
+        return _map_ib_order_result(result, open_close="O")
+
     async def _place_future_order(self, request: FutureOrderRequest, *, gate=None) -> OrderResult:
         from .orders import FutureOrderRequest as IBFutureOrderRequest
 
