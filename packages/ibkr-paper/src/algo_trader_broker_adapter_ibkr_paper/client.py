@@ -14,7 +14,7 @@ import random
 import weakref
 from collections import defaultdict, deque
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from typing import Any, AsyncIterator, Awaitable, Callable, Iterable, Mapping, TypeVar, Generic
@@ -71,6 +71,7 @@ class _AsyncIteratorWithReqId(Generic[T]):
 
     _iter: AsyncIterator[T]
     req_id: int | None = None
+    _on_close: Callable[[], None] | None = None
 
     def __aiter__(self) -> "_AsyncIteratorWithReqId[T]":
         return self
@@ -80,13 +81,16 @@ class _AsyncIteratorWithReqId(Generic[T]):
 
     async def aclose(self) -> None:
         close = getattr(self._iter, "aclose", None)
-        if callable(close):
-            try:
+        try:
+            if callable(close):
                 await close()
-            except RuntimeError as exc:
-                # aclose() can race with an in-flight __anext__ during shutdown/cancel.
-                if "asynchronous generator is already running" not in str(exc):
-                    raise
+        except RuntimeError as exc:
+            # aclose() can race with an in-flight __anext__ during shutdown/cancel.
+            if "asynchronous generator is already running" not in str(exc):
+                raise
+        finally:
+            if self._on_close is not None:
+                self._on_close()
 
 
 _EXECUTOR_THREAD_STATE = threading.local()
@@ -2145,6 +2149,8 @@ class IBAsyncClient:
         loop = self._loop or asyncio.get_running_loop()
 
         end_value = "" if keep_up_to_date else _coerce_ib_datetime(end_datetime)
+        interval = _bar_size_delta(bar_size)
+        tagged_intraday = bool(keep_up_to_date and include_open and interval and interval < timedelta(days=1))
 
         async def subscribe(ib: IB) -> Any:
             timeout = max(
@@ -2174,13 +2180,16 @@ class IBAsyncClient:
                 keepUpToDate=keep_up_to_date,
                 timeout=timeout,
             )
-            return await asyncio.wait_for(request, timeout=timeout)
+            # Allow ib_async's own timeout to cancel the native request before
+            # the outer deadline can cancel that cleanup.
+            return ib, await asyncio.wait_for(request, timeout=timeout + 1.0)
 
         bars: Any | None = None
+        native_ib: IB | None = None
         last_exc: Exception | None = None
         for attempt in range(3):
             try:
-                bars = await self._run_with_ib_async(subscribe)
+                native_ib, bars = await self._run_with_ib_async(subscribe)
                 break
             except asyncio.TimeoutError as exc:
                 last_exc = exc
@@ -2205,6 +2214,13 @@ class IBAsyncClient:
         if bars is None:
             raise IBMarketDataError("Failed to subscribe to historical bars") from last_exc
 
+        if tagged_intraday and not bars:
+            # ib_async can return an empty list after cancelling a timed-out
+            # request. Do not hand Runner an iterator which cannot produce data.
+            if native_ib is not None:
+                _cancel_historical_data(native_ib, bars)
+            raise IBConnectionError("IB intraday live bar subscription returned no initial data")
+
         initial_bars = list(bars)
         last_stream_bar: HistoricalBar | None = None
         last_emitted_bar_time: datetime | None = None
@@ -2217,10 +2233,13 @@ class IBAsyncClient:
                 last_emitted_bar = built_bar
                 loop.call_soon_threadsafe(_queue_offer, queue, built_bar)
         elif keep_up_to_date and include_open:
-            # Seed the chart with the previous session and the active session.
-            # The caller owns session-aware classification and routing.
+            # Use the native rollover to distinguish the previous interval
+            # from the mutable tail. Daily sessions retain their own calendar.
             for bar in initial_bars[-2:]:
-                loop.call_soon_threadsafe(_queue_offer, queue, _build_historical_bar(bar))
+                built = _build_historical_bar(bar)
+                if tagged_intraday:
+                    built = replace(built, is_closed=_historical_bar_is_closed(built, bar_size))
+                loop.call_soon_threadsafe(_queue_offer, queue, built)
         elif keep_up_to_date and initial_bars:
             # IB returns the latest in-progress/completed bar together with the
             # keepUpToDate subscription. Prefer the newest closed bar so downstream
@@ -2243,10 +2262,13 @@ class IBAsyncClient:
             if not updated_bars:
                 return
             if keep_up_to_date and include_open:
-                # Replay the prior session at rollover even if its OHLCV did
-                # not change, so the caller can finalize it before the new bar.
-                for bar in updated_bars[-2:] if has_new_bar else updated_bars[-1:]:
-                    loop.call_soon_threadsafe(_queue_offer, queue, _build_historical_bar(bar))
+                if has_new_bar and len(updated_bars) >= 2:
+                    previous = _build_historical_bar(updated_bars[-2])
+                    loop.call_soon_threadsafe(_queue_offer, queue,
+                                              replace(previous, is_closed=True) if tagged_intraday else previous)
+                current = _build_historical_bar(updated_bars[-1])
+                loop.call_soon_threadsafe(_queue_offer, queue,
+                                          replace(current, is_closed=False) if tagged_intraday else current)
                 return
             try:
                 if has_new_bar is True:
@@ -2296,11 +2318,15 @@ class IBAsyncClient:
 
         bars.updateEvent += handle  # type: ignore[attr-defined]
         req_id = _optional_int(getattr(bars, "reqId", None))
-        error_event = getattr(getattr(bars, "ib", None), "errorEvent", None)
-        if error_event is None:
-            ib_ref = self._ib
-            error_event = getattr(ib_ref, "errorEvent", None) if ib_ref is not None else None
+        error_event = getattr(native_ib, "errorEvent", None)
+        disconnected_event = getattr(native_ib, "disconnectedEvent", None)
         error_handler: Callable[..., None] | None = None
+
+        def connection_lost(*_args: Any) -> None:
+            loop.call_soon_threadsafe(_queue_offer, queue, IBConnectionError("IB historical bar socket disconnected"))
+
+        if keep_up_to_date and disconnected_event is not None:
+            disconnected_event += connection_lost  # type: ignore[operator]
 
         if error_event is not None and req_id is not None:
 
@@ -2316,15 +2342,15 @@ class IBAsyncClient:
                     event_code = int(code)
                 except (TypeError, ValueError):
                     return
-                if event_req_id != req_id:
-                    return
-                if event_code != _DISCONNECTED_LIVE_UPDATES_ERROR_CODE:
+                if event_code not in {1100, 1101} and (
+                    event_req_id != req_id or event_code not in {366, _DISCONNECTED_LIVE_UPDATES_ERROR_CODE}
+                ):
                     return
                 loop.call_soon_threadsafe(
                     _queue_offer,
                     queue,
                     IBMarketDataError(
-                        f"IB historical bar live updates disconnected for reqId {req_id}: {message}"
+                        f"IB historical bar live updates disconnected (code {event_code}, reqId {req_id}): {message}",
                     ),
                 )
 
@@ -2334,6 +2360,26 @@ class IBAsyncClient:
             except Exception:  # pragma: no cover - defensive; errorEvent may be immutable
                 LOGGER.exception("Failed to attach historical bar stream error handler")
 
+        released = False
+
+        def release_request() -> None:
+            nonlocal released
+            if released:
+                return
+            released = True
+            bars.updateEvent -= handle  # type: ignore[attr-defined]
+            bound_error_event = error_event
+            bound_disconnected_event = disconnected_event
+            if bound_error_event is not None and error_handler is not None:
+                with suppress(Exception):
+                    bound_error_event -= error_handler  # type: ignore[operator]
+            if keep_up_to_date and bound_disconnected_event is not None:
+                bound_disconnected_event -= connection_lost  # type: ignore[operator]
+            # A request ID belongs to the original socket. Closing a stream
+            # must never reconnect or send a cancel to its successor.
+            if native_ib is not None:
+                _cancel_historical_data(native_ib, bars)
+
         async def iterator() -> AsyncIterator[HistoricalBar]:
             try:
                 while True:
@@ -2342,24 +2388,11 @@ class IBAsyncClient:
                         raise item
                     yield item
             finally:
-                bars.updateEvent -= handle  # type: ignore[attr-defined]
-                bound_error_event = error_event
-                bound_error_handler = error_handler
-                if bound_error_event is not None and bound_error_handler is not None:
-                    with suppress(Exception):
-                        bound_error_event -= bound_error_handler  # type: ignore[operator]
-                if bars is not None:
-                    async def _cancel(
-                        ib: IB,
-                        *,
-                        _cancel_fn: Callable[[Any, Any], None] = _cancel_historical_data,
-                        _bars: Any = bars,
-                    ) -> None:
-                        _cancel_fn(ib, _bars)
+                release_request()
 
-                    await self._run_with_ib_async(_cancel)
-
-        return _AsyncIteratorWithReqId(iterator(), req_id)
+        # The Runner may drop an owner before activation. An unstarted async
+        # generator's finally never runs, so the wrapper owns cleanup as well.
+        return _AsyncIteratorWithReqId(iterator(), req_id, release_request)
 
     async def stream_market_depth(
         self,
@@ -3592,9 +3625,6 @@ class IBAsyncClient:
                 )
             elif code == _DISCONNECTED_LIVE_UPDATES_ERROR_CODE:
                 LOGGER.warning("IB live update request disconnected (code %s): %s", code, msg)
-                asyncio.create_task(
-                    self._schedule_reconnect(reason=f"ib_error_{code}", expected_ib=ib)
-                )
             elif self._is_competing_live_session_error(code, msg):
                 LOGGER.error(
                     "IB market data request rejected by IB (code %s): %s; keeping current session connected",

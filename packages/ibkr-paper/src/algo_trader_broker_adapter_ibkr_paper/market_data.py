@@ -39,6 +39,7 @@ class HistoricalBar:
     volume: float
     wap: float | None
     count: int | None
+    is_closed: bool | None = field(default=None, metadata={"omit_if_none": True})
 
 
 @dataclass(slots=True)

@@ -1,9 +1,10 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
+from algo_trader_broker_sdk.errors import is_transport_failure
 
 from algo_trader_broker_adapter_ibkr_paper import client as module
 from algo_trader_broker_adapter_ibkr_paper.settings import IBGatewaySettings
@@ -36,7 +37,9 @@ class Bars(list):
 @pytest.fixture
 def ib_stream_client(monkeypatch):
     bars = Bars()
-    ib = SimpleNamespace(reqHistoricalDataAsync=AsyncMock(return_value=bars))
+    ib = SimpleNamespace(reqHistoricalDataAsync=AsyncMock(return_value=bars), errorEvent=Event(),
+                         disconnectedEvent=Event())
+    bars.ib = ib
     client = module.IBAsyncClient(IBGatewaySettings(client_id=20))
     monkeypatch.setattr(client, 'ensure_connected', AsyncMock(return_value=ib))
 
@@ -128,3 +131,78 @@ async def test_daily_preview_emits_updates_and_replays_previous_session_at_rollo
         assert (await read()).time == active.date
     finally:
         await stream.aclose()
+
+
+@pytest.mark.asyncio
+async def test_intraday_stream_tags_mutable_ohlcv_and_finalizes_it_only_at_rollover(ib_stream_client):
+    client, bars = ib_stream_client
+    as_of = datetime.now(timezone.utc)
+    start = as_of.replace(minute=as_of.minute // 5 * 5, second=0, microsecond=0)
+    bars.extend(SimpleNamespace(date=stamp, open=10, high=11, low=9, close=10, volume=40, wap=None, barCount=10)
+                for stamp in (start - timedelta(minutes=5), start))
+    stream = await client.stream_historical_bars(object(), bar_size='5 mins', include_open=True)
+    try:
+        previous = await asyncio.wait_for(anext(stream), 1)
+        current = await asyncio.wait_for(anext(stream), 1)
+        assert previous.is_closed is True and current.is_closed is False
+        bars[-1].close, bars[-1].volume = 9.5, 41
+        bars.updateEvent.emit(bars, False)
+        update = await asyncio.wait_for(anext(stream), 1)
+        assert (update.close, update.volume, update.is_closed) == (9.5, 41, False)
+        bars.append(SimpleNamespace(date=start + timedelta(minutes=5), open=10, high=10, low=10,
+                                    close=10, volume=1, wap=None, barCount=1))
+        bars.updateEvent.emit(bars, True)
+        closed = await asyncio.wait_for(anext(stream), 1)
+        next_bar = await asyncio.wait_for(anext(stream), 1)
+        assert (closed.time, closed.close, closed.volume, closed.is_closed) == (start, 9.5, 41, True)
+        assert next_bar.time == start + timedelta(minutes=5) and next_bar.is_closed is False
+    finally:
+        await stream.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('code', [366, 10182, 1100, 1101, None])
+async def test_invalid_native_historical_stream_raises_retryable_error(ib_stream_client, code):
+    client, bars = ib_stream_client
+    stream = await client.stream_historical_bars(object(), bar_size='5 mins')
+    pending = asyncio.create_task(anext(stream))
+    bars.ib.errorEvent.emit(999, 366, 'Other request', None)
+    await asyncio.sleep(0)
+    assert not pending.done()
+    if code is None:
+        bars.ib.disconnectedEvent.emit()
+    else:
+        bars.ib.errorEvent.emit(-1 if code in {1100, 1101} else bars.reqId, code, 'Native reset', None)
+    try:
+        with pytest.raises((module.IBMarketDataError, module.IBConnectionError)) as error:
+            await asyncio.wait_for(pending, 1)
+        assert is_transport_failure(error.value)
+        if code is not None:
+            assert error.value.details['nativeCode'] == code
+        assert bars.ib.errorEvent.handlers == [] and bars.ib.disconnectedEvent.handlers == []
+    finally:
+        await stream.aclose()
+
+
+@pytest.mark.asyncio
+async def test_empty_intraday_live_bootstrap_reports_transport_failure(ib_stream_client):
+    client, bars = ib_stream_client
+    bars.ib.cancelHistoricalData = Mock()
+    with pytest.raises(module.IBConnectionError):
+        await client.stream_historical_bars(object(), bar_size='5 mins', include_open=True)
+    bars.ib.cancelHistoricalData.assert_called_once_with(bars)
+
+
+@pytest.mark.asyncio
+async def test_owner_cancelled_before_activation_releases_original_native_request(ib_stream_client):
+    client, bars = ib_stream_client
+    bars.ib.cancelHistoricalData = Mock()
+    stream = await client.stream_historical_bars(object(), bar_size='5 mins')
+    assert bars.updateEvent.handlers and bars.ib.disconnectedEvent.handlers
+    successor = SimpleNamespace(cancelHistoricalData=Mock())
+    client._ib = successor
+    await stream.aclose()
+    await stream.aclose()
+    bars.ib.cancelHistoricalData.assert_called_once_with(bars)
+    successor.cancelHistoricalData.assert_not_called()
+    assert not bars.updateEvent.handlers and not bars.ib.errorEvent.handlers and not bars.ib.disconnectedEvent.handlers
