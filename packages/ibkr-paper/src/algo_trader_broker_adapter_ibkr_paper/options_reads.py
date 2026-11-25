@@ -114,6 +114,9 @@ class IBOptionReads:
         self._option_catalog = OrderedDict()
         self._option_pages = OrderedDict()
         self._option_catalog_reads = asyncio.Semaphore(8)
+        self._option_bulk_catalog_reads = asyncio.Semaphore(6)
+        self._option_parameters = OrderedDict()
+        self._option_parameters_lock = asyncio.Lock()
         self._option_flex_pages = OrderedDict()
         self._option_history_pages = OrderedDict()
         self._option_history_lock = asyncio.Lock()
@@ -125,6 +128,7 @@ class IBOptionReads:
         self._option_bar_owner_tokens = set()
         self._option_reference_quotes = OrderedDict()
         self._option_reference_slots = asyncio.Semaphore(8)
+        self._option_research_snapshots = asyncio.Semaphore(1)
 
     def bind_option_account(self, verified):
         from .settings import native_account_is_exact
@@ -146,6 +150,7 @@ class IBOptionReads:
                 entry.task.cancel()
             self._option_catalog.clear()
             self._option_pages.clear()
+            self._option_parameters.clear()
             self._option_flex_pages.clear()
             self._option_history_pages.clear()
             self._option_live_observed = None
@@ -207,9 +212,32 @@ class IBOptionReads:
     async def _details(self, ib, key):
         return await asyncio.wait_for(ib.reqContractDetailsAsync(native_contract(key)), self._qualification_timeout)
 
-    async def _catalog_details(self, ib, key):
-        async with self._option_catalog_reads:
+    async def _catalog_details(self, ib, key, *, foreground=False):
+        if foreground:
+            async with self._option_catalog_reads:
+                return await self._details(ib, key)
+        async with self._option_bulk_catalog_reads, self._option_catalog_reads:
             return await self._details(ib, key)
+
+    async def _option_chain_parameters(self, ib, symbol):
+        cache_key = (self._option_connection, symbol)
+        loop = asyncio.get_running_loop()
+        async with self._option_parameters_lock:
+            cached = self._option_parameters.get(cache_key)
+            if cached is not None and loop.time() - cached[0] < 60:
+                return cached[1:]
+            under_id = await self._underlying(ib, symbol)
+            chains = await asyncio.wait_for(ib.reqSecDefOptParamsAsync(symbol, "", "STK", under_id),
+                                           self._qualification_timeout)
+            chains = [chain for chain in chains if chain.exchange == "SMART" and str(chain.underlyingConId) == str(under_id)
+                      and chain.tradingClass == symbol and str(chain.multiplier) == "100"]
+            check(len(chains) == 1, "Standard SMART option parameters must be unique")
+            chain = chains[0]
+            self._option_parameters[cache_key] = (loop.time(), under_id, chain)
+            self._option_parameters.move_to_end(cache_key)
+            while len(self._option_parameters) > 64:
+                self._option_parameters.popitem(last=False)
+            return under_id, chain
 
     def _remember_contract(self, bound, detail, contract):
         c = detail.contract
@@ -243,25 +271,23 @@ class IBOptionReads:
                 check(page is not None and page[0] == query and timestamp(observed) < page[4], "Invalid or expired IB catalog cursor")
                 _, under_id, candidates, offset, _, unresolved = page
             else:
-                under_id = await self._underlying(ib, request.underlying)
-                chains = await asyncio.wait_for(ib.reqSecDefOptParamsAsync(request.underlying, "", "STK", under_id),
-                                               self._qualification_timeout)
-                # ib_async's secdef decoder retains underlyingConId as wire text;
-                # ContractDetails supplies the same identity as an integer.
-                chains = [chain for chain in chains if chain.exchange == "SMART" and str(chain.underlyingConId) == str(under_id)
-                          and chain.tradingClass == request.underlying and str(chain.multiplier) == "100"]
-                check(len(chains) == 1, "Standard SMART option parameters must be unique")
-                chain = chains[0]
+                under_id, chain = await self._option_chain_parameters(ib, request.underlying)
                 expiries = sorted(expiry for expiry in chain.expirations if re.fullmatch(r"\d{8}", expiry)
                                   and request.expiry_from.replace("-", "") <= expiry <= request.expiry_to.replace("-", ""))
+                if request.expirations_only:
+                    listed = tuple(f"{value[:4]}-{value[4:6]}-{value[6:]}" for value in expiries)
+                    return ContractPage((), None, True, now_wire(), listed_expirations=listed)
                 strikes = sorted({native_decimal(strike) for strike in chain.strikes}, key=Decimal)
                 strikes = [strike for strike in strikes if Decimal(strike) > 0
                            and (request.strike_min is None or Decimal(strike) >= Decimal(request.strike_min))
                            and (request.strike_max is None or Decimal(strike) <= Decimal(request.strike_max))]
+                if request.strike_center is not None:
+                    center = Decimal(request.strike_center)
+                    strikes.sort(key=lambda strike: (abs(Decimal(strike) - center), Decimal(strike)))
                 rights = (request.right,) if request.right else ("C", "P")
                 check(len(expiries) * len(strikes) * len(rights) <= 10000, "Narrow the IB contract query bounds")
                 candidates = [(expiry, strike, right) for expiry in expiries for strike in strikes for right in rights]
-                offset, unresolved = 0, False
+                offset, unresolved = (request.strike_page or 0) * request.limit, False
             contracts, bindings = [], []
             keys = [
                 OptionContractKey(request.underlying, f"{expiry[:4]}-{expiry[4:6]}-{expiry[6:]}", right,
@@ -270,7 +296,8 @@ class IBOptionReads:
             ]
             # Exact matches avoid IB's broad-query throttling. Bound in-flight
             # contract requests across pages on this adapter's connection.
-            results = await asyncio.gather(*(self._catalog_details(ib, key) for key in keys), return_exceptions=True)
+            results = await asyncio.gather(*(self._catalog_details(
+                ib, key, foreground=request.strike_center is not None) for key in keys), return_exceptions=True)
             for key, details in zip(keys, results, strict=True):
                 if isinstance(details, BaseException):
                     raise details
@@ -290,14 +317,21 @@ class IBOptionReads:
                 contracts.append(contract)
                 bindings.append(binding)
             offset += request.limit
-            cursor = None
+            cursor, next_strike_page = None, None
             if offset < len(candidates):
-                cursor = str(uuid4())
-                self._option_pages[cursor] = (query, under_id, candidates, offset,
-                                             timestamp(observed) + timedelta(minutes=2), unresolved)
-                while len(self._option_pages) > 32:
-                    self._option_pages.popitem(last=False)
-            return ContractPage(tuple(contracts), cursor, cursor is None and not unresolved, now_wire(), bindings=tuple(bindings))
+                if request.strike_page is not None:
+                    if request.strike_page < 2500:
+                        next_strike_page = request.strike_page + 1
+                else:
+                    cursor = str(uuid4())
+                    self._option_pages[cursor] = (query, under_id, candidates, offset,
+                                                 timestamp(observed) + timedelta(minutes=2), unresolved)
+                    while len(self._option_pages) > 32:
+                        self._option_pages.popitem(last=False)
+            return ContractPage(tuple(contracts), cursor, offset >= len(candidates) and not unresolved, now_wire(),
+                                bindings=tuple(bindings),
+                                checked_candidates=len(keys) if request.strike_center is not None else None,
+                                next_strike_page=next_strike_page)
 
         return await self._option_read(request, read)
 
@@ -389,6 +423,9 @@ class IBOptionReads:
                 self._option_live_observed = (bound.scope, result.observed_at)
             return result
 
+        if request.purpose == "RESEARCH":
+            async with self._option_research_snapshots:
+                return await self._option_read(request, read)
         return await self._option_read(request, read)
 
     def _option_bound_contracts(self, request, *, fresh=False):

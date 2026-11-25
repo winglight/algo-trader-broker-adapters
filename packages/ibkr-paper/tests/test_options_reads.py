@@ -26,6 +26,42 @@ from algo_trader_broker_sdk import dataclass_to_payload
 
 
 @pytest.mark.asyncio
+async def test_expirations_and_atm_page_check_distinct_native_work(monkeypatch):
+    from types import SimpleNamespace
+    scope = OptionScope('options/1.0', 'a'*64, 'fixture-profile', 1, 'fixture-account', 'paper')
+    adapter = IBKRPaperAdapter({})
+    chain_reads = []
+    checked = []
+    async def secdef(*args):
+        chain_reads.append(args)
+        return [OptionChain('SMART', '100', 'QQQ', '100',
+            {'20261125', '20261127'}, {480., 500., 501., 503., 510.})]
+    async def connection(_, operation):
+        return await operation(SimpleNamespace(reqSecDefOptParamsAsync=secdef), SimpleNamespace(scope=scope))
+    async def underlying(_, symbol):
+        assert symbol == 'QQQ'
+        return 100
+    async def details(_, key, *, foreground):
+        assert foreground
+        checked.append((key.expiry, key.strike, key.right))
+        return []
+    monkeypatch.setattr(adapter, '_option_read', connection)
+    monkeypatch.setattr(adapter, '_underlying', underlying)
+    monkeypatch.setattr(adapter, '_catalog_details', details)
+    query = OptionContractQuery(**asdict(scope), underlying='QQQ', expiry_from='2026-11-25',
+        expiry_to='2026-11-27', right=None, strike_min=None, strike_max=None, cursor=None, limit=4)
+    dates = await adapter.list_option_contracts(replace(query, expirations_only=True))
+    assert dates.listed_expirations == ('2026-11-25', '2026-11-27') and not checked
+    by_strike = replace(query, expiry_to=query.expiry_from, strike_center='501', strike_page=0)
+    first = await adapter.list_option_contracts(by_strike)
+    assert first.checked_candidates == 4 and first.next_strike_page == 1 and first.next_cursor is None
+    assert checked == [('2026-11-25', strike, right) for strike in ('501','500') for right in ('C','P')]
+    await adapter.list_option_contracts(replace(by_strike, strike_page=1))
+    assert checked[4:] == [('2026-11-25', strike, right) for strike in ('503','510') for right in ('C','P')]
+    assert len(chain_reads) == 1, 'expiry and checked pages reuse the same native listing'
+
+
+@pytest.mark.asyncio
 async def test_cash_secured_put_native_capability(monkeypatch):
     from types import SimpleNamespace
     scope = OptionScope('options/1.0', 'a'*64, 'fixture-profile', 1, 'fixture-account', 'paper')
