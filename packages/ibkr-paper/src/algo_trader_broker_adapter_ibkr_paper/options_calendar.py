@@ -6,6 +6,7 @@ from hashlib import sha256
 import json
 from zoneinfo import ZoneInfo
 
+from algo_trader_broker_sdk.errors import BrokerContractError
 from algo_trader_broker_sdk.options import check, timestamp
 from algo_trader_broker_sdk.options_calendar import (
     OptionCalendarQuery, OptionCalendar, OptionCalendarSource, OptionTradingSession,
@@ -21,7 +22,12 @@ def session(binding, detail, request):
           "IB option calendar requires explicit Eastern session timezone")
     key = request.trade_date.replace("-", "")
     rows = [row for row in detail.liquidHours.split(";") if row.startswith(key + ":")]
-    check(len(rows) == 1, "Requested date is absent or ambiguous in IB liquidHours")
+    if not rows:
+        raise BrokerContractError("Requested date is outside the supplied IB liquidHours coverage",
+                                  details={"calendar_reason": "OPTION_CALENDAR_DATE_UNAVAILABLE"})
+    if len(rows) > 1:
+        raise BrokerContractError("Requested date has multiple entries in IB liquidHours",
+                                  details={"calendar_reason": "OPTION_CALENDAR_DATE_AMBIGUOUS"})
     if rows[0] == key + ":CLOSED":
         return OptionTradingSession(binding.canonical_id, request.trade_date, False,
             None, None, None, None, None, ("MARKET_CLOSED",))

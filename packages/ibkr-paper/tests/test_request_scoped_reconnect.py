@@ -37,6 +37,26 @@ async def test_healthy_request_timeout_preserves_failure_without_reconnecting(op
 
 
 @pytest.mark.asyncio
+async def test_qualification_timeout_preserves_cancellation_during_reconnect(monkeypatch):
+    from tests.test_adapter import FakeIBClient, FakeSupervisor
+
+    adapter = IBKRPaperAdapter({}, client=FakeIBClient(), supervisor=FakeSupervisor())
+    reconnect_started = asyncio.Event()
+
+    async def reconnect(**kwargs):
+        reconnect_started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(adapter, '_connection_is_healthy', lambda: False)
+    monkeypatch.setattr(adapter, 'reconnect', reconnect)
+    task = asyncio.create_task(adapter._raise_qualification_timeout(reason='timeout', operation='qualify_contract'))
+    await reconnect_started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
 async def test_adapter_actual_disconnected_source_keeps_one_original_recovery():
     from tests.test_adapter import FakeIBClient, FakeSupervisor
     native=FakeIBClient();native.connection_state_snapshot=lambda:{'connected':False}

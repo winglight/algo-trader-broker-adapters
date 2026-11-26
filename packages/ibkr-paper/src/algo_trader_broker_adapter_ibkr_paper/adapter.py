@@ -587,7 +587,7 @@ class IBKRPaperAdapter(IBOptionReads, IBOptionOrders):
         if not self._connection_is_healthy():
             try:
                 await asyncio.wait_for(self.reconnect(reason=reason), timeout=5.0)
-            except (Exception, asyncio.CancelledError):
+            except Exception:
                 pass
         raise BrokerConnectionError(
             f"IB contract qualification timed out during {operation}",

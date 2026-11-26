@@ -164,7 +164,8 @@ async def read_flow(monkeypatch, *, scope=None, consume_account=None, consume_sn
         return [ContractDetails(contract=native, underConId=100, underSymbol="SPY", underSecType="STK",
                                 validExchanges="SMART,CBOE", minTick=0.01, marketRuleIds="26,26",
                                 timeZoneId="US/Eastern", tradingHours="20261008:0930-20261008:1615",
-                                liquidHours="20261008:0930-20261008:1615;20261010:CLOSED")]
+                                liquidHours="20261008:0930-20261008:1615;20261009:0930-20261009:1300;"
+                                            "20261010:CLOSED;20261012:0930-20261012:1600;20261012:CLOSED")]
 
     async def parameters(*args):
         assert args == ("SPY", "", "STK", 100)
@@ -603,7 +604,15 @@ async def market_data_flow(adapter, ib, snapshot_request, monkeypatch, *, calend
     assert all(row.broker_entry_cutoff_at == row.broker_close_cutoff_at == row.session_close_at
         and row.exercise_cutoff_at is None and not row.reason_codes for row in calendar.sessions)
     closed = await adapter.option_calendar(replace(request, trade_date="2026-10-10"))
-    assert all(not row.is_trading_day and row.session_close_at is None for row in closed.sessions)
+    assert all(not row.is_trading_day and row.reason_codes == ('MARKET_CLOSED',)
+               and row.broker_close_cutoff_at is None for row in closed.sessions)
+    early = await adapter.option_calendar(replace(request, trade_date="2026-10-09"))
+    assert all(row.broker_close_cutoff_at == '2026-10-09T17:00:00Z' for row in early.sessions)
+    for day, reason in (('2026-10-11', 'OPTION_CALENDAR_DATE_UNAVAILABLE'),
+                        ('2026-10-12', 'OPTION_CALENDAR_DATE_AMBIGUOUS')):
+        with pytest.raises(BrokerContractError) as caught:
+            await adapter.option_calendar(replace(request, trade_date=day))
+        assert caught.value.details['calendar_reason'] == reason
     if calendar_reader is not None:
         ib.client._serverVersion = 178
         await calendar_reader(adapter, request)
