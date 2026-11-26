@@ -774,10 +774,8 @@ class IBKRPaperAdapter(IBOptionReads, IBOptionOrders):
                 operation="stream_tick_by_tick_data",
             )
         market_kwargs = _ib_market_kwargs(kwargs)
-        return await self._call_with_transient_reconnect(
-            "stream_tick_by_tick_data",
-            lambda: self._client.stream_tick_by_tick_data(qualified, **market_kwargs),
-        )  # type: ignore[return-value]
+        # The native request starts when the async generator is iterated.
+        return self._client.stream_tick_by_tick_data(qualified, **market_kwargs)
 
     async def stream_market_depth(
         self, contract: Mapping[str, Any], *, depth: int | None = None

@@ -5086,7 +5086,9 @@ def _build_realtime_price(ticker: Any) -> RealTimePrice:
 def _build_tick_by_tick(
     tick: Any,
 ) -> TickByTickBidAsk | TickByTickLast | TickByTickMidPoint | None:
-    timestamp = _parse_ib_datetime(getattr(tick, "time", datetime.now(timezone.utc)))
+    timestamp = _native_tick_time(getattr(tick, "time", None))
+    if timestamp is None:
+        return None
     if hasattr(tick, "bidPrice") and hasattr(tick, "askPrice"):
         attrib = getattr(tick, "tickAttribBidAsk", None)
         return TickByTickBidAsk(
@@ -5117,12 +5119,8 @@ def _build_tick_by_tick(
     return None
 
 
-def _build_historical_tick(
-    tick: Any,
-) -> HistoricalTickBidAsk | HistoricalTickLast | None:
-    # Historical quote provenance must come from the provider. The generic
-    # legacy date parser defaults invalid input to now and is unsuitable here.
-    value = getattr(tick, "time", None)
+def _native_tick_time(value: Any) -> datetime | None:
+    # A trade's source clock must come from the provider.
     try:
         if isinstance(value, datetime):
             timestamp = value
@@ -5135,6 +5133,15 @@ def _build_historical_tick(
         if timestamp.tzinfo is None or timestamp.utcoffset() is None:
             return None
     except (ValueError, TypeError, OverflowError, OSError):
+        return None
+    return timestamp
+
+
+def _build_historical_tick(
+    tick: Any,
+) -> HistoricalTickBidAsk | HistoricalTickLast | None:
+    timestamp = _native_tick_time(getattr(tick, "time", None))
+    if timestamp is None:
         return None
     if hasattr(tick, "priceBid") and hasattr(tick, "priceAsk"):
         attrib = getattr(tick, "tickAttribBidAsk", None)

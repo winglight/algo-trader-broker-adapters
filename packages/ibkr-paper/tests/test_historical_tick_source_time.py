@@ -5,7 +5,8 @@ from types import SimpleNamespace as N
 
 import pytest
 
-from algo_trader_broker_adapter_ibkr_paper.client import _build_historical_tick, IBAsyncClient
+from algo_trader_broker_adapter_ibkr_paper.adapter import IBKRPaperAdapter
+from algo_trader_broker_adapter_ibkr_paper.client import _build_historical_tick, _build_tick_by_tick, IBAsyncClient
 from algo_trader_broker_adapter_ibkr_paper.settings import IBGatewaySettings
 
 
@@ -15,6 +16,8 @@ def test_missing_or_ambiguous_source_time_is_not_replaced_by_receipt(value):
     tick=N(priceBid=600, priceAsk=601, sizeBid=1, sizeAsk=2)
     if value is not None:tick.time=value
     assert _build_historical_tick(tick) is None
+    tick.price, tick.size = 600, 1
+    assert _build_tick_by_tick(tick) is None
 
 
 @pytest.mark.parametrize('value', [datetime(2026,11,13,22,tzinfo=timezone.utc),
@@ -23,6 +26,31 @@ def test_provider_time_survives_pair_conversion(value):
     tick=_build_historical_tick(N(time=value,priceBid=600,priceAsk=601,sizeBid=1,sizeAsk=2))
     assert tick.time==datetime(2026,11,13,22,tzinfo=timezone.utc)
     assert (tick.bid_price,tick.ask_price,tick.bid_size,tick.ask_size)==(600,601,1,2)
+    real_trade=_build_tick_by_tick(N(time=value,price=600,size=1))
+    assert real_trade.time==tick.time and real_trade.price==600
+
+
+@pytest.mark.asyncio
+async def test_tick_by_tick_adapter_returns_a_lazy_native_stream(monkeypatch):
+    contract = {"conId":42, "secType":"FUT", "localSymbol":"MNQZ6"}
+    adapter = object.__new__(IBKRPaperAdapter)
+    requested = []
+
+    async def qualify(value):
+        assert value == contract
+        return contract
+
+    async def native(value, **kwargs):
+        requested.append((value, kwargs))
+        yield "native trade"
+
+    adapter._client = N(stream_tick_by_tick_data=native)
+    monkeypatch.setattr(adapter, '_qualify_contract_object', qualify)
+    stream = await adapter.stream_tick_by_tick_data(contract, tick_type="Last", number_of_ticks=0)
+    assert requested == []
+    assert await anext(stream) == "native trade"
+    await stream.aclose()
+    assert requested == [(contract, {"tick_type":"Last", "number_of_ticks":0})]
 
 
 @pytest.mark.asyncio
