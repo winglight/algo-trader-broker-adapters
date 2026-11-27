@@ -410,12 +410,14 @@ class IBOptionReads:
             from .options_quote_references import closed_bindings, with_references, start_reference_reads, cancel_reference_reads
             closed = closed_bindings(self, request, datetime.now(timezone.utc))
             deadline = asyncio.get_running_loop().time() + self._qualification_timeout
-            # Generic OI/Greek callbacks retain their full original receive
-            # budget. Historical BBO acquisition runs alongside them rather
-            # than shortening the live read or extending the total deadline.
+            # A display-only request for a verified closed window can release its
+            # live snapshot lines promptly. Historical reads still use the full
+            # provider deadline. Ordinary native reads retain their full budget.
+            display_closed = request.prefer_closed_reference and len(closed) == len(contracts)
+            live_timeout = min(1.25, self._qualification_timeout) if display_closed else self._qualification_timeout
             pending = start_reference_reads(self, ib, request, contracts, closed, deadline)
             try:
-                result = await read_snapshot(ib, request, contracts, timeout=self._qualification_timeout)
+                result = await read_snapshot(ib, request, contracts, timeout=live_timeout)
                 result = await with_references(self, ib, request, contracts, result, closed, deadline, pending=pending)
             finally:
                 await cancel_reference_reads(pending)

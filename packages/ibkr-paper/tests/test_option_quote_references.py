@@ -103,3 +103,48 @@ async def test_history_starts_alongside_full_live_observation_budget(monkeypatch
         return await original(ib,request,contracts,timeout=timeout)
     monkeypatch.setattr(quotes,'read_snapshot',live)
     await read_flow(monkeypatch)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('requested,closed,expected_timeout', [(True, True, 1.25), (True, False, 8), (False, True, 8)])
+async def test_closed_display_snapshot_releases_live_lines_without_shortening_history(
+        monkeypatch, requested, closed, expected_timeout):
+    from algo_trader_broker_sdk.options import BrokerOptionBinding, SnapshotRequest
+    from algo_trader_broker_adapter_ibkr_paper import options_quote_references as references, options_quotes
+    from algo_trader_broker_adapter_ibkr_paper.options_reads import IBOptionReads
+
+    now = datetime.now(timezone.utc)
+    at = now - timedelta(hours=1)
+    observed = now.isoformat().replace('+00:00', 'Z')
+    binding = BrokerOptionBinding('ibkr-paper', '1', 'paper', 'account', CID, '123', 'NATIVE',
+        'SMART', observed, 'metadata')
+    request = SnapshotRequest(protocol_version='options/1.0', execution_target='b' * 64, profile_id='profile',
+        account='account', environment='paper', expected_generation=1, bindings=(binding,),
+        feed='IBKR_LIVE', purpose='RESEARCH', max_age_ms=30000, max_leg_skew_ms=2000,
+        prefer_closed_reference=requested)
+    a = adapter()
+    a._qualification_timeout = 8
+    a._option_research_snapshots = asyncio.Semaphore(1)
+    a._option_bound_contracts = lambda request, fresh: [N(conId=123)]
+
+    async def run(request, operation):
+        return await operation(None, None)
+
+    a._option_read = run
+    monkeypatch.setattr(references, 'closed_bindings', lambda *args: {CID} if closed else set())
+
+    async def live(ib, request, contracts, *, timeout):
+        assert timeout == expected_timeout
+        return OptionMarketSnapshot('test', (), (CID,), False, 0, observed)
+
+    async def history(adapter, ib, contract, deadline):
+        assert deadline - asyncio.get_running_loop().time() > 7
+        return '1.9', '2', 1, 1, at
+
+    monkeypatch.setattr(options_quotes, 'read_snapshot', live)
+    monkeypatch.setattr(references, 'last_bbo', history)
+    result = await IBOptionReads.option_snapshot(a, request)
+    assert result.complete is closed
+    if closed:
+        assert result.quotes[0].quality == 'RESEARCH_ONLY'
+        assert result.quotes[0].quote_at == at.isoformat().replace('+00:00', 'Z')
