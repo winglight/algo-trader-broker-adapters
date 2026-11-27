@@ -339,34 +339,55 @@ class IBOptionReads:
         check(type(request) is QualificationRequest, "Expected an exact option qualification request")
 
         async def read(ib, bound):
-            results, underlyings = [], {}
             now = datetime.now(timezone.utc)
+            resolved, pending = {}, []
+            requested = {contract.canonical_id for contract in request.contracts}
+            cached = {}
+            for binding, contract, _ in self._option_catalog.values():
+                if (contract.canonical_id in requested
+                        and timedelta(0) <= now - timestamp(binding.qualified_at) < timedelta(seconds=30)):
+                    cached.setdefault(contract.canonical_id, (binding, contract))
+
             for expected in request.contracts:
-                check(expected.canonical_id == option_contract_id(expected.key), "Contract economics differ from canonical identity")
+                cid, key = expected.canonical_id, expected.key
+                check(cid == option_contract_id(key), "Contract economics differ from canonical identity")
+                found = cached.get(cid)
+                if found is not None and found[1].key == key:
+                    resolved[cid] = QualificationResult(cid, 'EXACT', *found, ())
+                elif standard_key(key):
+                    pending.append(expected)
+                else:
+                    resolved[cid] = QualificationResult(cid, 'UNSUPPORTED', None, None, ('CONTRACT_UNSUPPORTED',))
+
+            async def underlying(symbol):
+                async with self._option_catalog_reads:
+                    return await self._underlying(ib, symbol)
+
+            symbols = dict.fromkeys(item.key.underlying for item in pending)
+            under_ids = await asyncio.gather(*(underlying(symbol) for symbol in symbols), return_exceptions=True)
+            for value in under_ids:
+                if isinstance(value, BaseException):
+                    raise value
+            underlyings = dict(zip(symbols, under_ids, strict=True))
+            details_by_contract = await asyncio.gather(*(self._catalog_details(ib, item.key, foreground=True)
+                                                       for item in pending), return_exceptions=True)
+            for expected, details in zip(pending, details_by_contract, strict=True):
+                if isinstance(details, BaseException):
+                    raise details
                 key = expected.key
-                cached = next((value for value in self._option_catalog.values()
-                    if value[1].canonical_id == expected.canonical_id and value[1].key == key
-                    and timedelta(0) <= now - timestamp(value[0].qualified_at) < timedelta(seconds=30)), None)
-                if cached is not None:
-                    results.append(QualificationResult(expected.canonical_id, 'EXACT', cached[0], cached[1], ()))
-                    continue
-                status, contract, binding = "UNSUPPORTED", None, None
-                if standard_key(key):
-                    if key.underlying not in underlyings:
-                        underlyings[key.underlying] = await self._underlying(ib, key.underlying)
-                    details = await self._details(ib, key)
-                    status = "NOT_FOUND" if not details else "AMBIGUOUS" if len(details) != 1 else "UNSUPPORTED"
-                    if len(details) == 1:
-                        try:
-                            actual = contract_from_details(details[0], key.underlying, underlyings[key.underlying])
-                            check(actual.key == key, "IB qualification changed requested economics")
-                            binding = self._remember_contract(bound, details[0], actual)
-                            contract, status = actual, "EXACT"
-                        except BrokerContractError:
-                            pass
-                results.append(QualificationResult(expected.canonical_id, status, binding, contract,
-                                                   () if status == "EXACT" else ("CONTRACT_" + status,)))
-            return QualificationBatch(tuple(results), now_wire())
+                contract, binding = None, None
+                status = "NOT_FOUND" if not details else "AMBIGUOUS" if len(details) != 1 else "UNSUPPORTED"
+                if len(details) == 1:
+                    try:
+                        actual = contract_from_details(details[0], key.underlying, underlyings[key.underlying])
+                        check(actual.key == key, "IB qualification changed requested economics")
+                        binding = self._remember_contract(bound, details[0], actual)
+                        contract, status = actual, "EXACT"
+                    except BrokerContractError:
+                        pass
+                resolved[expected.canonical_id] = QualificationResult(expected.canonical_id, status, binding, contract,
+                    () if status == "EXACT" else ("CONTRACT_" + status,))
+            return QualificationBatch(tuple(resolved[item.canonical_id] for item in request.contracts), now_wire())
 
         return await self._option_read(request, read)
 
@@ -415,7 +436,10 @@ class IBOptionReads:
             # provider deadline. Ordinary native reads retain their full budget.
             display_closed = request.prefer_closed_reference and len(closed) == len(contracts)
             live_timeout = min(1.25, self._qualification_timeout) if display_closed else self._qualification_timeout
-            pending = start_reference_reads(self, ib, request, contracts, closed, deadline)
+            # Slow contracts must release their slot during the first display
+            # pass so the remaining strikes can use the same bounded cohort.
+            pending = start_reference_reads(self, ib, request, contracts, closed, deadline,
+                                            max_wait=2 if display_closed else None)
             try:
                 result = await read_snapshot(ib, request, contracts, timeout=live_timeout)
                 result = await with_references(self, ib, request, contracts, result, closed, deadline, pending=pending)

@@ -14,6 +14,48 @@ def adapter():
     return N(_option_reference_quotes=OrderedDict(), _option_reference_slots=asyncio.Semaphore(8))
 
 
+@pytest.mark.asyncio
+async def test_qualified_strikes_share_underlying_and_complete_concurrently(monkeypatch):
+    from algo_trader_broker_sdk.options import (
+        BrokerOptionBinding, OptionContract, OptionContractKey, QualificationRequest, option_contract_id,
+    )
+    from algo_trader_broker_adapter_ibkr_paper import options_reads
+
+    keys = [OptionContractKey('QQQ','2026-11-27','C',strike,'USD',100,'AMERICAN','PHYSICAL','STANDARD_100_SHARES')
+            for strike in ('649','650')]
+    contracts = tuple(OptionContract(option_contract_id(key),key,None,None,None,'UNKNOWN') for key in keys)
+    request = QualificationRequest(protocol_version='options/1.0', execution_target='b'*64, profile_id='profile',
+        expected_generation=1, account='account', environment='paper', contracts=contracts)
+    started, running = [], asyncio.Event()
+    underlying_reads = []
+    a = N(_option_catalog={}, _option_catalog_reads=asyncio.Semaphore(8))
+
+    async def read(request, operation):
+        return await operation(None, None)
+
+    async def underlying(ib, symbol):
+        underlying_reads.append(symbol)
+        return 123
+
+    async def details(ib, key, *, foreground):
+        assert foreground
+        started.append(key)
+        if len(started) == 2:
+            running.set()
+        await asyncio.wait_for(running.wait(), .5)
+        return [contracts[keys.index(key)]]
+
+    a._option_read, a._underlying, a._catalog_details = read, underlying, details
+    a._remember_contract = lambda bound, detail, contract: BrokerOptionBinding(
+        'ibkr-paper','1','paper','account',contract.canonical_id,contract.key.strike,
+        'NATIVE','SMART',options_reads.now_wire(),'metadata')
+    monkeypatch.setattr(options_reads, 'contract_from_details', lambda detail, symbol, under_id: detail)
+    result = await options_reads.IBOptionReads.qualify_option_contracts(a, request)
+    assert underlying_reads == ['QQQ']
+    assert [row.contract for row in result.results] == list(contracts)
+    assert all(row.status == 'EXACT' for row in result.results)
+
+
 def test_references_require_native_closed_calendar_and_research_purpose():
     binding = N(canonical_id=CID, broker_contract_id='123')
     native = N(timeZoneId='US/Eastern', liquidHours='20261111:0930-20261111:1615')
@@ -64,6 +106,30 @@ async def test_timeout_cleans_only_owned_request_and_never_upgrades_execution(mo
     snapshot=OptionMarketSnapshot('read',(),(CID,),False,0,datetime.now(timezone.utc).isoformat().replace('+00:00','Z'))
     assert await with_references(a,ib,request,[],snapshot,{CID},0) is snapshot
     ib.wrapper._endReq(40)
+
+
+@pytest.mark.asyncio
+async def test_silent_contract_releases_reference_slot_for_the_next_strike(monkeypatch):
+    ib, a = IB(), adapter()
+    a._option_reference_slots = asyncio.Semaphore(1)
+    ids = iter((40, 41))
+    at = datetime.now(timezone.utc) - timedelta(hours=1)
+    sent = []
+    monkeypatch.setattr(ib.client, 'getReqId', lambda: next(ids))
+
+    def historical(req_id, contract, *args):
+        sent.append(contract.conId)
+        if contract.conId == 2:
+            row = N(time=at, priceBid=1.9, priceAsk=2, sizeBid=1, sizeAsk=1)
+            ib.wrapper._endReq(req_id, result=[row])
+
+    monkeypatch.setattr(ib.client, 'reqHistoricalTicks', historical)
+    deadline = asyncio.get_running_loop().time() + 1
+    silent, quote = await asyncio.wait_for(asyncio.gather(
+        last_bbo(a, ib, N(conId=1), deadline, max_wait=.01),
+        last_bbo(a, ib, N(conId=2), deadline, max_wait=.01)), .5)
+    assert sent == [1, 2] and silent is None and quote == ('1.9','2',1,1,at)
+    assert not ib.wrapper._futures
 
 
 @pytest.mark.asyncio
@@ -137,8 +203,9 @@ async def test_closed_display_snapshot_releases_live_lines_without_shortening_hi
         assert timeout == expected_timeout
         return OptionMarketSnapshot('test', (), (CID,), False, 0, observed)
 
-    async def history(adapter, ib, contract, deadline):
+    async def history(adapter, ib, contract, deadline, *, max_wait=None):
         assert deadline - asyncio.get_running_loop().time() > 7
+        assert max_wait == (2 if requested and closed else None)
         return '1.9', '2', 1, 1, at
 
     monkeypatch.setattr(options_quotes, 'read_snapshot', live)

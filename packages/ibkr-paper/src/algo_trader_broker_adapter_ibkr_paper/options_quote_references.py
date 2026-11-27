@@ -34,7 +34,7 @@ def closed_bindings(adapter, request, now):
     return result
 
 
-async def last_bbo(adapter, ib, contract, deadline):
+async def last_bbo(adapter, ib, contract, deadline, *, max_wait=None):
     cached = adapter._option_reference_quotes.get(contract.conId)
     now = datetime.now(timezone.utc)
     if (cached and asyncio.get_running_loop().time() - cached[0] < 300
@@ -43,6 +43,8 @@ async def last_bbo(adapter, ib, contract, deadline):
         return cached[1]
     async with adapter._option_reference_slots:
         remaining = deadline - asyncio.get_running_loop().time()
+        if max_wait is not None:
+            remaining = min(remaining, max_wait)
         if remaining <= 0:
             return None
         req_id = ib.client.getReqId()
@@ -83,10 +85,11 @@ async def last_bbo(adapter, ib, contract, deadline):
                 ib.wrapper._endReq(req_id)
 
 
-def start_reference_reads(adapter, ib, request, contracts, closed, deadline):
+def start_reference_reads(adapter, ib, request, contracts, closed, deadline, *, max_wait=None):
     selected = [(binding, contract) for binding, contract in zip(request.bindings, contracts)
                 if binding.canonical_id in closed]
-    tasks = [asyncio.create_task(last_bbo(adapter, ib, contract, deadline)) for _, contract in selected]
+    options = {'max_wait': max_wait} if max_wait is not None else {}
+    tasks = [asyncio.create_task(last_bbo(adapter, ib, contract, deadline, **options)) for _, contract in selected]
     return selected, tasks
 
 
