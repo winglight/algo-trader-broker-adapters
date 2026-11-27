@@ -38,7 +38,7 @@ async def test_latest_paired_native_quote_keeps_source_time_and_never_uses_remov
     calls=[]
     def receive(req_id, native, start, end, count, kind, rth, ignore_size, options):
         calls.append((start,end,count,kind,rth))
-        assert native is contract and not start and end and count == 1000 and kind == 'BID_ASK'
+        assert native is contract and not start and end and count == 32 and kind == 'BID_ASK'
         rows=[N(time=source-timedelta(seconds=1),priceBid=1.8,priceAsk=1.9,sizeBid=1,sizeAsk=1),
             N(time=source,priceBid=1.9,priceAsk=2,sizeBid=1,sizeAsk=1),
             N(time=source+timedelta(seconds=1),priceBid=0,priceAsk=0,sizeBid=0,sizeAsk=0),

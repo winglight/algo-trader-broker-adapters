@@ -14,6 +14,7 @@ from .options_quotes import amount, size
 from .options_reads import now_wire
 
 log = logging.getLogger(__name__)
+LAST_BBO_TICK_LIMIT = 32
 
 
 def closed_bindings(adapter, request, now):
@@ -55,7 +56,7 @@ async def last_bbo(adapter, ib, contract, deadline):
             # A backwards native tick request gives actual paired prices and
             # their source time. OHLC/last trade values are not bid/ask.
             ib.client.reqHistoricalTicks(req_id, contract, '', now.strftime('%Y%m%d-%H:%M:%S'),
-                1000, 'BID_ASK', False, False, [])
+                LAST_BBO_TICK_LIMIT, 'BID_ASK', False, False, [])
             rows = await asyncio.wait_for(asyncio.shield(future), remaining)
             if errors:
                 log.warning('Closed-session option BID_ASK unavailable; native codes=%s', errors)
