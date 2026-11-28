@@ -81,10 +81,9 @@ async def read_snapshot(ib, request, contracts, *, timeout):
         # BBO can precede generic OI/volume callbacks. Let research hydration
         # receive those observations within the original request deadline.
         if request.purpose == 'RESEARCH':
-            metrics_deadline = min(deadline, asyncio.get_running_loop().time() + 1)
+            metrics_deadline = deadline if request.prefer_closed_reference else min(deadline, asyncio.get_running_loop().time() + 1)
             while not all('oi' in observations[id(ticker)] and 'volume' in observations[id(ticker)]
-                          and all(value is not None for value in normalized_greeks(
-                              greeks.observation(req_id, binding, ticker.marketDataType))[:4])
+                          and normalized_greeks(greeks.observation(req_id, binding, ticker.marketDataType))[4] is not None
                           for binding, (req_id, ticker) in zip(request.bindings, subscriptions)):
                 remaining = metrics_deadline - asyncio.get_running_loop().time()
                 if remaining <= 0:
@@ -98,12 +97,20 @@ async def read_snapshot(ib, request, contracts, *, timeout):
         all_side_times = []
         for binding, (req_id, ticker) in zip(request.bindings, subscriptions):
             sides = ticks[id(ticker)]
+            native = greeks.observation(req_id, binding, ticker.marketDataType)
+            metrics = observations[id(ticker)]
             if len(sides) != 2:
-                missing.append(binding.canonical_id)
-                continue
-            all_side_times.extend((sides["bid"][2], sides["ask"][2]))
+                if request.purpose != 'RESEARCH' or not (native or metrics):
+                    missing.append(binding.canonical_id)
+                    continue
+                # IV and OI can arrive without a usable book. Retain their
+                # clocks in a missing-quality row for model/display hydration.
+                observed = timestamp(native.observed_at) if native else timestamp(received)
+                sides = {side: sides.get(side, (None, None, observed)) for side in ('bid', 'ask')}
+            else:
+                all_side_times.extend((sides["bid"][2], sides["ask"][2]))
             quotes.append(quote_from_sides(binding, ticker, sides, request, received=received,
-                native_greeks=greeks.observation(req_id, binding, ticker.marketDataType), observations=observations[id(ticker)]))
+                native_greeks=native, observations=metrics))
         skew = int((max(all_side_times) - min(all_side_times)).total_seconds() * 1000) if all_side_times else 0
         return OptionMarketSnapshot(str(uuid4()), tuple(quotes), tuple(missing), not missing, skew, received)
     finally:

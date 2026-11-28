@@ -128,7 +128,9 @@ class IBOptionReads:
         self._option_bar_owner_tokens = set()
         self._option_reference_quotes = OrderedDict()
         self._option_reference_slots = asyncio.Semaphore(8)
-        self._option_research_snapshots = asyncio.Semaphore(1)
+        self._option_research_snapshots = asyncio.Condition()
+        self._option_research_lines = 0
+        self._option_research_reads = 0
 
     def bind_option_account(self, verified):
         from .settings import native_account_is_exact
@@ -431,11 +433,11 @@ class IBOptionReads:
             from .options_quote_references import closed_bindings, with_references, start_reference_reads, cancel_reference_reads
             closed = closed_bindings(self, request, datetime.now(timezone.utc))
             deadline = asyncio.get_running_loop().time() + self._qualification_timeout
-            # A display-only request for a verified closed window can release its
-            # live snapshot lines promptly. Historical reads still use the full
-            # provider deadline. Ordinary native reads retain their full budget.
             display_closed = request.prefer_closed_reference and len(closed) == len(contracts)
-            live_timeout = min(1.25, self._qualification_timeout) if display_closed else self._qualification_timeout
+            # UI hydration has a separate native stream and targeted retries.
+            # Bound the first pass without shortening execution or ordinary research reads.
+            live_timeout = (min(1.25 if display_closed else 3, self._qualification_timeout)
+                            if request.prefer_closed_reference else self._qualification_timeout)
             # Slow contracts must release their slot during the first display
             # pass so the remaining strikes can use the same bounded cohort.
             pending = start_reference_reads(self, ib, request, contracts, closed, deadline,
@@ -450,8 +452,21 @@ class IBOptionReads:
             return result
 
         if request.purpose == "RESEARCH":
-            async with self._option_research_snapshots:
+            # Allow a foreground batch and a few targeted reads to overlap.
+            # Large legacy batches reserve the entire parallel line budget.
+            lines = min(len(request.bindings), 40)
+            slots = self._option_research_snapshots
+            async with slots:
+                await slots.wait_for(lambda: self._option_research_reads < 3 and self._option_research_lines + lines <= 40)
+                self._option_research_reads += 1
+                self._option_research_lines += lines
+            try:
                 return await self._option_read(request, read)
+            finally:
+                async with slots:
+                    self._option_research_reads -= 1
+                    self._option_research_lines -= lines
+                    slots.notify_all()
         return await self._option_read(request, read)
 
     def _option_bound_contracts(self, request, *, fresh=False):

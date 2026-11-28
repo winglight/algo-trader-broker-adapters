@@ -172,7 +172,46 @@ async def test_history_starts_alongside_full_live_observation_budget(monkeypatch
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('requested,closed,expected_timeout', [(True, True, 1.25), (True, False, 8), (False, True, 8)])
+async def test_research_reads_overlap_within_the_native_line_budget(monkeypatch):
+    from dataclasses import replace
+    from algo_trader_broker_sdk.options import BrokerOptionBinding, SnapshotRequest
+    from algo_trader_broker_adapter_ibkr_paper.options_reads import IBOptionReads
+
+    a = adapter()
+    IBOptionReads._init_option_reads(a)
+    observed = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+    bindings = tuple(BrokerOptionBinding('ibkr-paper','1','paper','account',f'opt_{i:064x}',
+        str(i),'NATIVE','SMART',observed,'metadata') for i in range(1,41))
+    large = SnapshotRequest('options/1.0','b'*64,'profile',1,'account','paper',
+        bindings,'IBKR_LIVE','RESEARCH',30000,2000)
+    page1 = replace(large,bindings=bindings[:16])
+    page2 = replace(large,bindings=bindings[16:32])
+    started = asyncio.Queue()
+    release = asyncio.Event()
+
+    async def run(request, operation):
+        await started.put(request)
+        await release.wait()
+
+    monkeypatch.setattr(a,'_option_read',run,raising=False)
+    async with asyncio.timeout(2):
+        async with asyncio.TaskGroup() as tasks:
+            first = tasks.create_task(IBOptionReads.option_snapshot(a,page1))
+            second = tasks.create_task(IBOptionReads.option_snapshot(a,page2))
+            assert await started.get() in (page1,page2)
+            assert await started.get() in (page1,page2)
+            waiting = tasks.create_task(IBOptionReads.option_snapshot(a,large))
+            first.cancel()
+            await asyncio.gather(first,return_exceptions=True)
+            assert started.empty() and not waiting.done()
+            second.cancel()
+            assert await started.get() == large
+            release.set()
+    assert a._option_research_reads == a._option_research_lines == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('requested,closed,expected_timeout', [(True, True, 1.25), (True, False, 3), (False, True, 8)])
 async def test_closed_display_snapshot_releases_live_lines_without_shortening_history(
         monkeypatch, requested, closed, expected_timeout):
     from algo_trader_broker_sdk.options import BrokerOptionBinding, SnapshotRequest
@@ -189,8 +228,8 @@ async def test_closed_display_snapshot_releases_live_lines_without_shortening_hi
         feed='IBKR_LIVE', purpose='RESEARCH', max_age_ms=30000, max_leg_skew_ms=2000,
         prefer_closed_reference=requested)
     a = adapter()
+    IBOptionReads._init_option_reads(a)
     a._qualification_timeout = 8
-    a._option_research_snapshots = asyncio.Semaphore(1)
     a._option_bound_contracts = lambda request, fresh: [N(conId=123)]
 
     async def run(request, operation):
