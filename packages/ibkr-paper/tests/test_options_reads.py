@@ -618,6 +618,37 @@ async def market_data_flow(adapter, ib, snapshot_request, monkeypatch, *, calend
         await calendar_reader(adapter, request)
 
 
+@pytest.mark.parametrize("zone, hours, expected", [
+    (" US/Eastern ", "20261127:0930-1300", "2026-11-27T18:00:00Z"),
+    ("Canada/Eastern", "20261127:0930-20261127:1300", "2026-11-27T18:00:00Z"),
+    ("US/Central", "20261127:0830-20261127:1215", "2026-11-27T18:15:00Z"),
+    ("America/Chicago", "20261127:CLOSED", None),
+])
+def test_option_calendar_uses_the_explicit_exchange_timezone(zone, hours, expected):
+    from types import SimpleNamespace
+    from algo_trader_broker_adapter_ibkr_paper.options_calendar import session
+
+    result = session(SimpleNamespace(canonical_id="opt_" + "a" * 64),
+        SimpleNamespace(timeZoneId=zone, liquidHours=hours), SimpleNamespace(trade_date="2026-11-27"))
+    assert result.is_trading_day is (expected is not None)
+    assert result.session_close_at == result.broker_entry_cutoff_at == result.broker_close_cutoff_at == expected
+
+
+@pytest.mark.parametrize("zone, hours, reason", [
+    ("EST", "20261127:0930-1300", "OPTION_CALENDAR_TIMEZONE_UNAVAILABLE"),
+    ("Europe/London", "20261127:0930-1300", "OPTION_CALENDAR_TIMEZONE_UNAVAILABLE"),
+    ("US/Central", "20261127:0830-2359", "OPTION_CALENDAR_DATE_UNAVAILABLE"),
+])
+def test_option_calendar_rejects_unproven_zone_or_market_date(zone, hours, reason):
+    from types import SimpleNamespace
+    from algo_trader_broker_adapter_ibkr_paper.options_calendar import session
+
+    with pytest.raises(BrokerContractError) as caught:
+        session(SimpleNamespace(canonical_id="opt_" + "a" * 64),
+            SimpleNamespace(timeZoneId=zone, liquidHours=hours), SimpleNamespace(trade_date="2026-11-27"))
+    assert caught.value.details["calendar_reason"] == reason
+
+
 async def submission_flow(adapter, ib, scope, monkeypatch, *, gate_factory=None, consume_event=None, cancel_sender=None, reconcile_reader=None, preview_reader=None):
     from algo_trader_broker_sdk.options_capabilities import OptionCapability, OptionShapeCapability
     from algo_trader_broker_sdk.submission_gate import order_fingerprint

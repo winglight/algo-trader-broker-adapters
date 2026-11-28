@@ -1,7 +1,7 @@
 """Fresh native contract sessions, with broker cutoffs kept explicitly unknown."""
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from hashlib import sha256
 import json
 from zoneinfo import ZoneInfo
@@ -13,13 +13,23 @@ from algo_trader_broker_sdk.options_calendar import (
 )
 
 from .options_reads import now_wire
+from .session_calendar import _local_boundary
 
 SOURCE = "https://interactivebrokers.github.io/tws-api/classIBApi_1_1ContractDetails.html"
+NEW_YORK = ZoneInfo("America/New_York")
+CHICAGO = ZoneInfo("America/Chicago")
+SESSION_ZONES = {
+    "US/Eastern": NEW_YORK, "America/New_York": NEW_YORK, "EST5EDT": NEW_YORK,
+    "Canada/Eastern": ZoneInfo("Canada/Eastern"),
+    "US/Central": CHICAGO, "America/Chicago": CHICAGO, "CST6CDT": CHICAGO,
+}
 
 
 def session(binding, detail, request):
-    check(detail.timeZoneId in {"US/Eastern", "America/New_York", "EST5EDT"},
-          "IB option calendar requires explicit Eastern session timezone")
+    zone = SESSION_ZONES.get((detail.timeZoneId or "").strip())
+    if zone is None:
+        raise BrokerContractError("IB option calendar did not supply a supported explicit exchange timezone",
+                                  details={"calendar_reason": "OPTION_CALENDAR_TIMEZONE_UNAVAILABLE"})
     key = request.trade_date.replace("-", "")
     rows = [row for row in detail.liquidHours.split(";") if row.startswith(key + ":")]
     if not rows:
@@ -35,11 +45,11 @@ def session(binding, detail, request):
     # a break into a tradable interval or substitute stock market hours.
     values = rows[0].split("-")
     check(len(values) == 2 and "," not in rows[0], "Unsupported split IB option session")
-    if ":" not in values[1]:
-        values[1] = key + ":" + values[1]
-    zone = ZoneInfo("America/New_York")
-    times = [datetime.strptime(value, "%Y%m%d:%H%M").replace(tzinfo=zone)
-             .astimezone(timezone.utc).isoformat().replace("+00:00", "Z") for value in values]
+    boundaries = [_local_boundary(value, key, zone) for value in values]
+    if any(value.astimezone(NEW_YORK).date().isoformat() != request.trade_date for value in boundaries):
+        raise BrokerContractError("IB option session falls outside the requested New York date",
+                                  details={"calendar_reason": "OPTION_CALENDAR_DATE_UNAVAILABLE"})
+    times = [value.isoformat().replace("+00:00", "Z") for value in boundaries]
     # Native limit orders use outsideRth=False. Their effective entry/close
     # window is this exact contract's RTH session, before the user's buffers.
     # Exercise is a separate unsupported operation; no exercise cutoff is
