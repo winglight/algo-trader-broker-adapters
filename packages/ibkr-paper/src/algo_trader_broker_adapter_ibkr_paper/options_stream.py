@@ -74,10 +74,12 @@ async def stream_quotes(adapter, request):
             ready = dirty.copy()
             dirty.difference_update(ready)
             for req_id, (binding, ticker) in subscriptions.items():
-                if id(ticker) in ready and len(sides[id(ticker)]) == 2:
+                if id(ticker) in ready:
                     await adapter._option_read(request, current)
-                    yield quote_from_sides(binding, ticker, sides[id(ticker)], request,
+                    quote = quote_from_sides(binding, ticker, sides[id(ticker)], request,
                         native_greeks=greeks.observation(req_id, binding, ticker.marketDataType), observations=observations[id(ticker)])
+                    if quote is not None:
+                        yield quote
             try:
                 await asyncio.wait_for(changed.wait(), 1)
             except asyncio.TimeoutError:

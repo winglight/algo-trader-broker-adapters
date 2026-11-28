@@ -539,6 +539,27 @@ async def market_data_flow(adapter, ib, snapshot_request, monkeypatch, *, calend
         await second.aclose()
     assert set(ib.wrapper.reqId2Ticker) == {900}
 
+    # The broker may deliver real OI without any option book, especially
+    # around a session boundary. Research consumers must receive that frame.
+    def metrics_only(req_id, contract, generic, snapshot, regulatory, options):
+        def receive():
+            ib.wrapper.tcpDataArrived()
+            ib.wrapper.marketDataType(req_id, 1)
+            ib.wrapper.tickSize(req_id, 27, 15)
+            ib.wrapper.tcpDataProcessed()
+        asyncio.get_running_loop().call_soon(receive)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(ib.client, 'reqMktData', metrics_only)
+        stream = adapter.stream_option_quotes(QuoteSubscription(**{**base, 'purpose':'RESEARCH'},
+            owner_id='research-oi', lease_seconds=30))
+        try:
+            item = await asyncio.wait_for(anext(stream), 1)
+            assert item.quality == 'MISSING' and item.bid is None and item.ask is None
+            assert item.oi == 15 and item.oi_observed_at and item.oi_date is None
+        finally:
+            await stream.aclose()
+
     start = datetime(2026, 10, 8, 13, 30, tzinfo=timezone.utc)
     calls = []
     def bars(req_id, contract, end, duration, bar_size, what, rth, fmt, keep, options):

@@ -99,18 +99,14 @@ async def read_snapshot(ib, request, contracts, *, timeout):
             sides = ticks[id(ticker)]
             native = greeks.observation(req_id, binding, ticker.marketDataType)
             metrics = observations[id(ticker)]
-            if len(sides) != 2:
-                if request.purpose != 'RESEARCH' or not (native or metrics):
-                    missing.append(binding.canonical_id)
-                    continue
-                # IV and OI can arrive without a usable book. Retain their
-                # clocks in a missing-quality row for model/display hydration.
-                observed = timestamp(native.observed_at) if native else timestamp(received)
-                sides = {side: sides.get(side, (None, None, observed)) for side in ('bid', 'ask')}
-            else:
+            quote = quote_from_sides(binding, ticker, sides, request, received=received,
+                native_greeks=native, observations=metrics)
+            if quote is None:
+                missing.append(binding.canonical_id)
+                continue
+            if len(sides) == 2:
                 all_side_times.extend((sides["bid"][2], sides["ask"][2]))
-            quotes.append(quote_from_sides(binding, ticker, sides, request, received=received,
-                native_greeks=native, observations=metrics))
+            quotes.append(quote)
         skew = int((max(all_side_times) - min(all_side_times)).total_seconds() * 1000) if all_side_times else 0
         return OptionMarketSnapshot(str(uuid4()), tuple(quotes), tuple(missing), not missing, skew, received)
     finally:
@@ -152,6 +148,12 @@ def capture_observations(ticker, target, started):
 
 def quote_from_sides(binding, ticker, sides, request, *, received=None, native_greeks=None, observations=None):
     received = received or now_wire()
+    if len(sides) != 2:
+        if request.purpose != "RESEARCH" or not (native_greeks or observations):
+            return None
+        # Independent metric receipts may precede either option side.
+        observed = timestamp(native_greeks.observed_at) if native_greeks else timestamp(received)
+        sides = {key: sides.get(key, (None, None, observed)) for key in ("bid", "ask")}
     bid, bs, bid_time = sides["bid"]
     ask, az, ask_time = sides["ask"]
     at = min(bid_time, ask_time)
